@@ -31,6 +31,7 @@ const (
 	CLIShortConnect = "connect to a server as a client node"
 	CLIShortCA      = "certificate authority management (init / issue)"
 	CLIShortJWT     = "JWT secret and token management"
+	CLIShortSetup   = "interactive deployment bootstrap for server and client configs"
 	CLIShortInspect = "inspect a credentials file with the registered format"
 	CLIShortStatus  = "show the local daemon status"
 	CLIShortVersion = "print build version"

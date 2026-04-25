@@ -2,6 +2,7 @@
 /claude-creds-share
 /bin/
 /dist/
+/build/
 
 # dev pki / credentials (never commit!)
 /pki/

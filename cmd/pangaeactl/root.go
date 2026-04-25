@@ -39,6 +39,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newConnectCmd())
+	root.AddCommand(newSetupCmd())
 	root.AddCommand(newCACmd())
 	root.AddCommand(newJWTCmd())
 	root.AddCommand(newInspectCmd())

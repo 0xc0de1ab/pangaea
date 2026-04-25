@@ -38,6 +38,14 @@ Examples:
 - `build/macos-arm64/release/pangaeactl`
 - `build/windows-amd64/release/pangaeactl.exe`
 
+## Docs
+
+- Deployment: [docs/deploy.md](/workspace/claude-creds-share/docs/deploy.md:1)
+- Feature overview: [docs/features.md](/workspace/claude-creds-share/docs/features.md:1)
+- Claude notes: [docs/claude.md](/workspace/claude-creds-share/docs/claude.md:1)
+- Codex notes: [docs/codex.md](/workspace/claude-creds-share/docs/codex.md:1)
+- Gemini notes: [docs/gemini.md](/workspace/claude-creds-share/docs/gemini.md:1)
+
 ## Ingress
 
 Today the server expects direct `wss://` + mTLS. If you need Kubernetes ingress in front of it, the preferred deployment is TLS passthrough so the backend still sees the original client certificate.
