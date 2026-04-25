@@ -1,0 +1,29 @@
+# binaries
+/claude-creds-share
+/bin/
+/dist/
+
+# dev pki / credentials (never commit!)
+/pki/
+/pki-dev/
+*.key
+*.pem
+.credentials.json
+*.bak.*
+*.lock
+
+# go
+/coverage.out
+/coverage.html
+*.test
+*.prof
+
+# editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# runtime
+/*.sock
+/run/
