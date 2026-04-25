@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 const (
@@ -22,16 +22,15 @@ const (
 	tildeSlash        = "~/"
 )
 
-// ExpandPath turns user-typed paths into absolute filesystem paths under three
+// ExpandPath turns user-typed paths into absolute filesystem paths under four
 // rules (in priority order):
 //
 //  1. $CLAUDE_CONFIG_DIR is set AND p starts with "~/.claude" — replace the
 //     "~/.claude" prefix with the env value.
 //  2. p starts with "~/" or is exactly "~" — replace with the user's home dir.
-//  3. otherwise return filepath.Clean(p) verbatim.
-//
-// Embedded $VAR references elsewhere in p are NOT expanded; the spec is
-// strict about that to avoid surprising substitutions in path contexts.
+//  3. $VAR / ${VAR} references are expanded from the environment. Missing vars
+//     are rejected so config typos fail loudly.
+//  4. otherwise return filepath.Clean(p) verbatim.
 func ExpandPath(p string) (string, error) {
 	if p == "" {
 		return "", nil
@@ -60,5 +59,59 @@ func ExpandPath(p string) (string, error) {
 		}
 		return filepath.Clean(home + strings.TrimPrefix(p, tildeOnly)), nil
 	}
+	if strings.Contains(p, "$") {
+		expanded, err := expandEnvVars(p)
+		if err != nil {
+			return "", err
+		}
+		p = expanded
+	}
 	return filepath.Clean(p), nil
+}
+
+// ExpandPathFromDir resolves p against baseDir after applying ExpandPath.
+// Relative paths stay relative to baseDir; absolute paths remain absolute.
+func ExpandPathFromDir(baseDir, p string) (string, error) {
+	v, err := ExpandPath(p)
+	if err != nil {
+		return "", err
+	}
+	if v == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(v) || baseDir == "" {
+		return filepath.Clean(v), nil
+	}
+	return filepath.Clean(filepath.Join(baseDir, v)), nil
+}
+
+func expandEnvVars(p string) (string, error) {
+	var missing []string
+	expanded := os.Expand(p, func(name string) string {
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		missing = append(missing, name)
+		return ""
+	})
+	if len(missing) > 0 {
+		return "", common.Wrap(nil, common.ErrConfigInvalid, "undefined environment variable(s) in path %q: %s", p, strings.Join(uniqueStrings(missing), ", "))
+	}
+	return expanded, nil
+}
+
+func uniqueStrings(xs []string) []string {
+	seen := make(map[string]struct{}, len(xs))
+	out := make([]string, 0, len(xs))
+	for _, x := range xs {
+		if x == "" {
+			continue
+		}
+		if _, ok := seen[x]; ok {
+			continue
+		}
+		seen[x] = struct{}{}
+		out = append(out, x)
+	}
+	return out
 }

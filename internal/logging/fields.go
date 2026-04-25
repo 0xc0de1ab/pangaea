@@ -7,6 +7,7 @@ package logging
 const (
 	FieldComponent    = "component"
 	FieldProfile      = "profile"
+	FieldAccount      = "account"
 	FieldNodeID       = "node_id"
 	FieldEvent        = "event"
 	FieldOutcome      = "outcome"
@@ -16,6 +17,8 @@ const (
 	FieldReason       = "reason"
 	FieldRemoteAddr   = "remote_addr"
 	FieldPeerCN       = "peer_cn"
+	FieldIdentity     = "identity"
+	FieldAuthMode     = "auth_mode"
 	FieldLatencyMS    = "latency_ms"
 	FieldAttempt      = "attempt"
 	FieldDelay        = "delay"
@@ -29,11 +32,11 @@ const (
 
 // Canonical outcome values.
 const (
-	OutcomeOK        = "ok"
-	OutcomeError     = "error"
-	OutcomeRejected  = "rejected"
-	OutcomeDegraded  = "degraded"
-	OutcomeSkipped   = "skipped"
+	OutcomeOK       = "ok"
+	OutcomeError    = "error"
+	OutcomeRejected = "rejected"
+	OutcomeDegraded = "degraded"
+	OutcomeSkipped  = "skipped"
 )
 
 // Component labels used for FieldComponent.

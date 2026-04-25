@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // ReadWithBackup reads dst into memory and atomically writes a sibling

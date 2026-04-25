@@ -4,22 +4,51 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // ClientConfig mirrors specs §6.3.
+//
+// Profiles is the MVP extension to the spec: each binding pairs a server-side
+// profile name with the local config directory and the format used to
+// interpret it. The spec leaves this implicit (clients would reuse
+// profiles.yaml);
+// carrying it client-side avoids forcing clients to share profiles.yaml with
+// the server. self-client callers fill the list from the resolved server
+// profile. One client process opens one WebSocket session per binding.
 type ClientConfig struct {
-	Server    string          `yaml:"server"`
-	Profile   string          `yaml:"profile"`
-	NodeID    string          `yaml:"node_id"`
-	PKI       ClientPKIPaths  `yaml:"pki"`
-	Reconnect ReconnectConfig `yaml:"reconnect"`
-	Log       LogConfig       `yaml:"log"`
+	Server    string           `yaml:"server"`
+	AuthMode  AuthMode         `yaml:"auth_mode"`
+	JWT       JWTClientConfig  `yaml:"jwt"`
+	NodeID    string           `yaml:"node_id"`
+	Profiles  []ProfileBinding `yaml:"profiles"`
+	PKI       ClientPKIPaths   `yaml:"pki"`
+	Reconnect ReconnectConfig  `yaml:"reconnect"`
+	Log       LogConfig        `yaml:"log"`
+}
+
+// ProfileBinding describes one server profile the client wants to participate
+// in. Format is the registered formats.Format name (e.g.
+// "claude-credentials-json-format"); dir is the local config directory for
+// that profile.
+//
+// AccountMetaPath is an optional path to a sibling file the format uses to
+// derive an account identifier when the credentials file alone does not
+// carry one (e.g. claude credentials.json — account info lives in
+// ~/.claude.json). Formats that can derive the account from the credentials
+// file directly (codex, gemini) ignore this field.
+type ProfileBinding struct {
+	Name            string   `yaml:"name"`
+	Format          string   `yaml:"format"`
+	Dir             string   `yaml:"dir"`
+	WatchFiles      []string `yaml:"watch_files"`
+	AccountMetaPath string   `yaml:"account_meta_path"`
 }
 
 // ClientPKIPaths is the client's view of PKI material on disk.
@@ -48,8 +77,10 @@ type rawReconnectConfig struct {
 
 type rawClientConfig struct {
 	Server    string             `yaml:"server"`
-	Profile   string             `yaml:"profile"`
+	AuthMode  AuthMode           `yaml:"auth_mode"`
+	JWT       JWTClientConfig    `yaml:"jwt"`
 	NodeID    string             `yaml:"node_id"`
+	Profiles  []ProfileBinding   `yaml:"profiles"`
 	PKI       ClientPKIPaths     `yaml:"pki"`
 	Reconnect rawReconnectConfig `yaml:"reconnect"`
 	Log       LogConfig          `yaml:"log"`
@@ -75,11 +106,16 @@ func LoadClient(path string) (*ClientConfig, error) {
 	}
 
 	c := &ClientConfig{
-		Server:  rc.Server,
-		Profile: rc.Profile,
-		NodeID:  rc.NodeID,
-		PKI:     rc.PKI,
-		Log:     rc.Log,
+		Server:   rc.Server,
+		AuthMode: rc.AuthMode,
+		JWT:      rc.JWT,
+		NodeID:   rc.NodeID,
+		Profiles: append([]ProfileBinding(nil), rc.Profiles...),
+		PKI:      rc.PKI,
+		Log:      rc.Log,
+	}
+	for i := range c.Profiles {
+		c.Profiles[i].WatchFiles = append([]string(nil), c.Profiles[i].WatchFiles...)
 	}
 	rec, err := convertReconnect(rc.Reconnect)
 	if err != nil {
@@ -143,23 +179,56 @@ func parseDurOrZero(s, label string) (time.Duration, error) {
 }
 
 func validateClient(c *ClientConfig) error {
+	mode, err := normalizeAuthMode(c.AuthMode)
+	if err != nil {
+		return err
+	}
+	c.AuthMode = mode
+	sendVia, err := normalizeJWTSendVia(c.JWT.SendVia)
+	if err != nil {
+		return err
+	}
+	c.JWT.SendVia = sendVia
 	if c.Server == "" || !strings.HasPrefix(c.Server, wssScheme) {
 		return common.Wrap(nil, common.ErrConfigInvalid, "client.server must start with %q", wssScheme)
-	}
-	if c.Profile == "" {
-		return common.Wrap(nil, common.ErrConfigInvalid, "client.profile is required")
 	}
 	if c.NodeID == "" {
 		return common.Wrap(nil, common.ErrConfigInvalid, "client.node_id is required")
 	}
-	if c.PKI.CACert == "" || c.PKI.ClientCert == "" || c.PKI.ClientKey == "" {
-		return common.Wrap(nil, common.ErrConfigInvalid, "client.pki.{ca_cert,client_cert,client_key} are required")
+	if len(c.Profiles) == 0 {
+		return common.Wrap(nil, common.ErrConfigInvalid, "client.profiles must list at least one binding")
+	}
+	seen := make(map[string]struct{}, len(c.Profiles))
+	for i, p := range c.Profiles {
+		if p.Name == "" {
+			return common.Wrap(nil, common.ErrConfigInvalid, "client.profiles[%d].name is required", i)
+		}
+		if _, dup := seen[p.Name]; dup {
+			return common.Wrap(nil, common.ErrConfigInvalid, "client.profiles: duplicate name %q", p.Name)
+		}
+		seen[p.Name] = struct{}{}
+		if p.Dir == "" {
+			return common.Wrap(nil, common.ErrConfigInvalid, "client.profiles[%d] (%s): dir must not be empty", i, p.Name)
+		}
+	}
+	if c.PKI.CACert == "" {
+		return common.Wrap(nil, common.ErrConfigInvalid, "client.pki.ca_cert is required")
+	}
+	if c.AuthMode == AuthModeMTLS {
+		if c.PKI.ClientCert == "" || c.PKI.ClientKey == "" {
+			return common.Wrap(nil, common.ErrConfigInvalid, "client.pki.{client_cert,client_key} are required when auth_mode=mtls")
+		}
+	}
+	if c.AuthMode == AuthModeJWT {
+		if c.JWT.TokenEnv == "" && c.JWT.TokenFile == "" {
+			return common.Wrap(nil, common.ErrConfigInvalid, "client.jwt.token_env or client.jwt.token_file is required when auth_mode=jwt")
+		}
 	}
 	return nil
 }
 
 func expandClientPaths(c *ClientConfig) error {
-	for _, p := range []*string{&c.PKI.CACert, &c.PKI.ClientCert, &c.PKI.ClientKey} {
+	for _, p := range []*string{&c.PKI.CACert, &c.PKI.ClientCert, &c.PKI.ClientKey, &c.JWT.TokenFile} {
 		if *p == "" {
 			continue
 		}
@@ -168,6 +237,27 @@ func expandClientPaths(c *ClientConfig) error {
 			return err
 		}
 		*p = v
+	}
+	for i := range c.Profiles {
+		v, err := ExpandPath(c.Profiles[i].Dir)
+		if err != nil {
+			return err
+		}
+		c.Profiles[i].Dir = v
+		if c.Profiles[i].AccountMetaPath != "" {
+			v, err := ExpandPathFromDir(c.Profiles[i].Dir, c.Profiles[i].AccountMetaPath)
+			if err != nil {
+				return err
+			}
+			c.Profiles[i].AccountMetaPath = filepath.Clean(v)
+		}
+		for j, raw := range c.Profiles[i].WatchFiles {
+			v, err := ExpandPathFromDir(c.Profiles[i].Dir, raw)
+			if err != nil {
+				return err
+			}
+			c.Profiles[i].WatchFiles[j] = filepath.Clean(v)
+		}
 	}
 	return nil
 }

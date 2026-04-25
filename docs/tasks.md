@@ -1,4 +1,4 @@
-# claude-creds-share — 구현 작업 분해(tasks.md)
+# pangaeactl — 구현 작업 분해(tasks.md)
 
 본 문서는 `docs/design/specs.md`를 구현으로 떨어뜨리기 위한 **작업 지시서**이다.
 각 작업은 (1) 목적, (2) 산출물(파일·함수), (3) 정상 케이스, (4) 비정상 케이스,
@@ -11,9 +11,9 @@
 ## §A. 최종 패키지 레이아웃 (동결)
 
 ```
-claude-creds-share/
+pangaeactl/
 ├── cmd/
-│   └── claude-creds-share/
+│   └── pangaeactl/
 │       ├── main.go
 │       ├── root.go
 │       ├── serve.go
@@ -187,8 +187,8 @@ type Envelope struct {
 type Hello          struct { NodeID, AgentVersion, OS string; Capabilities []string }
 type Welcome        struct { ServerVersion string; KnownTruth *TruthMeta }
 type SnapshotReport struct { Profile, Path, Format string; Fingerprint string; Summary formats.Summary; LiveCheck LiveCheckMeta; RawSize int; RawB64 string /* 1차: 동봉 */ }
-type SnapshotAbsent struct { Profile string; Paths []string }
-type TruthPush      struct { Profile, Format, Fingerprint, RawB64, IssuedAt string; TargetPaths []string; Summary formats.Summary }
+type SnapshotAbsent struct { Profile, Path string }
+type TruthPush      struct { Profile, Format, Fingerprint, RawB64, TargetPath, IssuedAt string; Summary formats.Summary }
 type TruthAck       struct { Profile, Fingerprint string; OK bool; Reason string }
 type ErrorPayload   struct { Code, Message string }
 type LiveCheckMeta  struct { Performed bool; Result formats.ValidationStatus; CheckedAt time.Time }
@@ -268,7 +268,8 @@ type ProfilesFile struct { Profiles []Profile }
 type Profile struct {
     Name           string
     Format         string
-    Paths          []string
+    Dir            string
+    WatchFiles     []string
     AllowedClients []string
     Validate       ValidateSpec
     Propagate      PropagateSpec
@@ -379,7 +380,7 @@ const (
 Phase 0가 완료되지 않으면 패키지별 병렬 작업이 충돌한다. 반드시 선행.
 
 1. **Repo bootstrap**
-   - `git init`, `go mod init github.com/dh-kam/claude-creds-share`
+   - `git init`, `go mod init github.com/0xc0de1ab/pangaea`
    - `.gitignore`, `.golangci.yml`, `Makefile` 스텁
    - `go.mod` 의존 추가(위 목록)
 2. **`internal/common`**: 상수·문자열·에러 센티넬 전부 선언 (빈 값이라도 이름 확정)
@@ -476,7 +477,7 @@ Phase 0 완료 판정 기준: `go build ./...`, `go vet ./...`, `go test ./inter
     수 있으므로 LoadProfiles는 format 존재 검증을 하지 않고, 서버가 start-up에
     별도로 검증하는 것으로 역할 분리)
   - `allowed_clients` 중 빈 문자열 → 거절
-  - `paths` 비어있음 → 거절
+  - `dir` 비어있음 → 거절
 - 코너:
   - tilde 미해석 남아있는 경로 문자열이 `profiles.yaml`에 그대로 → 사용 시점
     (watcher 시작 직전)에 lazy expand
@@ -580,14 +581,14 @@ Phase 0 완료 판정 기준: `go build ./...`, `go vet ./...`, `go test ./inter
 - 코너:
   - 연결 끊긴 동안 워처 이벤트 누적 → path별 최신 1건만 유지
   - 연결 복귀 시 누적 보고를 hello 이후 순차 송신
-  - truth.push의 target_paths 중 일부가 내 후보 경로에 없음 → 그 경로만 스킵
-    하고 존재하는 것만 적용
+  - truth.push의 `target_path`가 내 로컬 credentials 경로와 달라도 로컬 경로에
+    적용하여 수렴 유지
   - 적용 후 fingerprint 재계산 불일치 → ok=false + backup 복원
   - 동일 fingerprint 반복 push 수신 → 이미 일치면 no-op, ok=true 반환
   - Claude CLI가 동시에 파일을 덮어써 flock 실패 → 3회 재시도 후 ok=false
 - 테스트: in-process server + client, scenario (a)(b)(c).
 
-### E.11 `cmd/claude-creds-share`
+### E.11 `cmd/pangaeactl`
 - cobra root + viper 초기화(config 경로/env prefix `CCS_`)
 - flagsbinder로 각 subcmd 옵션 struct 바인딩 (§15.1, §15.2 예시)
 - 서브커맨드:
@@ -632,7 +633,7 @@ Phase 0 완료 판정 기준: `go build ./...`, `go vet ./...`, `go test ./inter
 | D3 | `internal/transport`, `internal/watcher` | §D.6 | E.6–7 |
 | D4 | `pkg/formats`, `pkg/formats/claudecreds` | §D.5 | E.8 |
 | D5 | `internal/server` | — | E.9 |
-| D6 | `internal/client`, `cmd/claude-creds-share` | — (Phase 0 bootstrap repo §D.1 포함) | E.10–11 |
+| D6 | `internal/client`, `cmd/pangaeactl` | — (Phase 0 bootstrap repo §D.1 포함) | E.10–11 |
 
 ### G.1 규칙
 1. 모든 Dev는 **§B의 인터페이스를 동결 계약**으로 삼는다. 변경 필요 시 즉시

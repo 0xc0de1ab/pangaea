@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // SAN bundles Subject Alternative Names for a server certificate. Both lists

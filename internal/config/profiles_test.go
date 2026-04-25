@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 func writeYAML(t *testing.T, body string) string {
@@ -24,9 +24,10 @@ const goldenProfiles = `
 profiles:
   - name: "claude-prod"
     format: "claude-credentials-json-format"
-    paths:
-      - "~/.claude/.credentials.json"
-      - "~/.config/claude/.credentials.json"
+    dir: "~/.claude"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
     allowed_clients: ["host-a", "host-b"]
     validate:
       strategy: "expires_at_max"
@@ -37,7 +38,7 @@ profiles:
       cooldown: "3s"
   - name: "claude-dev"
     format: "claude-credentials-json-format"
-    paths: ["/tmp/c.json"]
+    dir: "/tmp/claude-dev"
     allowed_clients: ["host-c"]
 `
 
@@ -77,11 +78,11 @@ func TestLoadProfiles_DuplicateName(t *testing.T) {
 profiles:
   - name: a
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: [c]
   - name: a
     format: f
-    paths: [/y]
+    dir: /y
     allowed_clients: [c]
 `
 	_, err := LoadProfiles(writeYAML(t, body))
@@ -90,12 +91,12 @@ profiles:
 	}
 }
 
-func TestLoadProfiles_EmptyPaths(t *testing.T) {
+func TestLoadProfiles_EmptyDir(t *testing.T) {
 	body := `
 profiles:
   - name: a
     format: f
-    paths: []
+    dir: ""
     allowed_clients: [c]
 `
 	_, err := LoadProfiles(writeYAML(t, body))
@@ -109,7 +110,7 @@ func TestLoadProfiles_EmptyAllowedClient(t *testing.T) {
 profiles:
   - name: a
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: ["host-a", ""]
 `
 	_, err := LoadProfiles(writeYAML(t, body))
@@ -123,7 +124,7 @@ func TestLoadProfiles_BadDuration(t *testing.T) {
 profiles:
   - name: a
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: [c]
     validate:
       live_check_timeout: "five seconds"
@@ -139,7 +140,7 @@ func TestLoadProfiles_BadPropagateMode(t *testing.T) {
 profiles:
   - name: a
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: [c]
     propagate:
       mode: "broadcast"

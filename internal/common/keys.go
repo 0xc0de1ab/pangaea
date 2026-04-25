@@ -5,6 +5,7 @@ package common
 const (
 	// Server config keys (server.yaml).
 	KeyServerListen         = "listen"
+	KeyServerAuthMode       = "auth_mode"
 	KeyServerPKICA          = "pki.ca_cert"
 	KeyServerPKICert        = "pki.server_cert"
 	KeyServerPKIKey         = "pki.server_key"
@@ -17,6 +18,7 @@ const (
 
 	// Client config keys (client.yaml).
 	KeyClientServer           = "server"
+	KeyClientAuthMode         = "auth_mode"
 	KeyClientProfile          = "profile"
 	KeyClientNodeID           = "node_id"
 	KeyClientPKICA            = "pki.ca_cert"
@@ -36,12 +38,15 @@ const (
 	FlagServer     = "server"
 	FlagProfile    = "profile"
 	FlagNodeID     = "node-id"
+	FlagAuthMode   = "auth-mode"
 	FlagCAPath     = "ca"
 	FlagOutDir     = "out"
 	FlagSAN        = "san"
 	FlagFailFast   = "fail-fast"
 	FlagCommonName = "cn"
+	FlagKey        = "key"
+	FlagToken      = "token"
 
 	// Environment variable prefix for viper.
-	EnvPrefix = "CCS"
+	EnvPrefix = "PANGAEA"
 )

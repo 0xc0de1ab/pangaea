@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // fastOptions makes the debounce/stable windows small so tests don't drag.

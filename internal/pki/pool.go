@@ -4,7 +4,7 @@ import (
 	"crypto/x509"
 	"os"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // LoadCAPool loads a PEM CA bundle from disk into an x509.CertPool. A file

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 	"github.com/gofrs/flock"
 )
 

@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // ProfilesFile is the on-disk shape of profiles.yaml.
@@ -20,7 +21,8 @@ type ProfilesFile struct {
 type Profile struct {
 	Name           string        `yaml:"name"`
 	Format         string        `yaml:"format"`
-	Paths          []string      `yaml:"paths"`
+	Dir            string        `yaml:"dir"`
+	WatchFiles     []string      `yaml:"watch_files"`
 	AllowedClients []string      `yaml:"allowed_clients"`
 	Validate       ValidateSpec  `yaml:"validate"`
 	Propagate      PropagateSpec `yaml:"propagate"`
@@ -65,7 +67,8 @@ type rawPropagateSpec struct {
 type rawProfile struct {
 	Name           string           `yaml:"name"`
 	Format         string           `yaml:"format"`
-	Paths          []string         `yaml:"paths"`
+	Dir            string           `yaml:"dir"`
+	WatchFiles     []string         `yaml:"watch_files"`
 	AllowedClients []string         `yaml:"allowed_clients"`
 	Validate       rawValidateSpec  `yaml:"validate"`
 	Propagate      rawPropagateSpec `yaml:"propagate"`
@@ -122,13 +125,23 @@ func convertProfile(rp rawProfile, idx int) (Profile, error) {
 	if rp.Format == "" {
 		return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: format is required", rp.Name)
 	}
-	if len(rp.Paths) == 0 {
-		return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, common.MsgProfilePathsEmpty, rp.Name)
+	if rp.Dir == "" {
+		return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, common.MsgProfileDirEmpty, rp.Name)
 	}
-	for _, p := range rp.Paths {
-		if p == "" {
-			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: paths must not contain empty entries", rp.Name)
+	dir, err := ExpandPath(rp.Dir)
+	if err != nil {
+		return Profile{}, err
+	}
+	watchFiles := make([]string, 0, len(rp.WatchFiles))
+	for _, f := range rp.WatchFiles {
+		if f == "" {
+			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: watch_files must not contain empty entries", rp.Name)
 		}
+		v, err := ExpandPathFromDir(dir, f)
+		if err != nil {
+			return Profile{}, err
+		}
+		watchFiles = append(watchFiles, filepath.Clean(v))
 	}
 	if len(rp.AllowedClients) == 0 {
 		return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: allowed_clients must not be empty", rp.Name)
@@ -151,7 +164,8 @@ func convertProfile(rp rawProfile, idx int) (Profile, error) {
 	return Profile{
 		Name:           rp.Name,
 		Format:         rp.Format,
-		Paths:          append([]string(nil), rp.Paths...),
+		Dir:            dir,
+		WatchFiles:     watchFiles,
 		AllowedClients: append([]string(nil), rp.AllowedClients...),
 		Validate:       val,
 		Propagate:      prop,

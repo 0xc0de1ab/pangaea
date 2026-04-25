@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
-	"github.com/dh-kam/claude-creds-share/pkg/formats"
+	"github.com/0xc0de1ab/pangaea/internal/common"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 // liveCheckURL is the read-only endpoint we probe to determine whether the

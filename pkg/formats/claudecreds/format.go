@@ -8,8 +8,9 @@ package claudecreds
 
 import (
 	"fmt"
+	"path/filepath"
 
-	"github.com/dh-kam/claude-creds-share/pkg/formats"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 // FormatName is the registry key referenced from profiles.yaml's `format:`
@@ -30,6 +31,23 @@ func (Format) Name() string { return FormatName }
 // entry is the default when a profile leaves validate.strategy blank.
 func (Format) Strategies() []string {
 	return []string{StrategyExpiresAtMax}
+}
+
+// CredentialPath resolves the Claude config directory to its primary OAuth
+// credentials file.
+func (Format) CredentialPath(dir string) string {
+	return filepath.Join(dir, ".credentials.json")
+}
+
+// WatchPaths asks the client to watch both the primary credentials file and
+// the account metadata files that Claude uses to describe the logged-in user.
+func (Format) WatchPaths(dir string) []string {
+	homeDir := filepath.Dir(dir)
+	return []string{
+		filepath.Join(dir, ".credentials.json"),
+		filepath.Join(homeDir, ".claude.json"),
+		filepath.Join(dir, ".config.json"),
+	}
 }
 
 // init registers the singleton. Done in init so any binary that imports this

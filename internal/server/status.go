@@ -1,0 +1,116 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/0xc0de1ab/pangaea/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/config"
+	"github.com/0xc0de1ab/pangaea/internal/logging"
+)
+
+// statusReport is the JSON shape emitted by the /status endpoint. It is
+// read-only and intentionally redaction-safe — it must not include raw
+// credential bytes.
+type statusReport struct {
+	Version  string          `json:"version"`
+	Profiles []profileStatus `json:"profiles"`
+}
+
+type profileStatus struct {
+	Name     string          `json:"name"`
+	Format   string          `json:"format"`
+	Sessions []sessionStatus `json:"sessions"`
+}
+
+type sessionStatus struct {
+	NodeID   string `json:"node_id"`
+	PeerCN   string `json:"peer_cn,omitempty"`
+	Identity string `json:"identity,omitempty"`
+	AuthMode string `json:"auth_mode,omitempty"`
+}
+
+// runStatusEndpoint serves an HTTP JSON status API on a unix socket. The
+// socket's parent directory must exist; the socket file is unlinked at
+// startup if stale.
+func runStatusEndpoint(ctx context.Context, sockPath string, h *Hub, ps config.ProfileStore, version string, log *slog.Logger) error {
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
+		return common.Wrap(err, common.ErrConfigInvalid, "status socket parent dir")
+	}
+	if _, err := os.Stat(sockPath); err == nil {
+		if err := os.Remove(sockPath); err != nil {
+			return common.Wrap(err, common.ErrConfigInvalid, "remove stale status socket %q", sockPath)
+		}
+	}
+	l, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return common.Wrap(err, common.ErrConfigInvalid, "listen unix %q", sockPath)
+	}
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		_ = l.Close()
+		return common.Wrap(err, common.ErrConfigInvalid, "chmod status socket")
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		writeStatus(w, h, ps, version)
+	})
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(l) }()
+
+	log.Info("status endpoint listening",
+		slog.String(logging.FieldComponent, logging.ComponentServer),
+		slog.String(logging.FieldEvent, logging.EvtStartup),
+		slog.String("socket", sockPath),
+	)
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		_ = os.Remove(sockPath)
+		return nil
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+// writeStatus renders the per-profile session view.
+func writeStatus(w http.ResponseWriter, h *Hub, ps config.ProfileStore, version string) {
+	rep := statusReport{Version: version}
+	for _, p := range ps.List() {
+		pstat := profileStatus{Name: p.Name, Format: p.Format}
+		h.mu.Lock()
+		ph, ok := h.byProfile[p.Name]
+		h.mu.Unlock()
+		if ok {
+			for _, s := range ph.snapshotSessions() {
+				pstat.Sessions = append(pstat.Sessions, sessionStatus{
+					NodeID:   s.nodeID,
+					PeerCN:   s.peerCN,
+					Identity: s.identity,
+					AuthMode: string(s.authMode),
+				})
+			}
+		}
+		rep.Profiles = append(rep.Profiles, pstat)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rep)
+}

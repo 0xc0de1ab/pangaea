@@ -1,4 +1,4 @@
-// Package pki builds the small, self-signed PKI used by claude-creds-share:
+// Package pki builds the small, self-signed PKI used by pangaea:
 // a single root CA, server and client leaf certificates, and matching
 // *tls.Config builders for the mTLS endpoints. Keys are ECDSA P-256;
 // algorithms and parameters track the design in docs/design/specs.md §4.
@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // CA bundles a parsed CA certificate with its private signing key. Key is held

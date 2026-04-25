@@ -1,6 +1,6 @@
 package claudecreds
 
-import "github.com/dh-kam/claude-creds-share/pkg/formats"
+import "github.com/0xc0de1ab/pangaea/pkg/formats"
 
 // Compare orders two snapshots under the named strategy. Only
 // StrategyExpiresAtMax is supported; any other strategy panics with a message

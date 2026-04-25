@@ -3,7 +3,7 @@ package pki
 import (
 	"crypto/tls"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // PeerCN extracts the verified peer certificate's Subject CommonName from a

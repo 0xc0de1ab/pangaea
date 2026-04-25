@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
-	"github.com/dh-kam/claude-creds-share/pkg/formats"
+	"github.com/0xc0de1ab/pangaea/internal/common"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 // goldenJSON is a representative valid credentials file (specs §9.1 schema).

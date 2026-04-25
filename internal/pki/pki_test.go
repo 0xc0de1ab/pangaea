@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 func mustNewCA(t *testing.T) (*CA, string) {
@@ -170,7 +170,7 @@ func TestRoundTrip_HTTPSHandshake(t *testing.T) {
 	}
 
 	caCert := filepath.Join(caDir, caCertFile)
-	srvTLS, err := ServerTLSConfig(caCert, filepath.Join(srvDir, serverCertFile), filepath.Join(srvDir, serverKeyFile))
+	srvTLS, err := ServerTLSConfig(caCert, filepath.Join(srvDir, serverCertFile), filepath.Join(srvDir, serverKeyFile), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,8 +214,8 @@ func TestRoundTrip_HTTPSHandshake(t *testing.T) {
 }
 
 func TestServerTLSConfig_BadKeypair(t *testing.T) {
-	_, err := ServerTLSConfig(filepath.Join(t.TempDir(), "missing"), "x", "y")
-	if !errors.Is(err, common.ErrConfigInvalid) {
+	_, err := ServerTLSConfig(filepath.Join(t.TempDir(), "missing"), "x", "y", true)
+	if !errors.Is(err, common.ErrTLSHandshake) {
 		t.Fatalf("err = %v", err)
 	}
 }

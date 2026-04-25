@@ -83,14 +83,47 @@ func TestExpandPath_ClaudeConfigDirNotPrefix(t *testing.T) {
 	}
 }
 
-func TestExpandPath_NoEnvExpansionOfDollar(t *testing.T) {
+func TestExpandPath_ExpandsEnvVars(t *testing.T) {
 	t.Setenv(EnvClaudeConfigDir, "")
+	t.Setenv("HOME", "/tmp/home")
 	got, err := ExpandPath("$HOME/foo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "$HOME/foo" {
-		t.Fatalf("got %q (must NOT expand env vars)", got)
+	if got != "/tmp/home/foo" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExpandPath_RejectsMissingEnvVars(t *testing.T) {
+	t.Setenv(EnvClaudeConfigDir, "")
+	_ = os.Unsetenv("DOES_NOT_EXIST")
+	if _, err := ExpandPath("$DOES_NOT_EXIST/foo"); err == nil {
+		t.Fatalf("expected error for missing environment variable")
+	}
+}
+
+func TestExpandPathFromDir_ResolvesRelativePath(t *testing.T) {
+	got, err := ExpandPathFromDir("/opt/claude", "../.claude.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/opt/.claude.json" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExpandPathFromDir_ExpandsHomeTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir on this system")
+	}
+	got, err := ExpandPathFromDir("/opt/claude", "~/.claude.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Clean(filepath.Join(home, ".claude.json")) {
+		t.Fatalf("got %q", got)
 	}
 }
 

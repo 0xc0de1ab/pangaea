@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 func writeClient(t *testing.T, body string) string {
@@ -23,8 +23,15 @@ func writeClient(t *testing.T, body string) string {
 func TestLoadClient_Valid(t *testing.T) {
 	body := `
 server: "wss://hub.local:8443"
-profile: "claude-prod"
 node_id: "host-a"
+profiles:
+  - name: claude-prod
+    format: claude-credentials-json-format
+    dir: "/tmp/claude"
+    watch_files: [".credentials.json", "~/.claude.json"]
+  - name: codex-prod
+    format: codex-auth-json-format
+    dir: "/tmp/codex"
 pki:
   ca_cert: "./pki/ca.crt"
   client_cert: "./pki/host-a.crt"
@@ -44,13 +51,21 @@ log:
 	if c.Reconnect.InitialDelay != 5*time.Second {
 		t.Fatalf("initial_delay = %v", c.Reconnect.InitialDelay)
 	}
+	if len(c.Profiles) != 2 {
+		t.Fatalf("expected 2 profiles, got %d", len(c.Profiles))
+	}
+	if c.Profiles[0].Name != "claude-prod" || c.Profiles[1].Name != "codex-prod" {
+		t.Fatalf("unexpected profile order: %+v", c.Profiles)
+	}
 }
 
 func TestLoadClient_DefaultsApplied(t *testing.T) {
 	body := `
 server: "wss://x:1"
-profile: p
 node_id: n
+profiles:
+  - name: p
+    dir: "/tmp/x"
 pki:
   ca_cert: a
   client_cert: b
@@ -74,8 +89,10 @@ pki:
 func TestLoadClient_BadScheme(t *testing.T) {
 	body := `
 server: "https://x:1"
-profile: p
 node_id: n
+profiles:
+  - name: p
+    dir: "/tmp/x"
 pki: { ca_cert: a, client_cert: b, client_key: c }
 `
 	_, err := LoadClient(writeClient(t, body))
@@ -97,11 +114,87 @@ server: "wss://x:1"
 func TestLoadClient_BadDuration(t *testing.T) {
 	body := `
 server: "wss://x:1"
-profile: p
 node_id: n
+profiles:
+  - name: p
+    dir: "/tmp/x"
 pki: { ca_cert: a, client_cert: b, client_key: c }
 reconnect:
   initial_delay: "five"
+`
+	_, err := LoadClient(writeClient(t, body))
+	if !errors.Is(err, common.ErrConfigInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadClient_DuplicateProfile(t *testing.T) {
+	body := `
+server: "wss://x:1"
+node_id: n
+profiles:
+  - name: p
+    dir: "/tmp/x"
+  - name: p
+    dir: "/tmp/y"
+pki: { ca_cert: a, client_cert: b, client_key: c }
+`
+	_, err := LoadClient(writeClient(t, body))
+	if !errors.Is(err, common.ErrConfigInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadClient_ProfileMissingDir(t *testing.T) {
+	body := `
+server: "wss://x:1"
+node_id: n
+profiles:
+  - name: p
+    dir: ""
+pki: { ca_cert: a, client_cert: b, client_key: c }
+`
+	_, err := LoadClient(writeClient(t, body))
+	if !errors.Is(err, common.ErrConfigInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadClient_JWTMode(t *testing.T) {
+	body := `
+server: "wss://x:1"
+auth_mode: jwt
+node_id: n
+jwt:
+  token_file: "~/token.jwt"
+profiles:
+  - name: p
+    dir: "/tmp/x"
+pki:
+  ca_cert: a
+`
+	c, err := LoadClient(writeClient(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AuthMode != AuthModeJWT {
+		t.Fatalf("auth_mode = %q", c.AuthMode)
+	}
+	if c.JWT.SendVia != JWTSendViaAuto {
+		t.Fatalf("send_via = %q", c.JWT.SendVia)
+	}
+}
+
+func TestLoadClient_JWTModeRequiresTokenSource(t *testing.T) {
+	body := `
+server: "wss://x:1"
+auth_mode: jwt
+node_id: n
+profiles:
+  - name: p
+    dir: "/tmp/x"
+pki:
+  ca_cert: a
 `
 	_, err := LoadClient(writeClient(t, body))
 	if !errors.Is(err, common.ErrConfigInvalid) {

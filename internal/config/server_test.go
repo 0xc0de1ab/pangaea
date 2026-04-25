@@ -6,8 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 func writeServer(t *testing.T, body string) string {
@@ -108,5 +109,31 @@ profiles_file: "~/.claude/profiles.yaml"
 	}
 	if c.ProfilesFile != "/opt/claude/profiles.yaml" {
 		t.Fatalf("profiles_file = %q", c.ProfilesFile)
+	}
+}
+
+func TestLoadServer_JWTMode(t *testing.T) {
+	body := `
+listen: ":8443"
+auth_mode: jwt
+pki:
+  server_cert: "/abs/server.crt"
+  server_key: "/abs/server.key"
+profiles_file: "p.yaml"
+jwt:
+  secret_key_file: "./jwt.secret"
+  issuer: "issuer"
+  audience: "audience"
+  auth_timeout: "3s"
+`
+	c, err := LoadServer(writeServer(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AuthMode != AuthModeJWT {
+		t.Fatalf("auth_mode = %q", c.AuthMode)
+	}
+	if c.JWT.AuthTimeout != 3*time.Second {
+		t.Fatalf("auth_timeout = %v", c.JWT.AuthTimeout)
 	}
 }

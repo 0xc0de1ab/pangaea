@@ -1,6 +1,6 @@
 package claudecreds
 
-import "github.com/dh-kam/claude-creds-share/pkg/formats"
+import "github.com/0xc0de1ab/pangaea/pkg/formats"
 
 // fingerprintShortLen matches specs §9.5: identity-style short fingerprints
 // are 12 hex chars (~6 bytes of entropy) — enough to disambiguate in logs

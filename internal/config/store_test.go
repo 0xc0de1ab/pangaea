@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 func writeProfilesFile(t *testing.T, body string) string {
@@ -21,7 +21,7 @@ func writeProfilesFile(t *testing.T, body string) string {
 }
 
 func TestProfileStore_Initial(t *testing.T) {
-	pf := &ProfilesFile{Profiles: []Profile{{Name: "x", Format: "f", Paths: []string{"/x"}, AllowedClients: []string{"c"}, Propagate: PropagateSpec{Mode: PropagateModeStaleOnly}}}}
+	pf := &ProfilesFile{Profiles: []Profile{{Name: "x", Format: "f", Dir: "/x", AllowedClients: []string{"c"}, Propagate: PropagateSpec{Mode: PropagateModeStaleOnly}}}}
 	s := NewProfileStore(pf)
 	got, ok := s.Get("x")
 	if !ok || got.Name != "x" {
@@ -38,7 +38,7 @@ func TestProfileStore_ReloadHappy(t *testing.T) {
 profiles:
   - name: a
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: [c]
 `
 	p := writeProfilesFile(t, body)
@@ -51,7 +51,7 @@ profiles:
 }
 
 func TestProfileStore_ReloadBadPreservesPrevious(t *testing.T) {
-	s := NewProfileStore(&ProfilesFile{Profiles: []Profile{{Name: "old", Format: "f", Paths: []string{"/x"}, AllowedClients: []string{"c"}}}})
+	s := NewProfileStore(&ProfilesFile{Profiles: []Profile{{Name: "old", Format: "f", Dir: "/x", AllowedClients: []string{"c"}}}})
 
 	// Reload with broken yaml.
 	bad := writeProfilesFile(t, `:::: not yaml ::::`)
@@ -74,7 +74,7 @@ func TestProfileStore_SubscribeReceivesUpdate(t *testing.T) {
 profiles:
   - name: a
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: [c]
 `
 	if err := s.Reload(writeProfilesFile(t, body)); err != nil {
@@ -99,14 +99,14 @@ func TestProfileStore_SubscribeNonBlocking(t *testing.T) {
 profiles:
   - name: a
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: [c]
 `
 	body2 := `
 profiles:
   - name: b
     format: f
-    paths: [/x]
+    dir: /x
     allowed_clients: [c]
 `
 	for i := 0; i < 5; i++ {

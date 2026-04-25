@@ -1,4 +1,4 @@
-# claude-creds-share — 상세 설계 명세
+# pangaeactl — 상세 설계 명세
 
 > 본 문서는 20년차 시니어 개발자 2인(Park, Ryu), 시스템 아키텍트 2인(Choi, Lim),
 > UX/UI 디자이너 2인(Han, Seo), 테스트 엔지니어 1인(Kim), 보안 전문가 1인(Yoon)이
@@ -14,9 +14,11 @@
   남은 토큰"을 정답으로 선정해 그것을 갖지 않은 노드들에 역전파한다.
 - **첫 포맷:** `claude-credentials-json-format`. 향후 다른 토큰 파일도 동일 골격으로
   추가될 수 있게 `FormatRegistry`로 확장 가능.
-- **신뢰 모델:** 서버가 self-signed CA. CA가 서버 인증서(SAN: IP/도메인)와 클라이언트
-  인증서를 발급. 양방향 mTLS. CRL은 1차 범위 제외 — 단명 클라이언트 인증서 + 재발급
-  운영으로 대체.
+- **신뢰 모델:** 기본 인증 모드는 `mtls`. 서버가 self-signed CA를 두고 서버
+  인증서(SAN: IP/도메인)와 클라이언트 인증서를 발급한다. 향후 ingress 친화 배치를
+  위해 `jwt` 인증 모드도 허용하되, 이 경우에도 backend endpoint 자체는 항상
+  TLS(`wss://`)를 유지한다. CRL은 1차 범위 제외 — 단명 클라이언트 인증서 +
+  재발급 운영으로 대체.
 - **동기화 의미론:** "가장 expiry 늦게 남은 단일 진본" 모델(single-truth-by-expiry).
   본 1차 범위는 토큰 **갱신 자체는 하지 않는다.** 갱신은 사용자/Claude CLI가
   수행하고, 본 시스템은 그 결과를 다른 노드로 옮기는 역할만 맡는다.
@@ -33,11 +35,12 @@
 ## 1. 범위와 비-범위
 
 ### 1.1 범위(In-scope)
-- 서버/클라이언트 단일 바이너리(`claude-creds-share` with subcommands)
+- 서버/클라이언트 단일 바이너리(`pangaeactl` with subcommands)
 - `serve`(서버) / `connect`(클라이언트) 커맨드. `serve --also-client <list>`로
   서버 프로세스 안에 클라이언트 에이전트도 함께 실행.
 - self-signed CA, 서버/클라이언트 인증서 발급 CLI
-- mTLS over TLS 1.3 WebSocket 연결, profile 단위 endpoint
+- TLS 1.3 WebSocket 연결, profile 단위 endpoint
+- 인증 모드: `mtls`(기본) / `jwt`(planned)
 - profile 정의(`profiles.yaml`)와 hot-reload(SIGHUP)
 - 파일 watcher(fsnotify, pure Go)
 - format 추상화 + `claude-credentials-json-format` 구현
@@ -107,21 +110,21 @@ snapshot 목록을 메모리에 들고, (2) `Format.Compare`로 정렬, (3) 1위
 
 ### 4.1 CA 부트스트랩
 
-`claude-creds-share ca init --out ./pki` 실행 시:
+`pangaeactl ca init --out ./pki` 실행 시:
 - 4096-bit RSA(또는 P-256 ECDSA, 기본은 ECDSA P-256으로 한다 — 빠르고 충분)
-- `CN=claude-creds-share Root CA`, `notAfter=10y`, `BasicConstraints: CA:TRUE, pathlen:0`
+- `CN=pangaeactl Root CA`, `notAfter=10y`, `BasicConstraints: CA:TRUE, pathlen:0`
 - 출력물: `pki/ca.key`(권한 0600), `pki/ca.crt`
 
 ### 4.2 서버 인증서
 
-`claude-creds-share ca issue-server --ca ./pki --san IP:10.0.0.5,DNS:hub.local --out ./pki/server`
+`pangaeactl ca issue-server --ca ./pki --san IP:10.0.0.5,DNS:hub.local --out ./pki/server`
 - `KeyUsage: digitalSignature, keyEncipherment`, `ExtKeyUsage: serverAuth`
 - SAN에 사용자가 지정한 IP/DNS 다중 등록
 - `notAfter=1y` 기본(설정 가능)
 
 ### 4.3 클라이언트 인증서
 
-`claude-creds-share ca issue-client --ca ./pki --cn host-A --out ./pki/host-A`
+`pangaeactl ca issue-client --ca ./pki --cn host-A --out ./pki/host-A`
 - `ExtKeyUsage: clientAuth`
 - `CN`은 노드 식별자(로깅·ACL의 키)
 - 발급물(`host-A.crt`, `host-A.key`)을 OOB(scp/USB/시크릿 매니저)로 해당 호스트에
@@ -154,6 +157,149 @@ mTLS는 "이 인증서가 우리 CA가 발급한 것"임을 증명할 뿐 "이 �
 접근할 수 있는지"는 별개. `profiles.yaml`에 `allowed_clients: [host-A, host-B]`로
 CN 기반 ACL을 둔다.
 
+### 4.6 인증 모드(`auth_mode`)
+
+서버/클라이언트는 인증 방식을 다음 두 모드 중 하나로 둔다.
+
+- `mtls` (기본): 현재 구현의 기본값. TLS handshake에서 클라이언트 인증서를 검증하고,
+  인증서 CN을 세션 identity 및 `allowed_clients` ACL 키로 사용한다.
+- `jwt` (planned): WebSocket HTTP Upgrade 요청의 `Authorization: Bearer <jwt>`
+  헤더로 클라이언트를 인증한다. 일부 사내 proxy/보안 장비가 `Authorization`
+  헤더를 제거하는 환경을 위해, 헤더가 비어 있을 때만 첫 WebSocket 프레임
+  `auth.jwt`를 요구하는 fallback을 둔다. 이 모드에서도 transport는 여전히
+  `wss://`이며, JWT는 "누가 접속하는가"만 바꾼다. 기밀성/무결성은 TLS가 담당한다.
+
+`jwt` 모드에서의 identity 규칙:
+
+- 서버는 JWT 서명, `iss`, `aud`, `exp`/`nbf`/`iat`를 검증한다.
+- 유효한 node identity는 JWT claim에서 추출한다. `sub`를 기본값으로 두되
+  설정으로 다른 claim 이름을 지정할 수 있게 한다.
+- `Authorization` 헤더가 있으면 그것이 1순위다. 헤더가 없을 때만 서버는
+  제한된 unauthenticated 상태로 Upgrade를 허용하고, 짧은 timeout 안에
+  `auth.jwt` 첫 프레임을 요구한다.
+- `hello.node_id`는 보조 검사용 값이며, JWT에서 추출한 node identity와
+  반드시 일치해야 한다. 불일치 시 접속 거부.
+- `allowed_clients`는 계속 node identity 기준으로 해석한다. 즉 `mtls` 모드에서는
+  CN, `jwt` 모드에서는 JWT claim 값이 ACL 키가 된다.
+
+### 4.7 Kubernetes ingress 배치
+
+Ingress 뒤에 둘 때의 원칙은 다음과 같다.
+
+- backend endpoint는 항상 TLS를 강제한다. 즉 서버는 `wss://`만 노출하며,
+  `jwt` 모드라고 해서 backend가 `ws://` 또는 plain HTTP로 내려가지 않는다.
+- `mtls` 모드의 권장 배치는 end-to-end mTLS를 유지하는 SSL passthrough다.
+- `jwt` 모드에서는 ingress가 edge TLS를 종료하고 JWT가 실린 HTTP Upgrade를
+  backend로 전달할 수 있다. 이때도 ingress→backend 구간은 HTTPS 재암호화가
+  권장된다.
+- ingress→backend plain HTTP는 "동작할 수는 있어도 비권장"이다. 본 시스템은
+  `snapshot.report.raw_b64`, `truth.push.raw_b64`에 실제 credentials payload를
+  실어 나르므로, 내부망 평문 전송은 피해 면적이 크다.
+
+#### 4.7.1 `mtls` 모드: ingress-nginx SSL passthrough
+
+이 모드는 ingress가 TLS를 종료하지 않고 TCP 레벨에서 backend로 넘긴다. backend는
+원래와 동일하게 클라이언트 인증서를 직접 본다.
+
+필수 사항:
+
+- ingress-nginx controller를 `--enable-ssl-passthrough`로 기동
+- Ingress에 `nginx.ingress.kubernetes.io/ssl-passthrough: "true"` 지정
+
+주의:
+
+- passthrough는 L4(TCP) 처리이므로 다른 HTTP-level annotation 대부분이 무효화된다.
+- ingress-nginx 문서상 성능 패널티가 있으며, Service ClusterIP 경유 동작을 쓴다.
+- 이 경로가 `mtls`의 공식 권장 배치다.
+
+예시:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pangaea-mtls
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: hub.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pangaea
+                port:
+                  number: 8443
+```
+
+#### 4.7.2 `jwt` 모드: ingress-nginx HTTPS re-encryption
+
+이 모드에서는 ingress가 edge TLS를 종료한 뒤 backend와 다시 HTTPS로 통신한다.
+backend는 여전히 `wss://` listener만 연다. JWT는 가능하면 Upgrade 요청의
+`Authorization: Bearer <jwt>` 헤더로 전달한다. 다만 proxy가 이 헤더를 제거하는
+환경을 대비해, backend는 헤더가 없을 때 첫 프레임 `auth.jwt` fallback도 지원한다.
+
+최소 권장 annotation:
+
+- `nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"`
+- `nginx.ingress.kubernetes.io/proxy-ssl-secret: "<namespace>/<secret>"`
+- `nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"`
+- `nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"`
+- `nginx.ingress.kubernetes.io/proxy-ssl-name: "<backend-cert SAN>"`
+- `nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"`
+
+`proxy-ssl-secret`는 다음 용도로 쓴다.
+
+- `ca.crt`: ingress가 backend 서버 인증서를 검증할 신뢰 anchor
+- 선택적으로 `tls.crt`, `tls.key`: ingress가 backend에 client cert를 제시해야 하는
+  경우 사용
+
+즉 `jwt` 모드라고 해도 ingress→backend를 한 번 더 TLS로 감싸고, 필요하면 그 내부
+구간도 mTLS로 강화할 수 있다.
+
+예시:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pangaea-jwt
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: "pangaea/pangaea-backend-tls"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: "hub.internal.example"
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["hub.example.com"]
+      secretName: pangaea-edge-tls
+  rules:
+    - host: hub.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pangaea
+                port:
+                  number: 8443
+```
+
+#### 4.7.3 plain HTTP backend에 대한 입장
+
+- 금지까지는 하지 않는다. 운영자가 충분히 이해하고 별도 overlay/VPN/IPsec 같은
+  보호 계층을 둔 환경이라면 선택할 수 있다.
+- 그러나 문서/예시/권장값은 모두 HTTPS 재암호화 또는 passthrough 기준으로 쓴다.
+- 제품의 기본 보안 posture는 "backend endpoint는 TLS 강제"다.
+
 ### 패널 의견 — PKI
 - **Yoon(보안):** "self-signed CA를 그대로 디스크에 평문으로 두면 그 디스크의 침해
   = 신뢰 루트 침해다. 1차에선 0600 + 운영자 책임 명기로 가되, **로드맵에 OS keyring
@@ -171,9 +317,9 @@ CN 기반 ACL을 둔다.
 ## 5. 디렉토리/패키지 레이아웃
 
 ```
-claude-creds-share/
+pangaeactl/
 ├── cmd/
-│   └── claude-creds-share/      # cobra CLI entry. server/client/ca subcommands.
+│   └── pangaeactl/      # cobra CLI entry. server/client/ca subcommands.
 ├── internal/
 │   ├── config/                  # profiles.yaml, server config 로드
 │   ├── server/
@@ -211,6 +357,7 @@ claude-creds-share/
 ### 6.1 서버 설정(`server.yaml`)
 ```yaml
 listen: "0.0.0.0:8443"
+auth_mode: "mtls"         # mtls(default) | jwt(planned)
 pki:
   ca_cert: "./pki/ca.crt"
   server_cert: "./pki/server/server.crt"
@@ -225,14 +372,24 @@ self_node:
   client_key:  "./pki/server-as-node/host.key"
 ```
 
+`jwt` 모드에서는 PKI 블록을 없애는 것이 아니라 "backend listener가 사용할 서버
+TLS 인증서"로 계속 필요하다. 차이는 client identity를 TLS client cert 대신 JWT에서
+얻는다는 점뿐이다.
+
 ### 6.2 `profiles.yaml`
 ```yaml
 profiles:
   - name: "claude-prod"
     format: "claude-credentials-json-format"
-    paths:
-      - "~/.claude/.credentials.json"
-      - "~/.config/claude/.credentials.json"
+    dir: "~/.claude"          # "~" / "$HOME" 지원
+    # watch_files 미지정 시 format 기본값 사용:
+    #   - ".credentials.json"
+    #   - "~/.claude.json"
+    #   - ".config.json"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
+      - ".config.json"
     allowed_clients: ["host-a", "host-b", "server-self"]
     validate:
       strategy: "expires_at_max"  # format이 정의하는 비교 전략 키
@@ -243,14 +400,15 @@ profiles:
       cooldown: "2s"              # 동일 진본을 반복 push 하지 않게
 ```
 
-`paths`는 후보 위치들이며 **그 중 존재하는 것 모두**가 watch 대상. 한 호스트에서
-한 파일이 두 경로에 동시에 존재할 수도 있음(심볼릭 링크/`CLAUDE_CONFIG_DIR` 분리).
-이 경우 노드는 각 파일을 독립 snapshot으로 보고하고, 서버는 노드 단위가 아닌
-**파일(=경로) 단위**로 비교한다.
+`dir`는 format별 설정 디렉토리이며, 실제 credentials 파일 경로와 기본 watch 대상
+파일들은 format이 결정한다. `watch_files`를 지정하면 그 목록(상대경로는 `dir`
+기준)으로 override할 수 있다. watcher는 내부적으로 부모 디렉토리를 감시하되,
+**설정된 파일들만** 필터링해 이벤트를 처리한다.
 
 ### 6.3 클라이언트 설정(`client.yaml`)
 ```yaml
 server: "wss://hub.local:8443"
+auth_mode: "mtls"         # mtls(default) | jwt(planned)
 profile: "claude-prod"
 node_id: "host-a"            # 인증서 CN과 일치해야 함
 pki:
@@ -277,8 +435,12 @@ log: { level: "info", format: "json" }
 
 ### 7.1 엔드포인트
 - `GET wss://<host>:<port>/ws/profile/{profile}` — Upgrade 요구.
-- 서버는 (a) 클라이언트 인증서 검증, (b) profile 존재 확인, (c) 인증서 CN이
-  `allowed_clients`에 있는지 확인. 실패 시 1008/1011 close.
+- `mtls` 모드: 서버는 (a) 클라이언트 인증서 검증, (b) profile 존재 확인,
+  (c) 인증서 CN이 `allowed_clients`에 있는지 확인. 실패 시 1008/1011 close.
+- `jwt` 모드: 서버는 Upgrade 시점에 `Authorization: Bearer <jwt>`가 있으면
+  그것을 즉시 검증한다. 헤더가 없으면 제한된 unauthenticated session으로 Upgrade한 뒤,
+  첫 프레임 `auth.jwt`를 요구한다. 인증이 끝나기 전에는 mediator 등록, `welcome`,
+  `snapshot.report` 처리 모두 금지한다.
 
 ### 7.2 메시지 포맷
 JSON. 디버깅/스키마 진화의 단순함을 우선. 모든 메시지는 envelope:
@@ -288,6 +450,7 @@ JSON. 디버깅/스키마 진화의 단순함을 우선. 모든 메시지는 env
 
 | `type` | 방향 | 의미 |
 |---|---|---|
+| `auth.jwt` | C→S | `jwt` 모드 전용. `Authorization` 헤더가 없을 때만 허용되는 첫 프레임 fallback. |
 | `hello` | C→S | 노드 자기소개. node_id, agent_version, OS, capabilities. |
 | `welcome` | S→C | 서버가 받은 hello 확인. 현재 알려진 진본 메타(있다면) 동봉. |
 | `snapshot.report` | C→S | 노드가 본 파일 1건의 snapshot 보고. 아래 7.3 참조. |
@@ -297,7 +460,23 @@ JSON. 디버깅/스키마 진화의 단순함을 우선. 모든 메시지는 env
 | `error` | both | 프로토콜 오류 통지. graceful close 전 송신. |
 | `ping/pong` | both | gorilla/websocket 기본 keepalive. 30초 간격. |
 
-### 7.3 `snapshot.report` payload
+### 7.3 `auth.jwt` payload
+```json
+{
+  "token": "eyJhbGciOi..."
+}
+```
+
+규칙:
+
+- `jwt` 모드에서만 유효하다.
+- HTTP Upgrade에 `Authorization` 헤더가 이미 있었다면 `auth.jwt`는 보내지 않는다.
+- 헤더가 없을 때는 `auth.jwt`가 **반드시 첫 application frame**이어야 한다.
+- `auth.jwt`가 성공한 뒤에만 `hello`를 보낼 수 있다.
+- timeout 내 `auth.jwt`가 오지 않거나, 다른 종류의 프레임이 먼저 오면 서버는
+  프로토콜 오류로 close 한다.
+
+### 7.4 `snapshot.report` payload
 ```json
 {
   "profile": "claude-prod",
@@ -322,26 +501,39 @@ JSON. 디버깅/스키마 진화의 단순함을 우선. 모든 메시지는 env
 `truth.push`로 다른 노드에 분배한다(아래 9절). 이렇게 분리하면 (a) 평소 트래픽이
 가볍고 (b) 노드가 진본이 아니면 토큰이 네트워크에 노출되지 않는다.
 
-### 7.4 `truth.push` payload
+### 7.5 `truth.push` payload
 ```json
 {
   "profile": "claude-prod",
   "format": "claude-credentials-json-format",
   "fingerprint": "sha256:...",
   "raw_b64": "eyJjbGF1ZGVB...",   // 원본 바이트 base64
-  "target_paths": ["~/.claude/.credentials.json"],
+  "target_path": "~/.claude/.credentials.json",
   "issued_at": "2026-04-25T12:00:02Z",
   "summary": {...}                  // 7.3과 동일 redact 요약
 }
 ```
 
-### 7.5 흐름
+### 7.6 흐름
+`mtls` 또는 `jwt + Authorization 헤더`:
 ```
 hello → welcome → snapshot.report (각 후보 파일 1건씩, 변경마다)
                        ↓ (서버 중재)
                  ← truth.push  (필요 시)
                  → truth.ack
 ```
+
+`jwt + first-frame fallback`:
+```
+auth.jwt → hello → welcome → snapshot.report (각 후보 파일 1건씩, 변경마다)
+                              ↓ (서버 중재)
+                        ← truth.push  (필요 시)
+                        → truth.ack
+```
+
+fallback이 필요한 이유는 일부 기업 환경의 proxy/보안 장비가 Upgrade 요청의
+`Authorization` 헤더를 제거하거나 전달하지 않을 수 있기 때문이다. 헤더가 정상 전달되는
+환경에서는 header 방식이 1순위이며, 운영 관찰성도 더 좋다.
 
 ### 패널 의견 — 프로토콜
 - **Park(개발자):** "JSON으로 시작하지만 `v: 1` 필드를 두어 향후 protobuf 전환을
@@ -588,8 +780,9 @@ type Truth struct {
 - `fsnotify` 사용. 단, **삭제 후 재생성**(temp+rename) 패턴을 정확히 잡으려면
   '디렉토리'를 watch한 뒤 파일 이벤트를 필터링한다(파일 자체를 watch하면 inode
   교체로 watch가 끊어진다).
-- 첫 실행 시: `paths` 후보 각각에 대해 (a) 존재하면 즉시 1회 read+report,
-  (b) 부재면 `snapshot.absent` 보고. 그 후 디렉토리 watch 시작.
+- 첫 실행 시: primary credentials 파일에 대해 (a) 존재하면 즉시 1회 read+report,
+  (b) 부재면 `snapshot.absent` 보고. 그 후 지정된 watch 파일들의 부모 디렉토리
+  watch 시작.
 - 변경 디바운스: 50ms 코어 + 200ms 파일 안정화(`stat.Size` 동일 2회 확인) 후
   실제 read.
 - watcher → agent 채널 → transport. 백프레셔: 채널이 가득 차면 가장 오래된
@@ -641,7 +834,7 @@ type Truth struct {
 - **Yoon(보안):** "redactor는 키 이름 매칭이 한계. 값에 `sk-ant-oat01-`, `Bearer `
   prefix가 보이면 마스킹하는 **값 기반 패턴 매칭**도 추가해라."
 - **Seo(UX):** "운영자 입장에서 JSON만 있으면 사람이 못 읽는다. `--log-format=text`
-  도 1급 지원. 또는 `claude-creds-share log tail`로 사람-친화 포맷 변환 명령."
+  도 1급 지원. 또는 `pangaeactl log tail`로 사람-친화 포맷 변환 명령."
 
 ---
 
@@ -652,7 +845,7 @@ type Truth struct {
 key 바인딩, (c) 환경변수 매핑을 한 번에 처리한다.
 
 ```
-claude-creds-share
+pangaeactl
 ├── ca
 │   ├── init                        # CA 생성
 │   ├── issue-server                # 서버 인증서 발급 (SAN: IP/DNS multi)
@@ -704,7 +897,7 @@ type ConnectFlags struct {
 - 로깅: 메인 logger에 `component=server` / `component=self-client profile=...`
   필드를 부여해 분간 가능하게.
 
-`status`는 로컬 unix socket(`$XDG_RUNTIME_DIR/claude-creds-share.sock`)에 질의해
+`status`는 로컬 unix socket(`$XDG_RUNTIME_DIR/pangaea.sock`)에 질의해
 현재 연결 상태/마지막 진본/last error를 보여준다.
 
 ### 패널 의견 — CLI
@@ -790,12 +983,12 @@ CLI-only 시스템이지만 사용자가 '실제로 동작하는지' 빠르게 �
 디자이너 패널이 강조했다.
 
 - **Han(UX):** 첫 5분 경험(first-run UX)
-  1. `claude-creds-share ca init` → 친절한 출력에 다음 단계 가이드.
-  2. `claude-creds-share ca issue-server --san IP:...,DNS:...` → 결과 파일 위치
+  1. `pangaeactl ca init` → 친절한 출력에 다음 단계 가이드.
+  2. `pangaeactl ca issue-server --san IP:...,DNS:...` → 결과 파일 위치
      출력 + "이 파일들을 서버에 두고 server.yaml 작성"이라는 안내.
-  3. `claude-creds-share ca issue-client --cn host-a` → "이 두 파일과 ca.crt를
+  3. `pangaeactl ca issue-client --cn host-a` → "이 두 파일과 ca.crt를
      호스트 host-a로 안전하게 옮기세요" 가이드.
-  4. `claude-creds-share server run` 첫 실행 시 `profiles.yaml`이 없으면 친절한
+  4. `pangaeactl server run` 첫 실행 시 `profiles.yaml`이 없으면 친절한
      샘플과 함께 종료(빈 런이 아니라 actionable error).
 
 - **Seo(UX):** 에러 메시지 톤

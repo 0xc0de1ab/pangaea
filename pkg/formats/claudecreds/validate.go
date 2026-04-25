@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/dh-kam/claude-creds-share/pkg/formats"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 // Validate runs local checks (expiry vs Clock) and, if opts.LiveCheck is set,

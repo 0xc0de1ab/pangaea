@@ -21,6 +21,7 @@ import (
 type Kind string
 
 const (
+	KindAuthJWT        Kind = "auth.jwt"
 	KindHello          Kind = "hello"
 	KindWelcome        Kind = "welcome"
 	KindSnapshotReport Kind = "snapshot.report"
@@ -33,7 +34,7 @@ const (
 // validKinds returns true for any Kind defined above.
 func validKind(k Kind) bool {
 	switch k {
-	case KindHello, KindWelcome, KindSnapshotReport, KindSnapshotAbsent,
+	case KindAuthJWT, KindHello, KindWelcome, KindSnapshotReport, KindSnapshotAbsent,
 		KindTruthPush, KindTruthAck, KindError:
 		return true
 	}
@@ -79,6 +80,12 @@ type Hello struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
+// AuthJWT — C→S JWT bearer used only when the server asks for post-upgrade
+// authentication before Hello.
+type AuthJWT struct {
+	Token string `json:"token"`
+}
+
 // Welcome — S→C acknowledgement after hello.
 type Welcome struct {
 	ServerVersion string     `json:"server_version"`
@@ -89,8 +96,16 @@ type Welcome struct {
 //
 // MVP carries raw_b64 inline (specs §10.1 simplification). Servers must
 // zero out raw bytes for non-truth candidates immediately after compare.
+//
+// Account is a stable per-LLM-account identifier the client extracts at
+// report time (e.g. an OAuth user UUID or email). Empty means the format
+// could not derive an account; the server falls back to a single shared
+// bucket. Two reports with different non-empty Account values are NEVER
+// reconciled into the same truth — they belong to logically different
+// users sharing a profile name.
 type SnapshotReport struct {
 	Profile     string         `json:"profile"`
+	Account     string         `json:"account,omitempty"`
 	Path        string         `json:"path"`
 	Format      string         `json:"format"`
 	Fingerprint string         `json:"fingerprint"`
@@ -100,19 +115,28 @@ type SnapshotReport struct {
 	RawB64      string         `json:"raw_b64,omitempty"`
 }
 
-// SnapshotAbsent — C→S report that no candidate path exists for a profile.
+// SnapshotAbsent — C→S report that no candidate credentials file exists for a
+// profile.
+// Account, if known, helps the server clear that account's candidate state
+// for this node; an empty value means the client could not determine an
+// account (e.g. file did not exist, format could not extract identity).
 type SnapshotAbsent struct {
-	Profile string   `json:"profile"`
-	Paths   []string `json:"paths"`
+	Profile string `json:"profile"`
+	Account string `json:"account,omitempty"`
+	Path    string `json:"path"`
 }
 
-// TruthPush — S→C delivery of an authoritative file.
+// TruthPush — S→C delivery of an authoritative file. Account names which
+// per-account bucket the truth belongs to; clients verify that their local
+// snapshot reports the same account before applying, so a stale push for a
+// foreign account can never be silently written.
 type TruthPush struct {
 	Profile     string         `json:"profile"`
+	Account     string         `json:"account,omitempty"`
 	Format      string         `json:"format"`
 	Fingerprint string         `json:"fingerprint"`
 	RawB64      string         `json:"raw_b64"`
-	TargetPaths []string       `json:"target_paths"`
+	TargetPath  string         `json:"target_path"`
 	IssuedAt    time.Time      `json:"issued_at"`
 	Summary     SummaryCarrier `json:"summary,omitempty"`
 }
@@ -120,6 +144,7 @@ type TruthPush struct {
 // TruthAck — C→S apply outcome for a TruthPush.
 type TruthAck struct {
 	Profile     string `json:"profile"`
+	Account     string `json:"account,omitempty"`
 	Fingerprint string `json:"fingerprint"`
 	OK          bool   `json:"ok"`
 	Reason      string `json:"reason,omitempty"`

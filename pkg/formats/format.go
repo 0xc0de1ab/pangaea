@@ -1,5 +1,5 @@
 // Package formats defines the credential file format abstraction used by the
-// claude-creds-share server and client. A Format implementation is a *read-only
+// pangaea server and client. A Format implementation is a *read-only
 // interpreter*: it parses raw bytes into a Snapshot, optionally validates the
 // snapshot (including a non-mutating live check against the issuing service),
 // compares two snapshots under a named strategy, and produces a redacted
@@ -15,9 +15,86 @@ package formats
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 )
+
+// AccountAware is an optional interface a Format may implement when it can
+// derive a stable per-LLM-account identifier from a snapshot. The client
+// calls Account at report time and includes the result in
+// transport.SnapshotReport so the server can partition candidates and truth
+// state by (profile, account) — preventing two distinct LLM accounts that
+// happen to share a profile name from overwriting each other's tokens.
+//
+// path is the local filesystem path of the credentials file. Implementations
+// that need peer metadata (e.g. an account-name file living adjacent to the
+// credentials file) read it from there. Implementations that can derive the
+// account from the snapshot alone (e.g. JWT id_token claims) ignore path.
+//
+// A return value of "" means the format can't determine an account in this
+// case — the server treats those candidates as belonging to one shared
+// bucket. Errors should be reserved for unexpected failures; "missing
+// metadata" is best reported as an empty string.
+type AccountAware interface {
+	Account(ctx context.Context, snap Snapshot, path string) (string, error)
+}
+
+// DirResolver is an optional interface a Format may implement when operators
+// configure a profile with a config directory rather than a concrete
+// credentials file path. Implementations map that directory to the primary
+// credentials file they parse and sync.
+type DirResolver interface {
+	CredentialPath(dir string) string
+}
+
+// WatchPathsAware is an optional companion to DirResolver. Formats that need
+// additional local files to interpret account state (for example Claude's
+// sibling account metadata) can ask the client to watch those paths too. Any
+// change to a watched path causes the client to re-read the primary
+// credentials file and re-report the current snapshot.
+type WatchPathsAware interface {
+	WatchPaths(dir string) []string
+}
+
+// UsageReport is the structured outcome of UsageProbe.Probe. It is meant
+// for human-facing notification output (Telegram, status command) — every
+// field is optional and may be omitted when the upstream API does not
+// expose that signal. Implementations MUST NOT include access tokens or
+// other secrets in any field.
+type UsageReport struct {
+	// PlanTier is a short label (e.g. "claude_max_20x", "gpt_pro").
+	PlanTier string `json:"plan_tier,omitempty"`
+	// Used / Limit / RemainingPct describe quota state. Values are
+	// implementation-defined units (messages, tokens, requests). The pair
+	// (Used, Limit) is preferred; RemainingPct is a fallback when the
+	// upstream API only exposes a percentage.
+	Used         int64   `json:"used,omitempty"`
+	Limit        int64   `json:"limit,omitempty"`
+	RemainingPct float64 `json:"remaining_pct,omitempty"`
+	// Unit labels Used/Limit (e.g. "messages", "tokens").
+	Unit string `json:"unit,omitempty"`
+	// ResetAt is when the current usage window rolls over.
+	ResetAt time.Time `json:"reset_at,omitempty"`
+	// Notes carries any free-form per-format human-readable hints
+	// (organization name, role, plan label) the notifier should surface.
+	Notes []string `json:"notes,omitempty"`
+}
+
+// UsageProbe is an optional interface a Format may implement when the
+// upstream provider exposes a usage / quota / rate-limit endpoint reachable
+// with the OAuth access_token already on disk. The server's notifier calls
+// Probe periodically per (profile, account) to enrich the message it sends
+// to operators.
+//
+// httpClient lets callers inject a pre-configured client (timeouts,
+// transport). path is the credentials file path; the same fallback semantics
+// as AccountAware apply for formats that need peer metadata files. The
+// returned UsageReport must not embed any secrets.
+type UsageProbe interface {
+	Probe(ctx context.Context, snap Snapshot, path string, httpClient *http.Client) (UsageReport, error)
+}
 
 // Format is a read-only interpreter for a particular credential file schema.
 // All methods must be safe for concurrent use.
@@ -88,4 +165,54 @@ type ValidateOpts struct {
 	HTTPClient *http.Client
 	// Clock returns the current time. Nil falls back to time.Now.
 	Clock func() time.Time
+}
+
+// ResolveCredentialPath maps a configured directory to the primary
+// credentials file path for f.
+func ResolveCredentialPath(f Format, dir string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("formats.ResolveCredentialPath: empty dir")
+	}
+	r, ok := f.(DirResolver)
+	if !ok {
+		return "", fmt.Errorf("formats.ResolveCredentialPath: format %q does not implement DirResolver", f.Name())
+	}
+	path := filepath.Clean(r.CredentialPath(dir))
+	if path == "." || path == "" {
+		return "", fmt.Errorf("formats.ResolveCredentialPath: format %q returned an empty credential path", f.Name())
+	}
+	return path, nil
+}
+
+// ResolveWatchPaths returns the deduplicated local files the client should
+// watch for one configured directory. The primary credentials file is always
+// included.
+func ResolveWatchPaths(f Format, dir string) ([]string, error) {
+	credPath, err := ResolveCredentialPath(f, dir)
+	if err != nil {
+		return nil, err
+	}
+
+	raw := []string{credPath}
+	if w, ok := f.(WatchPathsAware); ok {
+		raw = append(raw, w.WatchPaths(dir)...)
+	}
+
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, p := range raw {
+		p = filepath.Clean(p)
+		if p == "." || p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("formats.ResolveWatchPaths: format %q returned no watch paths", f.Name())
+	}
+	return out, nil
 }

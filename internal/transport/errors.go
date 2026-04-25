@@ -3,7 +3,7 @@ package transport
 import (
 	"errors"
 
-	"github.com/dh-kam/claude-creds-share/internal/common"
+	"github.com/0xc0de1ab/pangaea/internal/common"
 )
 
 // Sentinel errors for transport-internal flow control. They wrap
