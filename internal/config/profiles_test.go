@@ -31,6 +31,7 @@ profiles:
     allowed_clients: ["host-a", "host-b"]
     reverse_targets:
       - node_id: "host-b"
+        transport: "direct"
         url: "wss://host-b.example:9443"
     validate:
       strategy: "expires_at_max"
@@ -69,7 +70,7 @@ func TestLoadProfiles_Golden(t *testing.T) {
 	if len(prod.ReverseTargets) != 1 {
 		t.Fatalf("reverse_targets len = %d", len(prod.ReverseTargets))
 	}
-	if prod.ReverseTargets[0].NodeID != "host-b" || prod.ReverseTargets[0].URL != "wss://host-b.example:9443" {
+	if prod.ReverseTargets[0].NodeID != "host-b" || prod.ReverseTargets[0].URL != "wss://host-b.example:9443" || prod.ReverseTargets[0].Transport != ReverseTransportDirect {
 		t.Fatalf("unexpected reverse target: %+v", prod.ReverseTargets[0])
 	}
 	// Defaults applied to second profile (no propagate at all).
@@ -176,9 +177,50 @@ profiles:
     allowed_clients: [c]
     reverse_targets:
       - node_id: c
+        transport: direct
         url: wss://c1
       - node_id: c
+        transport: direct
         url: wss://c2
+`
+	_, err := LoadProfiles(writeYAML(t, body))
+	if !errors.Is(err, common.ErrConfigInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadProfiles_SSHReverseTarget(t *testing.T) {
+	body := `
+profiles:
+  - name: a
+    format: f
+    dir: /x
+    allowed_clients: [c]
+    reverse_targets:
+      - node_id: c
+        transport: ssh
+`
+	pf, err := LoadProfiles(writeYAML(t, body))
+	if err != nil {
+		t.Fatalf("LoadProfiles: %v", err)
+	}
+	got := pf.Profiles[0].ReverseTargets[0]
+	if got.Transport != ReverseTransportSSH || got.URL != "" {
+		t.Fatalf("unexpected reverse target: %+v", got)
+	}
+}
+
+func TestLoadProfiles_SSHReverseTargetRejectsURL(t *testing.T) {
+	body := `
+profiles:
+  - name: a
+    format: f
+    dir: /x
+    allowed_clients: [c]
+    reverse_targets:
+      - node_id: c
+        transport: ssh
+        url: wss://c1
 `
 	_, err := LoadProfiles(writeYAML(t, body))
 	if !errors.Is(err, common.ErrConfigInvalid) {

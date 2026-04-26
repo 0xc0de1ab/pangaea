@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -54,7 +56,6 @@ func RunReverse(ctx context.Context, cfg *config.ClientConfig, opts Options, log
 	}
 
 	srv := &http.Server{
-		Addr:      cfg.Reverse.Listen,
 		TLSConfig: tlsCfg,
 		Handler: reverseMux(
 			byProfile,
@@ -63,14 +64,22 @@ func RunReverse(ctx context.Context, cfg *config.ClientConfig, opts Options, log
 		),
 		ReadHeaderTimeout: common.WriteTimeout,
 	}
+	ln, err := net.Listen("tcp", cfg.Reverse.Listen)
+	if err != nil {
+		return err
+	}
+	if opts.OnReverseListening != nil {
+		opts.OnReverseListening(ln.Addr().String())
+	}
 	eg.Go(func() error {
-		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+		if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed && !errors.Is(err, net.ErrClosed) {
 			return err
 		}
 		return nil
 	})
 	go func() {
 		<-egCtx.Done()
+		_ = ln.Close()
 		_ = srv.Shutdown(context.Background())
 	}()
 

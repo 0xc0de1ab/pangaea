@@ -213,6 +213,67 @@ Recommended systemd split:
 
 This keeps reverse dialing and reconnect churn isolated from the main server process.
 
+### Reverse Over SSH
+
+When the server host can SSH into a remote node, `reverse-connect` can manage that node through SSH instead of dialing a fixed public reverse listener address.
+
+The SSH registry lives in `server.yaml`:
+
+```yaml
+ssh_nodes:
+  - node_id: "a2"
+    target: "dh.kam@a2.oci.example.com"
+    port: 2222
+```
+
+Notes:
+
+- `target` is required
+- `use_ssh_config` defaults to `true`
+- the bridge follows the local account's `~/.ssh/config`, `~/.ssh/known_hosts`, agent, and identity files
+- `port` is optional and overrides the SSH config `Port`
+
+Then reference that node from `profiles.yaml`:
+
+```yaml
+profiles:
+  - name: "claude"
+    format: "claude-credentials-json-format"
+    dir: "~/.claude"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
+      - ".config.json"
+    allowed_clients:
+      - "a2"
+    reverse_targets:
+      - node_id: "a2"
+        transport: "ssh"
+```
+
+By default the SSH bridge starts a remote `pangaeactl reverse-client` process with:
+
+- command: `pangaeactl`
+- config path: `$HOME/pangaea-client.yaml`
+- listen address: `127.0.0.1:0`
+
+That means the remote reverse-client picks an ephemeral local port automatically and reports it back to the bridge; operators do not need to pre-assign a reverse listener port.
+
+Advanced overrides are available when needed:
+
+```yaml
+ssh_nodes:
+  - node_id: "a2"
+    target: "dh.kam@a2.oci.example.com"
+    use_ssh_config: true
+    port: 2222
+    command: "/usr/local/bin/pangaeactl"
+    config_path: "/home/dh.kam/pangaea-client.yaml"
+    reverse_addr: "127.0.0.1:9443"
+```
+
+`reverse_addr` switches the node into attach mode: the bridge connects to an already-running remote reverse-client instead of starting a managed one.
+
 ### Manual Server Setup
 
 Create a CA:

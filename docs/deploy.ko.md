@@ -213,6 +213,67 @@ pangaeactl reverse-connect \
 
 이렇게 하면 reverse dialing과 reconnect churn이 메인 서버 프로세스에 직접 섞이지 않습니다.
 
+### SSH 기반 Reverse 연결
+
+서버 호스트에서 원격 노드로 SSH 접속이 가능하다면, `reverse-connect`가 고정된 public reverse listener 주소 대신 SSH를 통해 그 노드를 관리할 수 있습니다.
+
+SSH node registry는 `server.yaml`에 둡니다:
+
+```yaml
+ssh_nodes:
+  - node_id: "a2"
+    target: "dh.kam@a2.oci.example.com"
+    port: 2222
+```
+
+메모:
+
+- `target`은 필수입니다
+- `use_ssh_config`의 기본값은 `true`입니다
+- bridge는 기본적으로 로컬 실행 계정의 `~/.ssh/config`, `~/.ssh/known_hosts`, SSH agent, identity file을 따릅니다
+- `port`는 optional이며 SSH config의 `Port`를 override합니다
+
+그 다음 `profiles.yaml`에서 해당 노드를 참조합니다:
+
+```yaml
+profiles:
+  - name: "claude"
+    format: "claude-credentials-json-format"
+    dir: "~/.claude"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
+      - ".config.json"
+    allowed_clients:
+      - "a2"
+    reverse_targets:
+      - node_id: "a2"
+        transport: "ssh"
+```
+
+기본적으로 SSH bridge는 원격에서 다음 조건으로 `pangaeactl reverse-client`를 실행합니다:
+
+- command: `pangaeactl`
+- config path: `$HOME/pangaea-client.yaml`
+- listen address: `127.0.0.1:0`
+
+즉 원격 reverse-client가 loopback의 빈 포트를 자동으로 하나 골라서 열고, 그 실제 포트를 bridge에 다시 알려줍니다. 운영자가 미리 reverse listener 포트를 정할 필요는 없습니다.
+
+필요하면 고급 override도 가능합니다:
+
+```yaml
+ssh_nodes:
+  - node_id: "a2"
+    target: "dh.kam@a2.oci.example.com"
+    use_ssh_config: true
+    port: 2222
+    command: "/usr/local/bin/pangaeactl"
+    config_path: "/home/dh.kam/pangaea-client.yaml"
+    reverse_addr: "127.0.0.1:9443"
+```
+
+`reverse_addr`를 주면 managed mode 대신 attach mode로 동작합니다. 즉 bridge가 원격에서 이미 떠 있는 reverse-client에 붙고, 새 프로세스를 직접 시작하지 않습니다.
+
 ### 수동 서버 설정
 
 CA 생성:

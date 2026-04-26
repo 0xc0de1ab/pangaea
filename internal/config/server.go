@@ -17,6 +17,7 @@ type ServerConfig struct {
 	AuthMode     AuthMode        `yaml:"auth_mode"`
 	PKI          PKIPaths        `yaml:"pki"`
 	JWT          JWTServerConfig `yaml:"jwt"`
+	SSHNodes     []SSHNodeConfig `yaml:"ssh_nodes"`
 	Log          LogConfig       `yaml:"log"`
 	ProfilesFile string          `yaml:"profiles_file"`
 	SelfNode     SelfNodeConfig  `yaml:"self_node"`
@@ -182,6 +183,45 @@ type SelfNodeConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	ClientCert string `yaml:"client_cert"`
 	ClientKey  string `yaml:"client_key"`
+}
+
+// SSHNodeConfig registers one SSH-reachable node the reverse bridge may use.
+// Managed mode starts a remote reverse-client when ReverseAddr is empty.
+type SSHNodeConfig struct {
+	NodeID       string `yaml:"node_id"`
+	Target       string `yaml:"target"`
+	Port         int    `yaml:"port"`
+	UseSSHConfig bool   `yaml:"use_ssh_config"`
+	ReverseAddr  string `yaml:"reverse_addr"`
+	Command      string `yaml:"command"`
+	ConfigPath   string `yaml:"config_path"`
+}
+
+func (n *SSHNodeConfig) UnmarshalYAML(unmarshal func(any) error) error {
+	aux := struct {
+		NodeID       string `yaml:"node_id"`
+		Target       string `yaml:"target"`
+		Port         int    `yaml:"port"`
+		UseSSHConfig *bool  `yaml:"use_ssh_config"`
+		ReverseAddr  string `yaml:"reverse_addr"`
+		Command      string `yaml:"command"`
+		ConfigPath   string `yaml:"config_path"`
+	}{}
+	if err := unmarshal(&aux); err != nil {
+		return err
+	}
+	n.NodeID = aux.NodeID
+	n.Target = aux.Target
+	n.Port = aux.Port
+	n.ReverseAddr = aux.ReverseAddr
+	n.Command = aux.Command
+	n.ConfigPath = aux.ConfigPath
+	if aux.UseSSHConfig == nil {
+		n.UseSSHConfig = true
+	} else {
+		n.UseSSHConfig = *aux.UseSSHConfig
+	}
+	return nil
 }
 
 // LoadServer parses server.yaml and validates it. Path fields are run through
@@ -405,6 +445,9 @@ func validateServer(c *ServerConfig) error {
 	if c.ProfilesFile == "" {
 		return common.Wrap(nil, common.ErrConfigInvalid, "server.profiles_file is required")
 	}
+	if err := validateSSHNodes(c.SSHNodes); err != nil {
+		return err
+	}
 	if c.SelfNode.Enabled {
 		if c.SelfNode.ClientCert == "" || c.SelfNode.ClientKey == "" {
 			return common.Wrap(nil, common.ErrConfigInvalid, "self_node.client_cert and self_node.client_key are required when enabled")
@@ -434,6 +477,26 @@ func expandServerPaths(c *ServerConfig) error {
 			return err
 		}
 		*p = v
+	}
+	return nil
+}
+
+func validateSSHNodes(nodes []SSHNodeConfig) error {
+	seen := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		if node.NodeID == "" {
+			return common.Wrap(nil, common.ErrConfigInvalid, "ssh_nodes.node_id is required")
+		}
+		if node.Target == "" {
+			return common.Wrap(nil, common.ErrConfigInvalid, "ssh_nodes[%s].target is required", node.NodeID)
+		}
+		if node.Port < 0 || node.Port > 65535 {
+			return common.Wrap(nil, common.ErrConfigInvalid, "ssh_nodes[%s].port must be 0 or between 1 and 65535", node.NodeID)
+		}
+		if _, dup := seen[node.NodeID]; dup {
+			return common.Wrap(nil, common.ErrConfigInvalid, "duplicate ssh_nodes.node_id %q", node.NodeID)
+		}
+		seen[node.NodeID] = struct{}{}
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/0xc0de1ab/pangaea/internal/client"
 	"github.com/0xc0de1ab/pangaea/internal/common"
@@ -15,11 +16,15 @@ func newReverseClientCmd() *cobra.Command {
 	opts := struct {
 		ConfigPath    string `flag:"config" usage:"pangaea-client.yaml path"`
 		ProfileFilter string `flag:"profile" usage:"filter profiles in client.yaml (comma-separated; default: all)"`
+		Listen        string `flag:"listen" usage:"override reverse listener address"`
+		PrintAddr     bool   `flag:"print-listen-addr" usage:"print the bound reverse listen address to stdout"`
 	}{}
 
 	binder := flagsbinder.NewViperCobraFlagsBinder().
 		StringP(common.FlagConfig, "c", "pangaea-client.yaml", "pangaea-client.yaml path").
-		String(common.FlagProfile, "", "filter profiles in client.yaml (comma-separated; default: all)")
+		String(common.FlagProfile, "", "filter profiles in client.yaml (comma-separated; default: all)").
+		String("listen", "", "override reverse listener address").
+		Bool("print-listen-addr", false, "print the bound reverse listen address to stdout")
 
 	cmd := &cobra.Command{
 		Use:           "reverse-client",
@@ -49,6 +54,9 @@ func newReverseClientCmd() *cobra.Command {
 				}
 				clientCfg.Profiles = filtered
 			}
+			if strings.TrimSpace(opts.Listen) != "" {
+				clientCfg.Reverse.Listen = strings.TrimSpace(opts.Listen)
+			}
 			logLevel, _ := cmd.Flags().GetString(common.FlagLogLevel)
 			logFormat, _ := cmd.Flags().GetString(common.FlagLogFormat)
 			if logLevel == "" {
@@ -57,9 +65,16 @@ func newReverseClientCmd() *cobra.Command {
 			if logFormat == "" {
 				logFormat = clientCfg.Log.Format
 			}
+			onListening := func(string) {}
+			if opts.PrintAddr {
+				onListening = func(addr string) {
+					fmt.Fprintln(cmd.OutOrStdout(), addr)
+				}
+			}
 			log := logging.New(logging.Options{Level: logLevel, Format: logFormat})
 			return client.RunReverse(cmd.Context(), clientCfg, client.Options{
-				AgentVersion: version,
+				AgentVersion:       version,
+				OnReverseListening: onListening,
 			}, log)
 		},
 	}

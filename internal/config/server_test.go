@@ -35,6 +35,9 @@ log:
 profiles_file: "./profiles.yaml"
 self_node:
   enabled: false
+ssh_nodes:
+  - node_id: "a2"
+    target: "dh.kam@a2"
 `
 	c, err := LoadServer(writeServer(t, body))
 	if err != nil {
@@ -45,6 +48,9 @@ self_node:
 	}
 	if !strings.HasSuffix(c.ProfilesFile, "profiles.yaml") {
 		t.Fatalf("profiles_file = %q", c.ProfilesFile)
+	}
+	if len(c.SSHNodes) != 1 || !c.SSHNodes[0].UseSSHConfig {
+		t.Fatalf("ssh_nodes = %+v", c.SSHNodes)
 	}
 }
 
@@ -135,5 +141,51 @@ jwt:
 	}
 	if c.JWT.AuthTimeout != 3*time.Second {
 		t.Fatalf("auth_timeout = %v", c.JWT.AuthTimeout)
+	}
+}
+
+func TestLoadServer_SSHNodeValidation(t *testing.T) {
+	body := `
+listen: ":8443"
+pki:
+  ca_cert: x
+  server_cert: y
+  server_key: z
+profiles_file: p.yaml
+ssh_nodes:
+  - node_id: a2
+    target: host-a
+    port: 2222
+    use_ssh_config: false
+    reverse_addr: 127.0.0.1:9443
+    command: /usr/local/bin/pangaeactl
+    config_path: $HOME/pangaea-client.yaml
+`
+	c, err := LoadServer(writeServer(t, body))
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if got := c.SSHNodes[0]; got.Port != 2222 || got.UseSSHConfig || got.Command == "" || got.ConfigPath == "" {
+		t.Fatalf("unexpected ssh node: %+v", got)
+	}
+}
+
+func TestLoadServer_SSHNodeDuplicate(t *testing.T) {
+	body := `
+listen: ":8443"
+pki:
+  ca_cert: x
+  server_cert: y
+  server_key: z
+profiles_file: p.yaml
+ssh_nodes:
+  - node_id: a2
+    target: host-a
+  - node_id: a2
+    target: host-b
+`
+	_, err := LoadServer(writeServer(t, body))
+	if !errors.Is(err, common.ErrConfigInvalid) {
+		t.Fatalf("err = %v", err)
 	}
 }

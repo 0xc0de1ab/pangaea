@@ -27,6 +27,8 @@ As of 2026-04-26, the core product work is largely implemented, but not every su
 - Reverse connectivity for server-reachable-only networks via:
   - `reverse-client` on the client node
   - `reverse-connect` as a separate bridge process on the server host
+  - direct reverse targets (`transport: direct`)
+  - SSH-managed reverse targets (`transport: ssh`) using the operator's local `~/.ssh` configuration by default
 - Notification sinks:
   - Telegram
   - Slack

@@ -32,9 +32,17 @@ type Profile struct {
 // ReverseTarget is one reverse-client endpoint the separate reverse-connector
 // process should dial for this profile.
 type ReverseTarget struct {
-	NodeID string `yaml:"node_id"`
-	URL    string `yaml:"url"`
+	NodeID    string           `yaml:"node_id"`
+	Transport ReverseTransport `yaml:"transport"`
+	URL       string           `yaml:"url"`
 }
+
+type ReverseTransport string
+
+const (
+	ReverseTransportDirect ReverseTransport = "direct"
+	ReverseTransportSSH    ReverseTransport = "ssh"
+)
 
 // ValidateSpec configures which strategy the format uses to compare snapshots
 // and whether the live_check HTTP probe should run.
@@ -166,8 +174,17 @@ func convertProfile(rp rawProfile, idx int) (Profile, error) {
 		if target.NodeID == "" {
 			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: reverse_targets.node_id is required", rp.Name)
 		}
-		if target.URL == "" {
-			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: reverse_targets[%s].url is required", rp.Name, target.NodeID)
+		if target.Transport == "" {
+			target.Transport = ReverseTransportDirect
+		}
+		if target.Transport != ReverseTransportDirect && target.Transport != ReverseTransportSSH {
+			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: reverse_targets[%s].transport %q must be %q or %q", rp.Name, target.NodeID, target.Transport, ReverseTransportDirect, ReverseTransportSSH)
+		}
+		if target.Transport == ReverseTransportDirect && target.URL == "" {
+			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: reverse_targets[%s].url is required when transport=direct", rp.Name, target.NodeID)
+		}
+		if target.Transport == ReverseTransportSSH && target.URL != "" {
+			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: reverse_targets[%s].url must be empty when transport=ssh", rp.Name, target.NodeID)
 		}
 		if _, dup := seenReverse[target.NodeID]; dup {
 			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: duplicate reverse target for node %q", rp.Name, target.NodeID)

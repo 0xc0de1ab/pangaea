@@ -44,6 +44,9 @@ type Options struct {
 	// JWTToken overrides config-driven token loading. Used by in-process
 	// callers such as the server's self-client path.
 	JWTToken string
+	// OnReverseListening is called by RunReverse after the listener is bound.
+	// It is ignored by direct Run.
+	OnReverseListening func(addr string)
 }
 
 // Run is the client entry point. It blocks until ctx is cancelled or an

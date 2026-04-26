@@ -49,9 +49,10 @@ func Run(ctx context.Context, serverCfg *config.ServerConfig, ps config.ProfileS
 }
 
 type bridgeTarget struct {
-	Profile string
-	NodeID  string
-	URL     string
+	Profile   string
+	NodeID    string
+	Transport config.ReverseTransport
+	URL       string
 }
 
 func collectTargets(ps config.ProfileStore) []bridgeTarget {
@@ -59,9 +60,10 @@ func collectTargets(ps config.ProfileStore) []bridgeTarget {
 	for _, p := range ps.List() {
 		for _, t := range p.ReverseTargets {
 			out = append(out, bridgeTarget{
-				Profile: p.Name,
-				NodeID:  t.NodeID,
-				URL:     t.URL,
+				Profile:   p.Name,
+				NodeID:    t.NodeID,
+				Transport: t.Transport,
+				URL:       t.URL,
 			})
 		}
 	}
@@ -97,7 +99,8 @@ func bridgeLoop(ctx context.Context, serverCfg *config.ServerConfig, opts Option
 			slog.Int("attempt", attempt),
 			slog.Duration("delay", delay),
 			slog.String("reason", errString(err)),
-			slog.String("target_url", target.URL),
+			slog.String("transport", string(target.Transport)),
+			slog.String("target", targetDescriptor(target)),
 		)
 		timer := time.NewTimer(delay)
 		select {
@@ -110,6 +113,13 @@ func bridgeLoop(ctx context.Context, serverCfg *config.ServerConfig, opts Option
 }
 
 func bridgeOnce(ctx context.Context, serverCfg *config.ServerConfig, opts Options, target bridgeTarget) error {
+	if target.Transport == config.ReverseTransportSSH {
+		return bridgeOnceSSH(ctx, serverCfg, opts, target)
+	}
+	return bridgeOnceDirect(ctx, serverCfg, opts, target)
+}
+
+func bridgeOnceDirect(ctx context.Context, serverCfg *config.ServerConfig, opts Options, target bridgeTarget) error {
 	remoteConn, err := dialRemote(ctx, serverCfg, target)
 	if err != nil {
 		return err
@@ -207,6 +217,13 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func targetDescriptor(target bridgeTarget) string {
+	if target.Transport == config.ReverseTransportSSH {
+		return target.NodeID
+	}
+	return target.URL
 }
 
 func ProfileSet(ps config.ProfileStore, filter string) (config.ProfileStore, error) {

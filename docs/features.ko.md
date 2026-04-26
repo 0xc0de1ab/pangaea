@@ -29,6 +29,8 @@
 - `client -> server`가 안 되고 `server -> client`만 가능한 환경을 위한 reverse 연결 지원
   - 클라이언트의 `reverse-client`
   - 서버 호스트의 별도 bridge 프로세스 `reverse-connect`
+  - `transport: direct` 직접 reverse target
+  - 기본적으로 로컬 `~/.ssh` 설정을 따르는 `transport: ssh` managed reverse target
 - notifier sink
   - Telegram
   - Slack
