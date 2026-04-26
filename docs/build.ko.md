@@ -154,7 +154,44 @@ make vet
 - `go test ./...` 실행
 - coverage 측정
 - 여러 타깃에 대한 release 빌드 수행
+- `vSEMVER-YYYYMM.seq` 형태의 tag push 시 GitHub Release 생성
 - `main`에서 coverage badge 갱신
+
+## 태그 기반 릴리스
+
+저장소에는 tag push 기반 release workflow도 있습니다.
+
+기대 tag 형식:
+
+```text
+vSEMVER-YYYYMM.seq
+```
+
+예시:
+
+```text
+v0.9.0-202604.1
+```
+
+이 형식의 tag가 push되면 GitHub Actions가 다음을 수행합니다.
+
+- 해당 tag의 소스를 checkout
+- `VERSION_BASE=<tag> make release`로 전체 release 매트릭스 빌드
+- 각 OS-ARCH release 바이너리를 개별 zip 파일로 패키징
+- 해당 tag에 대한 GitHub Release 생성 또는 갱신
+- zip 파일들을 release asset으로 업로드
+
+asset 이름 패턴:
+
+```text
+pangaeactl_<tag>_<os>-<arch>.zip
+```
+
+예시:
+
+- `pangaeactl_v0.9.0-202604.1_linux-amd64.zip`
+- `pangaeactl_v0.9.0-202604.1_macos-arm64.zip`
+- `pangaeactl_v0.9.0-202604.1_windows-amd64.zip`
 
 ## 운영 메모
 

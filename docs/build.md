@@ -154,7 +154,44 @@ GitHub Actions currently:
 - runs `go test ./...`
 - measures coverage
 - builds release artifacts for multiple targets
+- creates a GitHub Release when a `vSEMVER-YYYYMM.seq` tag is pushed
 - updates the coverage badge on `main`
+
+## Tag-Based Releases
+
+The repository also has a release workflow triggered by tag push.
+
+Expected tag format:
+
+```text
+vSEMVER-YYYYMM.seq
+```
+
+Example:
+
+```text
+v0.9.0-202604.1
+```
+
+On matching tag push, GitHub Actions will:
+
+- check out the tagged source
+- build the full release matrix with `VERSION_BASE=<tag> make release`
+- package each OS-ARCH release binary into its own zip file
+- create or update a GitHub Release for that tag
+- upload the zip files as release assets
+
+Generated asset names follow this pattern:
+
+```text
+pangaeactl_<tag>_<os>-<arch>.zip
+```
+
+Examples:
+
+- `pangaeactl_v0.9.0-202604.1_linux-amd64.zip`
+- `pangaeactl_v0.9.0-202604.1_macos-arm64.zip`
+- `pangaeactl_v0.9.0-202604.1_windows-amd64.zip`
 
 ## Notes for Operators
 
