@@ -30,3 +30,6 @@
 # runtime
 /*.sock
 /run/
+
+.codex
+.env
