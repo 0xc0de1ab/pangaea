@@ -213,7 +213,6 @@ func (n *Notifier) Run(ctx context.Context) error {
 // notifications; periodic summaries still flow through Run.
 func (n *Notifier) Emit(ctx context.Context, r TruthRecord) {
 	if isSessionEvent(r) {
-		n.bufferSessionEvent(r)
 		return
 	}
 	usage := n.probe(ctx, r)
