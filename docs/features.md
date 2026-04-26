@@ -24,6 +24,9 @@ As of 2026-04-26, the core product work is largely implemented, but not every su
 - `--also-client` server-side self-client support
 - `mtls` auth mode
 - `jwt` auth mode with header-based auth and `auth.jwt` first-frame fallback
+- Reverse connectivity for server-reachable-only networks via:
+  - `reverse-client` on the client node
+  - `reverse-connect` as a separate bridge process on the server host
 - Notification sinks:
   - Telegram
   - Slack
@@ -99,6 +102,7 @@ See also:
 - Duplicate identity displacement
 - Optional in-process self-clients via `--also-client`
 - Unix socket status endpoint
+- Local unix-socket attach endpoint for reverse bridges
 - Profile reload on SIGHUP
 
 ## Client Capabilities
@@ -109,11 +113,14 @@ See also:
 - JWT header or first-frame auth behavior
 - Format-aware account resolution
 - Watcher-driven re-reporting when auxiliary metadata files change
+- Optional reverse-client listener for server-initiated tunnel topologies
 
 ## CLI Features
 
 - `serve`
 - `connect`
+- `reverse-client`
+- `reverse-connect`
 - `setup server`
 - `setup client`
 - `ca init`

@@ -29,6 +29,9 @@ profiles:
       - ".credentials.json"
       - "~/.claude.json"
     allowed_clients: ["host-a", "host-b"]
+    reverse_targets:
+      - node_id: "host-b"
+        url: "wss://host-b.example:9443"
     validate:
       strategy: "expires_at_max"
       live_check: true
@@ -62,6 +65,12 @@ func TestLoadProfiles_Golden(t *testing.T) {
 	}
 	if prod.Propagate.Cooldown != 3*time.Second {
 		t.Fatalf("cooldown = %v", prod.Propagate.Cooldown)
+	}
+	if len(prod.ReverseTargets) != 1 {
+		t.Fatalf("reverse_targets len = %d", len(prod.ReverseTargets))
+	}
+	if prod.ReverseTargets[0].NodeID != "host-b" || prod.ReverseTargets[0].URL != "wss://host-b.example:9443" {
+		t.Fatalf("unexpected reverse target: %+v", prod.ReverseTargets[0])
 	}
 	// Defaults applied to second profile (no propagate at all).
 	dev := pf.Profiles[1]
@@ -153,6 +162,25 @@ profiles:
 
 func TestLoadProfiles_FileMissing(t *testing.T) {
 	_, err := LoadProfiles(filepath.Join(t.TempDir(), "no.yaml"))
+	if !errors.Is(err, common.ErrConfigInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadProfiles_DuplicateReverseTarget(t *testing.T) {
+	body := `
+profiles:
+  - name: a
+    format: f
+    dir: /x
+    allowed_clients: [c]
+    reverse_targets:
+      - node_id: c
+        url: wss://c1
+      - node_id: c
+        url: wss://c2
+`
+	_, err := LoadProfiles(writeYAML(t, body))
 	if !errors.Is(err, common.ErrConfigInvalid) {
 		t.Fatalf("err = %v", err)
 	}

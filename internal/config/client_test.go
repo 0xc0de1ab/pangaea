@@ -43,6 +43,13 @@ reconnect:
 log:
   level: "info"
   format: "json"
+reverse:
+  listen: ":9443"
+  pki:
+    ca_cert: "./pki/ca.crt"
+    server_cert: "./pki/reverse.crt"
+    server_key: "./pki/reverse.key"
+  allowed_peers: ["opi5(server)"]
 `
 	c, err := LoadClient(writeClient(t, body))
 	if err != nil {
@@ -56,6 +63,12 @@ log:
 	}
 	if c.Profiles[0].Name != "claude-prod" || c.Profiles[1].Name != "codex-prod" {
 		t.Fatalf("unexpected profile order: %+v", c.Profiles)
+	}
+	if c.Reverse.Listen != ":9443" {
+		t.Fatalf("reverse.listen = %q", c.Reverse.Listen)
+	}
+	if len(c.Reverse.AllowedPeers) != 1 || c.Reverse.AllowedPeers[0] != "opi5(server)" {
+		t.Fatalf("unexpected reverse allowed peers: %+v", c.Reverse.AllowedPeers)
 	}
 }
 

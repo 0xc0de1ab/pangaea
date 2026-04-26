@@ -18,6 +18,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/jwtauth"
 	"github.com/0xc0de1ab/pangaea/internal/logging"
 	"github.com/0xc0de1ab/pangaea/internal/pki"
+	"github.com/0xc0de1ab/pangaea/internal/reversebridge"
 	"github.com/0xc0de1ab/pangaea/internal/server"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/claudecreds"
 	"golang.org/x/sync/errgroup"
@@ -54,6 +55,65 @@ func TestE2E_MTLSRestoreAfterDelete(t *testing.T) {
 	}
 	waitForFileContent(t, env.pathB, newer)
 	run.stopAndWait(t)
+}
+
+func TestE2E_MTLSReverseReplication(t *testing.T) {
+	t.Parallel()
+	env := newE2EEnv(t, config.AuthModeMTLS)
+	env.seed(t, sampleCreds(time.Now().Add(2*time.Hour), "NEW"), sampleCreds(time.Now().Add(5*time.Minute), "OLD"))
+
+	reverseAddr := reserveAddr(t)
+	env.clientB.Reverse = config.ReverseConfig{
+		Listen: reverseAddr,
+		PKI: config.ReversePKIPaths{
+			CACert:     env.pki.caCert,
+			ServerCert: env.pki.reverseServerCert,
+			ServerKey:  env.pki.reverseServerKey,
+		},
+		AllowedPeers: []string{"bridge"},
+	}
+	env.server.SelfNode = config.SelfNodeConfig{
+		Enabled:    true,
+		ClientCert: env.pki.bridgeCert,
+		ClientKey:  env.pki.bridgeKey,
+	}
+	profiles := env.ps.List()
+	profiles[0].ReverseTargets = []config.ReverseTarget{{
+		NodeID: "node-b",
+		URL:    "wss://localhost" + reverseAddr[strings.LastIndex(reverseAddr, ":"):],
+	}}
+	env.ps = config.NewProfileStore(&config.ProfilesFile{Profiles: profiles})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	log := logging.New(logging.Options{Level: "error"})
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	statusSock := filepath.Join(t.TempDir(), "pangaea-reverse.sock")
+	eg.Go(func() error {
+		return server.Run(egCtx, env.server, env.ps, server.Options{
+			ServerVersion: "test",
+			StatusSocket:  statusSock,
+		}, log)
+	})
+	waitForHealth(t, env.server.Listen, env.pki, true)
+	eg.Go(func() error {
+		return client.Run(egCtx, env.clientA, client.Options{AgentVersion: "test"}, log)
+	})
+	eg.Go(func() error {
+		return client.RunReverse(egCtx, env.clientB, client.Options{AgentVersion: "test"}, log)
+	})
+	eg.Go(func() error {
+		return reversebridge.Run(egCtx, env.server, env.ps, reversebridge.Options{
+			SocketPath: statusSock,
+		}, log)
+	})
+
+	waitForFileContent(t, env.pathB, mustReadFile(t, env.pathA))
+	cancel()
+	if err := eg.Wait(); err != nil && err != context.Canceled {
+		t.Fatalf("run: %v", err)
+	}
 }
 
 func TestE2E_ServerStartsAfterClientsEventuallyConverges(t *testing.T) {
@@ -239,6 +299,9 @@ type testPKI struct {
 	caCert, serverCert, serverKey string
 	clientACert, clientAKey       string
 	clientBCert, clientBKey       string
+	bridgeCert, bridgeKey         string
+	reverseServerCert             string
+	reverseServerKey              string
 }
 
 func newE2EEnv(t *testing.T, mode config.AuthMode) *e2eEnv {
@@ -580,14 +643,27 @@ func mintPKI(t *testing.T) testPKI {
 	if err := pki.IssueClient(ca, clientBDir, "node-b", leafExpiry); err != nil {
 		t.Fatal(err)
 	}
+	bridgeDir := filepath.Join(dir, "bridge")
+	if err := pki.IssueClient(ca, bridgeDir, "bridge", leafExpiry); err != nil {
+		t.Fatal(err)
+	}
+	reverseDir := filepath.Join(dir, "reverse-server")
+	reverseSAN := pki.SAN{IPs: []net.IP{net.ParseIP("127.0.0.1")}, DNS: []string{"localhost"}}
+	if err := pki.IssueServer(ca, reverseDir, "reverse-server", reverseSAN, leafExpiry); err != nil {
+		t.Fatal(err)
+	}
 	return testPKI{
-		caCert:      filepath.Join(dir, "ca.crt"),
-		serverCert:  filepath.Join(serverDir, "server.crt"),
-		serverKey:   filepath.Join(serverDir, "server.key"),
-		clientACert: filepath.Join(clientADir, "client.crt"),
-		clientAKey:  filepath.Join(clientADir, "client.key"),
-		clientBCert: filepath.Join(clientBDir, "client.crt"),
-		clientBKey:  filepath.Join(clientBDir, "client.key"),
+		caCert:            filepath.Join(dir, "ca.crt"),
+		serverCert:        filepath.Join(serverDir, "server.crt"),
+		serverKey:         filepath.Join(serverDir, "server.key"),
+		clientACert:       filepath.Join(clientADir, "client.crt"),
+		clientAKey:        filepath.Join(clientADir, "client.key"),
+		clientBCert:       filepath.Join(clientBDir, "client.crt"),
+		clientBKey:        filepath.Join(clientBDir, "client.key"),
+		bridgeCert:        filepath.Join(bridgeDir, "client.crt"),
+		bridgeKey:         filepath.Join(bridgeDir, "client.key"),
+		reverseServerCert: filepath.Join(reverseDir, "server.crt"),
+		reverseServerKey:  filepath.Join(reverseDir, "server.key"),
 	}
 }
 

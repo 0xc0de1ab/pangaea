@@ -26,6 +26,7 @@ type ClientConfig struct {
 	Server    string           `yaml:"server"`
 	AuthMode  AuthMode         `yaml:"auth_mode"`
 	JWT       JWTClientConfig  `yaml:"jwt"`
+	Reverse   ReverseConfig    `yaml:"reverse"`
 	NodeID    string           `yaml:"node_id"`
 	Profiles  []ProfileBinding `yaml:"profiles"`
 	PKI       ClientPKIPaths   `yaml:"pki"`
@@ -58,6 +59,24 @@ type ClientPKIPaths struct {
 	ClientKey  string `yaml:"client_key"`
 }
 
+// ReverseConfig controls the optional reverse-client listener. In this mode
+// the node does not dial the hub directly; instead it exposes a TLS
+// WebSocket endpoint the server-side reverse connector can reach and bridge
+// into the local hub over a unix attach socket.
+type ReverseConfig struct {
+	Listen       string          `yaml:"listen"`
+	PKI          ReversePKIPaths `yaml:"pki"`
+	AllowedPeers []string        `yaml:"allowed_peers"`
+}
+
+// ReversePKIPaths is the TLS server identity used by the reverse-client
+// listener.
+type ReversePKIPaths struct {
+	CACert     string `yaml:"ca_cert"`
+	ServerCert string `yaml:"server_cert"`
+	ServerKey  string `yaml:"server_key"`
+}
+
 // ReconnectConfig captures the client's exponential-backoff reconnect policy.
 // All three durations are required to be positive; defaults from common kick
 // in for any field left at zero.
@@ -79,6 +98,7 @@ type rawClientConfig struct {
 	Server    string             `yaml:"server"`
 	AuthMode  AuthMode           `yaml:"auth_mode"`
 	JWT       JWTClientConfig    `yaml:"jwt"`
+	Reverse   ReverseConfig      `yaml:"reverse"`
 	NodeID    string             `yaml:"node_id"`
 	Profiles  []ProfileBinding   `yaml:"profiles"`
 	PKI       ClientPKIPaths     `yaml:"pki"`
@@ -109,6 +129,7 @@ func LoadClient(path string) (*ClientConfig, error) {
 		Server:   rc.Server,
 		AuthMode: rc.AuthMode,
 		JWT:      rc.JWT,
+		Reverse:  rc.Reverse,
 		NodeID:   rc.NodeID,
 		Profiles: append([]ProfileBinding(nil), rc.Profiles...),
 		PKI:      rc.PKI,
@@ -228,7 +249,15 @@ func validateClient(c *ClientConfig) error {
 }
 
 func expandClientPaths(c *ClientConfig) error {
-	for _, p := range []*string{&c.PKI.CACert, &c.PKI.ClientCert, &c.PKI.ClientKey, &c.JWT.TokenFile} {
+	for _, p := range []*string{
+		&c.PKI.CACert,
+		&c.PKI.ClientCert,
+		&c.PKI.ClientKey,
+		&c.JWT.TokenFile,
+		&c.Reverse.PKI.CACert,
+		&c.Reverse.PKI.ServerCert,
+		&c.Reverse.PKI.ServerKey,
+	} {
 		if *p == "" {
 			continue
 		}

@@ -106,6 +106,113 @@ pangaeactl serve -c ./deploy/server/pangaea-server.yaml
 pangaeactl connect -c ./deploy/client/pangaea-client.yaml
 ```
 
+### Reverse mTLS 배포: 클라이언트는 서버에 못 붙고, 서버만 클라이언트에 붙을 수 있는 경우
+
+네트워크 정책 때문에 `client -> server`는 막혀 있는데, 서버 호스트에서는 클라이언트 쪽으로 outbound 접속이 가능한 경우가 있습니다. 이때는 다음 조합을 사용합니다.
+
+- 클라이언트 노드: `pangaeactl reverse-client`
+- 서버 호스트의 별도 bridge 프로세스: `pangaeactl reverse-connect`
+
+기존 `pangaeactl serve` 프로세스는 그대로 두고, reverse bridge만 별도 프로세스로 띄웁니다. 이 bridge는 로컬 unix socket status 서버에 attach한 뒤, profile별 WebSocket 스트림을 reverse-client 쪽과 프록시합니다.
+
+핵심 사항:
+
+- 클라이언트는 기존 `pangaea-client.yaml`의 profile 설정을 그대로 사용합니다
+- 대신 `reverse:` listener 블록을 추가합니다
+- 서버는 기존 `profiles.yaml`에 `reverse_targets`를 추가합니다
+- reverse tunnel 자체는 서버 호스트 bridge와 reverse-client listener 사이에서 mTLS를 사용합니다
+- `server.self_node.enabled`가 반드시 켜져 있어야 합니다. reverse bridge가 서버의 self-node client certificate로 reverse listener에 인증하기 때문입니다
+
+클라이언트 예시:
+
+```yaml
+server: "wss://hub.example.com:8443"
+auth_mode: "mtls"
+node_id: "laptop-a"
+profiles:
+  - name: "claude"
+    format: "claude-credentials-json-format"
+    dir: "~/.claude"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
+      - ".config.json"
+pki:
+  ca_cert: "/abs/path/client/pki/ca.crt"
+  client_cert: "/abs/path/client/pki/client.crt"
+  client_key: "/abs/path/client/pki/client.key"
+reverse:
+  listen: ":9443"
+  pki:
+    ca_cert: "/abs/path/client/pki/ca.crt"
+    server_cert: "/abs/path/client/pki/reverse-server.crt"
+    server_key: "/abs/path/client/pki/reverse-server.key"
+  allowed_peers:
+    - "hub-bridge"
+```
+
+클라이언트 실행:
+
+```bash
+pangaeactl reverse-client -c ./deploy/client/pangaea-client.yaml
+```
+
+서버 측 `profiles.yaml` 예시:
+
+```yaml
+profiles:
+  - name: "claude"
+    format: "claude-credentials-json-format"
+    dir: "~/.claude"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
+      - ".config.json"
+    allowed_clients:
+      - "laptop-a"
+    reverse_targets:
+      - node_id: "laptop-a"
+        url: "wss://laptop-a.example.net:9443"
+```
+
+서버 측 `pangaea-server.yaml`에는 self-node 인증서가 있어야 합니다:
+
+```yaml
+listen: "0.0.0.0:8443"
+auth_mode: "mtls"
+profiles_file: "/abs/path/deploy/server/profiles.yaml"
+self_node:
+  enabled: true
+  node_id: "hub-bridge"
+  client_cert: "/abs/path/deploy/server/issued-clients/hub-bridge/client.crt"
+  client_key: "/abs/path/deploy/server/issued-clients/hub-bridge/client.key"
+pki:
+  ca_cert: "/abs/path/deploy/server/pki/ca.crt"
+  server_cert: "/abs/path/deploy/server/pki/server/server.crt"
+  server_key: "/abs/path/deploy/server/pki/server/server.key"
+```
+
+메인 서버는 평소처럼 실행:
+
+```bash
+pangaeactl serve -c ./deploy/server/pangaea-server.yaml
+```
+
+그 다음 같은 호스트에서 reverse bridge를 별도 프로세스로 실행:
+
+```bash
+pangaeactl reverse-connect \
+  -c ./deploy/server/pangaea-server.yaml \
+  --socket /tmp/pangaea.sock
+```
+
+권장 systemd 분리:
+
+- `pangaea-server.service`는 `serve`
+- `pangaea-reverse-connect.service`는 `reverse-connect`
+
+이렇게 하면 reverse dialing과 reconnect churn이 메인 서버 프로세스에 직접 섞이지 않습니다.
+
 ### 수동 서버 설정
 
 CA 생성:

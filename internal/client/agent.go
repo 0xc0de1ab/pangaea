@@ -25,6 +25,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+type sessionRunner func(ctx context.Context, conn transport.Conn) error
+
 // Options fine-tunes Run beyond what the config file carries. The zero value
 // is valid: Run falls back to config-driven defaults. TLSConfig lets callers
 // (notably the server's self-client loop) inject a pre-built *tls.Config
@@ -71,22 +73,40 @@ func Run(ctx context.Context, cfg *config.ClientConfig, opts Options, log *slog.
 		agentVer = "dev"
 	}
 
+	agents, err := buildAgents(cfg, tlsCfg, agentVer, opts, log)
+	if err != nil {
+		return err
+	}
+
 	eg, egCtx := errgroup.WithContext(ctx)
+	for _, ag := range agents {
+		ag := ag
+		eg.Go(func() error { return ag.run(egCtx) })
+	}
+	err = eg.Wait()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+func buildAgents(cfg *config.ClientConfig, tlsCfg *tls.Config, agentVer string, opts Options, log *slog.Logger) ([]*agent, error) {
+	agents := make([]*agent, 0, len(cfg.Profiles))
 	for _, b := range cfg.Profiles {
 		f, err := resolveFormat(b)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		path, watchPaths, err := resolveBindingPaths(f, b)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		bindLog := log.With(
 			slog.String(logging.FieldComponent, logging.ComponentClient),
 			slog.String(logging.FieldProfile, b.Name),
 			slog.String(logging.FieldNodeID, cfg.NodeID),
 		)
-		ag := &agent{
+		agents = append(agents, &agent{
 			cfg:              cfg,
 			tlsCfg:           tlsCfg,
 			log:              bindLog,
@@ -101,14 +121,9 @@ func Run(ctx context.Context, cfg *config.ClientConfig, opts Options, log *slog.
 			jwtTokenOverride: opts.JWTToken,
 			now:              time.Now,
 			runCommand:       defaultRunCommand,
-		}
-		eg.Go(func() error { return ag.run(egCtx) })
+		})
 	}
-	err := eg.Wait()
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return err
+	return agents, nil
 }
 
 // resolveFormat looks up the format for one profile binding. Operators must
@@ -233,14 +248,25 @@ func (a *agent) accountHint() string {
 
 // run owns the watcher + reconnect loop.
 func (a *agent) run(ctx context.Context) error {
+	if err := a.startStatePumps(ctx); err != nil {
+		return err
+	}
+	return a.runSessions(ctx, a.session)
+}
+
+func (a *agent) startStatePumps(ctx context.Context) error {
 	w, err := watcher.New(a.watchPaths, watcher.Options{})
 	if err != nil {
 		return err
 	}
-	defer w.Close()
 	if err := w.Start(ctx); err != nil {
+		_ = w.Close()
 		return err
 	}
+	go func() {
+		<-ctx.Done()
+		_ = w.Close()
+	}()
 
 	a.pending = make(map[string]watcher.Event)
 
@@ -264,17 +290,20 @@ func (a *agent) run(ctx context.Context) error {
 	}()
 
 	go a.refreshLoop(ctx)
+	return nil
+}
 
+func (a *agent) runSessions(ctx context.Context, sessionFn sessionRunner) error {
 	if a.failFast {
 		conn, err := a.dial(ctx, buildWSURL(a.cfg.Server, a.profile))
 		if err != nil {
 			return err
 		}
 		defer conn.Close(1000, "fail-fast exit")
-		return a.session(ctx, conn)
+		return sessionFn(ctx, conn)
 	}
 
-	return reconnectLoop(ctx, a.cfg, a.profile, a.log, a.dial, a.session)
+	return reconnectLoop(ctx, a.cfg, a.profile, a.log, a.dial, sessionFn)
 }
 
 func defaultRunCommand(ctx context.Context, cmd refreshCommand) ([]byte, error) {

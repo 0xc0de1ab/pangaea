@@ -106,6 +106,113 @@ pangaeactl serve -c ./deploy/server/pangaea-server.yaml
 pangaeactl connect -c ./deploy/client/pangaea-client.yaml
 ```
 
+### Reverse mTLS Deployment: Server Can Reach Client, But Client Cannot Reach Server
+
+In some networks the direct `client -> server` path is blocked while the server host can still open outbound connections to the client node. For that topology use:
+
+- `pangaeactl reverse-client` on the client node
+- `pangaeactl reverse-connect` as a separate bridge process on the server host
+
+The existing `pangaeactl serve` process stays unchanged. The reverse bridge is a second process that attaches to the local unix socket status server and proxies one WebSocket stream per profile.
+
+Important points:
+
+- the client still keeps its normal `pangaea-client.yaml` profile bindings
+- the client adds a `reverse:` listener block
+- the server keeps normal `profiles.yaml`, but adds `reverse_targets` for the nodes that should be reached this way
+- the reverse tunnel itself uses mTLS between the server-host bridge and the reverse-client listener
+- `server.self_node.enabled` must be turned on, because the reverse bridge uses the server's self-node client certificate to authenticate to the reverse listener
+
+Client-side example:
+
+```yaml
+server: "wss://hub.example.com:8443"
+auth_mode: "mtls"
+node_id: "laptop-a"
+profiles:
+  - name: "claude"
+    format: "claude-credentials-json-format"
+    dir: "~/.claude"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
+      - ".config.json"
+pki:
+  ca_cert: "/abs/path/client/pki/ca.crt"
+  client_cert: "/abs/path/client/pki/client.crt"
+  client_key: "/abs/path/client/pki/client.key"
+reverse:
+  listen: ":9443"
+  pki:
+    ca_cert: "/abs/path/client/pki/ca.crt"
+    server_cert: "/abs/path/client/pki/reverse-server.crt"
+    server_key: "/abs/path/client/pki/reverse-server.key"
+  allowed_peers:
+    - "hub-bridge"
+```
+
+The client runs:
+
+```bash
+pangaeactl reverse-client -c ./deploy/client/pangaea-client.yaml
+```
+
+Server-side `profiles.yaml` example:
+
+```yaml
+profiles:
+  - name: "claude"
+    format: "claude-credentials-json-format"
+    dir: "~/.claude"
+    watch_files:
+      - ".credentials.json"
+      - "~/.claude.json"
+      - ".config.json"
+    allowed_clients:
+      - "laptop-a"
+    reverse_targets:
+      - node_id: "laptop-a"
+        url: "wss://laptop-a.example.net:9443"
+```
+
+Server-side `pangaea-server.yaml` must include self-node credentials:
+
+```yaml
+listen: "0.0.0.0:8443"
+auth_mode: "mtls"
+profiles_file: "/abs/path/deploy/server/profiles.yaml"
+self_node:
+  enabled: true
+  node_id: "hub-bridge"
+  client_cert: "/abs/path/deploy/server/issued-clients/hub-bridge/client.crt"
+  client_key: "/abs/path/deploy/server/issued-clients/hub-bridge/client.key"
+pki:
+  ca_cert: "/abs/path/deploy/server/pki/ca.crt"
+  server_cert: "/abs/path/deploy/server/pki/server/server.crt"
+  server_key: "/abs/path/deploy/server/pki/server/server.key"
+```
+
+Run the main server as usual:
+
+```bash
+pangaeactl serve -c ./deploy/server/pangaea-server.yaml
+```
+
+Then run the separate reverse bridge on the same host:
+
+```bash
+pangaeactl reverse-connect \
+  -c ./deploy/server/pangaea-server.yaml \
+  --socket /tmp/pangaea.sock
+```
+
+Recommended systemd split:
+
+- `pangaea-server.service` for `serve`
+- `pangaea-reverse-connect.service` for `reverse-connect`
+
+This keeps reverse dialing and reconnect churn isolated from the main server process.
+
 ### Manual Server Setup
 
 Create a CA:

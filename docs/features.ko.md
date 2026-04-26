@@ -26,6 +26,9 @@
 - `jwt` 인증 모드
   - upgrade 시 Authorization 헤더 사용
   - 헤더가 없을 때 `auth.jwt` first-frame fallback
+- `client -> server`가 안 되고 `server -> client`만 가능한 환경을 위한 reverse 연결 지원
+  - 클라이언트의 `reverse-client`
+  - 서버 호스트의 별도 bridge 프로세스 `reverse-connect`
 - notifier sink
   - Telegram
   - Slack
@@ -101,6 +104,7 @@
 - duplicate identity displacement
 - `--also-client`를 통한 in-process self-client
 - unix socket status endpoint
+- reverse bridge가 붙을 수 있는 local unix-socket attach endpoint
 - SIGHUP 기반 profile reload
 
 ## 클라이언트 기능
@@ -111,11 +115,14 @@
 - JWT header 또는 first-frame 인증
 - format-aware account resolution
 - 보조 메타 파일 변경 시 watcher 기반 재보고
+- 서버가 먼저 접속하는 reverse-client listener 옵션
 
 ## CLI 기능
 
 - `serve`
 - `connect`
+- `reverse-client`
+- `reverse-connect`
 - `setup server`
 - `setup client`
 - `ca init`

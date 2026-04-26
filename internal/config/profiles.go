@@ -19,13 +19,21 @@ type ProfilesFile struct {
 
 // Profile mirrors specs §6.2.
 type Profile struct {
-	Name           string        `yaml:"name"`
-	Format         string        `yaml:"format"`
-	Dir            string        `yaml:"dir"`
-	WatchFiles     []string      `yaml:"watch_files"`
-	AllowedClients []string      `yaml:"allowed_clients"`
-	Validate       ValidateSpec  `yaml:"validate"`
-	Propagate      PropagateSpec `yaml:"propagate"`
+	Name           string          `yaml:"name"`
+	Format         string          `yaml:"format"`
+	Dir            string          `yaml:"dir"`
+	WatchFiles     []string        `yaml:"watch_files"`
+	AllowedClients []string        `yaml:"allowed_clients"`
+	ReverseTargets []ReverseTarget `yaml:"reverse_targets"`
+	Validate       ValidateSpec    `yaml:"validate"`
+	Propagate      PropagateSpec   `yaml:"propagate"`
+}
+
+// ReverseTarget is one reverse-client endpoint the separate reverse-connector
+// process should dial for this profile.
+type ReverseTarget struct {
+	NodeID string `yaml:"node_id"`
+	URL    string `yaml:"url"`
 }
 
 // ValidateSpec configures which strategy the format uses to compare snapshots
@@ -70,6 +78,7 @@ type rawProfile struct {
 	Dir            string           `yaml:"dir"`
 	WatchFiles     []string         `yaml:"watch_files"`
 	AllowedClients []string         `yaml:"allowed_clients"`
+	ReverseTargets []ReverseTarget  `yaml:"reverse_targets"`
 	Validate       rawValidateSpec  `yaml:"validate"`
 	Propagate      rawPropagateSpec `yaml:"propagate"`
 }
@@ -151,6 +160,21 @@ func convertProfile(rp rawProfile, idx int) (Profile, error) {
 			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, common.MsgAllowedClientEmpty)
 		}
 	}
+	reverseTargets := make([]ReverseTarget, 0, len(rp.ReverseTargets))
+	seenReverse := make(map[string]struct{}, len(rp.ReverseTargets))
+	for _, target := range rp.ReverseTargets {
+		if target.NodeID == "" {
+			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: reverse_targets.node_id is required", rp.Name)
+		}
+		if target.URL == "" {
+			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: reverse_targets[%s].url is required", rp.Name, target.NodeID)
+		}
+		if _, dup := seenReverse[target.NodeID]; dup {
+			return Profile{}, common.Wrap(nil, common.ErrConfigInvalid, "profile %q: duplicate reverse target for node %q", rp.Name, target.NodeID)
+		}
+		seenReverse[target.NodeID] = struct{}{}
+		reverseTargets = append(reverseTargets, target)
+	}
 
 	val, err := convertValidate(rp.Validate, rp.Name)
 	if err != nil {
@@ -167,6 +191,7 @@ func convertProfile(rp rawProfile, idx int) (Profile, error) {
 		Dir:            dir,
 		WatchFiles:     watchFiles,
 		AllowedClients: append([]string(nil), rp.AllowedClients...),
+		ReverseTargets: reverseTargets,
 		Validate:       val,
 		Propagate:      prop,
 	}, nil

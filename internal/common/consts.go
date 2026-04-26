@@ -7,8 +7,10 @@ import "time"
 
 // Networking / transport defaults.
 const (
-	DefaultPort  = 8443
-	DefaultWSPath = "/ws/profile/"
+	DefaultPort          = 8443
+	DefaultWSPath        = "/ws/profile/"
+	DefaultReverseWSPath = "/reverse/profile/"
+	DefaultAttachWSPath  = "/attach/profile/"
 	// EnvelopeV is the current protocol version written into every message envelope.
 	EnvelopeV = 1
 )
@@ -38,9 +40,9 @@ const (
 
 // Watcher defaults.
 const (
-	WatcherDebounceCore  = 50 * time.Millisecond
-	WatcherStableWindow  = 200 * time.Millisecond
-	WatcherDefaultQueue  = 64
+	WatcherDebounceCore = 50 * time.Millisecond
+	WatcherStableWindow = 200 * time.Millisecond
+	WatcherDefaultQueue = 64
 )
 
 // Live-check / validation defaults.

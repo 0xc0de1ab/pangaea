@@ -53,87 +53,99 @@ func handleWS(h *Hub, ps config.ProfileStore, serverVersion string, auth *authen
 			)
 			return
 		}
+		serveConn(c.Request.Context(), h, name, serverVersion, auth, hs, conn, c.ClientIP(), log)
+	}
+}
 
-		// Handshake: wait for hello, then send welcome.
-		handshakeTO := common.ReadTimeout
-		if auth.authTimeout > handshakeTO {
-			handshakeTO = auth.authTimeout
-		}
-		ctx, cancel := context.WithTimeout(c.Request.Context(), handshakeTO)
-		defer cancel()
+func serveConn(
+	ctx context.Context,
+	h *Hub,
+	profileName string,
+	serverVersion string,
+	auth *authenticator,
+	hs handshakeAuth,
+	conn transport.Conn,
+	remoteAddr string,
+	log *slog.Logger,
+) {
+	handshakeTO := common.ReadTimeout
+	if auth != nil && auth.authTimeout > handshakeTO {
+		handshakeTO = auth.authTimeout
+	}
+	hctx, cancel := context.WithTimeout(ctx, handshakeTO)
+	defer cancel()
 
-		if hs.needsJWT {
-			authCtx, authCancel := context.WithTimeout(ctx, auth.authTimeout)
-			defer authCancel()
-			hs, err = auth.completeJWT(authCtx, conn, name)
-			if err != nil {
-				_ = conn.Close(1008, err.Error())
-				return
-			}
-		}
-
-		env, ok := readKind(ctx, conn, transport.KindHello)
-		if !ok {
-			_ = conn.Close(1002, "hello required")
+	var err error
+	if hs.needsJWT {
+		if auth == nil {
+			_ = conn.Close(1008, common.MsgAuthJWTRequired)
 			return
 		}
-		var hello transport.Hello
-		if err := json.Unmarshal(env.Payload, &hello); err != nil || hello.NodeID == "" {
-			_ = conn.Close(1002, "hello payload invalid")
-			return
-		}
-		if hello.NodeID != hs.identity {
-			_ = conn.Close(1008, common.MsgHelloIdentityMismatch)
-			return
-		}
-
-		session := newSession(conn, name, hs.peerCN, hs.identity, hello.NodeID, hs.mode, log)
-
-		// Register and welcome. Registration may fail on ACL mismatch or shutdown.
-		if err := h.Register(c.Request.Context(), name, hs, session); err != nil {
-			log.Warn("register rejected",
-				slog.String(logging.FieldComponent, logging.ComponentServer),
-				slog.String(logging.FieldProfile, name),
-				slog.String(logging.FieldPeerCN, hs.peerCN),
-				slog.String(logging.FieldIdentity, hs.identity),
-				slog.String(logging.FieldAuthMode, string(hs.mode)),
-				slog.String(logging.FieldNodeID, hello.NodeID),
-				slog.String(logging.FieldReason, err.Error()),
-			)
+		authCtx, authCancel := context.WithTimeout(hctx, auth.authTimeout)
+		defer authCancel()
+		hs, err = auth.completeJWT(authCtx, conn, profileName)
+		if err != nil {
 			_ = conn.Close(1008, err.Error())
 			return
 		}
+	}
 
-		var known *transport.TruthMeta
-		if session.hub != nil {
-			known = session.hub.mediator.currentTruthMeta(c.Request.Context())
-		}
-		if err := session.sendWelcome(ctx, serverVersion, known); err != nil {
-			log.Warn("welcome send failed",
-				slog.String(logging.FieldComponent, logging.ComponentServer),
-				slog.String(logging.FieldReason, err.Error()),
-			)
-			h.Unregister(session)
-			_ = conn.Close(1011, "welcome failed")
-			return
-		}
+	env, ok := readKind(hctx, conn, transport.KindHello)
+	if !ok {
+		_ = conn.Close(1002, "hello required")
+		return
+	}
+	var hello transport.Hello
+	if err := json.Unmarshal(env.Payload, &hello); err != nil || hello.NodeID == "" {
+		_ = conn.Close(1002, "hello payload invalid")
+		return
+	}
+	if hs.identity != "" && hello.NodeID != hs.identity {
+		_ = conn.Close(1008, common.MsgHelloIdentityMismatch)
+		return
+	}
 
-		log.Info("session connected",
+	session := newSession(conn, profileName, hs.peerCN, hs.identity, hello.NodeID, hs.mode, log)
+	if err := h.Register(ctx, profileName, hs, session); err != nil {
+		log.Warn("register rejected",
 			slog.String(logging.FieldComponent, logging.ComponentServer),
-			slog.String(logging.FieldEvent, logging.EvtConnected),
-			slog.String(logging.FieldProfile, name),
+			slog.String(logging.FieldProfile, profileName),
 			slog.String(logging.FieldPeerCN, hs.peerCN),
 			slog.String(logging.FieldIdentity, hs.identity),
 			slog.String(logging.FieldAuthMode, string(hs.mode)),
 			slog.String(logging.FieldNodeID, hello.NodeID),
-			slog.String(logging.FieldRemoteAddr, c.ClientIP()),
+			slog.String(logging.FieldReason, err.Error()),
 		)
-
-		// Hand control to the session's read loop. When it returns we
-		// unregister and let the deferred cancels tear everything down.
-		session.readLoop(c.Request.Context())
-		h.Unregister(session)
+		_ = conn.Close(1008, err.Error())
+		return
 	}
+
+	var known *transport.TruthMeta
+	if session.hub != nil {
+		known = session.hub.mediator.currentTruthMeta(ctx)
+	}
+	if err := session.sendWelcome(hctx, serverVersion, known); err != nil {
+		log.Warn("welcome send failed",
+			slog.String(logging.FieldComponent, logging.ComponentServer),
+			slog.String(logging.FieldReason, err.Error()),
+		)
+		h.Unregister(session)
+		_ = conn.Close(1011, "welcome failed")
+		return
+	}
+
+	log.Info("session connected",
+		slog.String(logging.FieldComponent, logging.ComponentServer),
+		slog.String(logging.FieldEvent, logging.EvtConnected),
+		slog.String(logging.FieldProfile, profileName),
+		slog.String(logging.FieldPeerCN, hs.peerCN),
+		slog.String(logging.FieldIdentity, hs.identity),
+		slog.String(logging.FieldAuthMode, string(hs.mode)),
+		slog.String(logging.FieldNodeID, hello.NodeID),
+		slog.String(logging.FieldRemoteAddr, remoteAddr),
+	)
+	session.readLoop(ctx)
+	h.Unregister(session)
 }
 
 func readKind(ctx context.Context, conn transport.Conn, want transport.Kind) (transport.Envelope, bool) {
