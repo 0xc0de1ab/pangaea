@@ -115,47 +115,60 @@ Runtime override:
 
 - `ANTHROPIC_OAUTH_PROFILE_URL`
 
-## Usage / Plan / Organization Data
+## Usage / Plan Data
 
-The current Claude probe does not return direct usage counters such as `Used` or `Limit`. Instead, it enriches notifications with plan and organization metadata from the OAuth profile endpoint.
+Claude usage probing now mirrors Claude CLI `/usage`.
 
 Request:
 
 - method: `GET`
-- URL: `https://api.anthropic.com/api/oauth/profile`
+- URL: `https://api.anthropic.com/api/oauth/usage`
 - headers:
   - `Authorization: Bearer <accessToken>`
   - `Accept: application/json`
+  - `Content-Type: application/json`
+  - `anthropic-beta: oauth-2025-04-20`
+
+Runtime override:
+
+- `ANTHROPIC_OAUTH_USAGE_URL`
 
 Relevant response shape:
 
 ```json
 {
-  "account": {
-    "uuid": "acc_...",
-    "email_address": "user@example.com"
-  },
-  "organization": {
-    "uuid": "org_...",
-    "name": "Acme Inc",
-    "organization_type": "claude_max",
-    "rate_limit_tier": "default_claude_max_20x"
+  "five_hour": { "utilization": 7, "resets_at": "2026-04-26T03:30:00Z" },
+  "seven_day": { "utilization": 31, "resets_at": "2026-04-29T07:00:00Z" },
+  "seven_day_sonnet": { "utilization": 0, "resets_at": "2026-04-29T07:00:00Z" },
+  "extra_usage": {
+    "is_enabled": true,
+    "monthly_limit": 5000,
+    "used_credits": 258,
+    "utilization": 5.16
   }
 }
 ```
 
 Current `UsageReport` mapping:
 
-- `PlanTier`: `organization.organization_type`
+- `PlanTier`: `claudeAiOauth.subscriptionType`
 - `Notes`:
-  - `org: <organization.name>`
-  - `rate-limit-tier: <organization.rate_limit_tier>`
-  - `email: <account.email_address>`
+  - `rate-limit-tier: <claudeAiOauth.rateLimitTier>` when present
+  - `extra usage: not enabled` for `pro` / `max` plans with overage disabled
+  - `extra usage: unlimited` for `pro` / `max` plans with unlimited extra usage
+  - `extra usage spend: $x / $y` when the API reports monthly extra-usage spend
+- `Windows`:
+  - `Current session` from `five_hour`
+  - `Current week (all models)` from `seven_day`
+  - `Current week (Sonnet only)` from `seven_day_sonnet` only for `max`, `team`, or unknown subscription type
+  - `Extra usage` only for `pro` / `max` when the API exposes utilization
 
-Important limitation:
+Subscription-dependent rendering follows Claude CLI:
 
-- this implementation does not currently expose live Anthropic usage counters
-- Claude notifications may therefore show plan, organization, and validity, but not always a numeric remaining quota
+- `max`, `team`, or unknown subscription: show the separate Sonnet weekly window
+- `pro`, `enterprise`: hide the Sonnet-only window because it is redundant with the weekly limit
+- `pro`, `max`: show `extra_usage` state when returned by the API
+- `team`, `enterprise`: ignore `extra_usage` in notifications, matching the CLI Usage tab
 
 ## Redaction-Safe Summary
 

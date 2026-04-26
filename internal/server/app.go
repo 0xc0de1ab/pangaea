@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/common"
@@ -68,7 +69,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, ps config.ProfileStore, 
 			func(_ context.Context) []notifier.TruthRecord {
 				raw := hub.SnapshotTruths()
 				out := make([]notifier.TruthRecord, 0, len(raw))
+				withTruth := make(map[string]bool, len(raw))
 				for _, t := range raw {
+					withTruth[t.Profile] = true
 					out = append(out, notifier.TruthRecord{
 						Profile:     t.Profile,
 						Account:     t.Account,
@@ -78,8 +81,36 @@ func Run(ctx context.Context, cfg *config.ServerConfig, ps config.ProfileStore, 
 						PushedAt:    t.PushedAt,
 						RawB64:      t.RawB64,
 						Summary:     t.Summary,
+						Nodes:       append([]string(nil), t.Nodes...),
 					})
 				}
+				for _, p := range ps.List() {
+					if withTruth[p.Name] {
+						continue
+					}
+					nodes := snapshotProfileNodes(hub, p.Name)
+					out = append(out, notifier.TruthRecord{
+						Profile: p.Name,
+						Format:  p.Format,
+						NoTruth: true,
+						Nodes:   nodes,
+					})
+				}
+				slices.SortFunc(out, func(a, b notifier.TruthRecord) int {
+					if a.Profile != b.Profile {
+						if a.Profile < b.Profile {
+							return -1
+						}
+						return 1
+					}
+					if a.Account != b.Account {
+						if a.Account < b.Account {
+							return -1
+						}
+						return 1
+					}
+					return 0
+				})
 				return out
 			},
 			formats.Get,
@@ -205,6 +236,23 @@ func Run(ctx context.Context, cfg *config.ServerConfig, ps config.ProfileStore, 
 var readyDelay = 100 * time.Millisecond
 
 var _ = readyDelay
+
+func snapshotProfileNodes(h *Hub, profile string) []string {
+	h.mu.Lock()
+	ph, ok := h.byProfile[profile]
+	h.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	sessions := ph.snapshotSessions()
+	nodes := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		nodes = append(nodes, s.nodeID)
+	}
+	slices.Sort(nodes)
+	nodes = slices.Compact(nodes)
+	return nodes
+}
 
 // buildNotifierSinks constructs every enabled sink. Each sink decides for
 // itself whether its config is complete; we surface an empty sink list

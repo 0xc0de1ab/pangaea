@@ -147,3 +147,57 @@ func TestProbe_FallsBackToTopLevelAccountID(t *testing.T) {
 		t.Fatalf("PlanTier = %q", rep.PlanTier)
 	}
 }
+
+func TestProbe_ParsesUnixResetAt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"plan_type":"pro",
+			"rate_limit":{
+				"allowed":true, "limit_reached":false,
+				"primary_window":   {"used_percent":15, "limit_window_seconds":18000, "reset_after_seconds":1200, "reset_at":1777178051},
+				"secondary_window": {"used_percent":48, "limit_window_seconds":604800,"reset_after_seconds":289627,"reset_at":1777466452}
+			},
+			"additional_rate_limits":[
+				{
+					"limit_name":"GPT-5.3-Codex-Spark",
+					"rate_limit":{
+						"allowed":true, "limit_reached":false,
+						"primary_window":{"used_percent":0,"limit_window_seconds":18000,"reset_after_seconds":18000,"reset_at":1777194825}
+					}
+				}
+			]
+		}`))
+	}))
+	defer srv.Close()
+	saved := ChatGPTUsageEndpoint
+	ChatGPTUsageEndpoint = srv.URL
+	defer func() { ChatGPTUsageEndpoint = saved }()
+
+	idTok := makeIDTokenWithAccount(t, "acct-xyz")
+	raw, _ := json.Marshal(map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"id_token":      idTok,
+			"access_token":  idTok + "X",
+			"refresh_token": "rt",
+		},
+	})
+	snap, err := (Format{}).Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	rep, err := (Format{}).Probe(context.Background(), snap, "", srv.Client())
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if len(rep.Windows) != 3 {
+		t.Fatalf("windows = %d, want 3", len(rep.Windows))
+	}
+	if got := rep.Windows[0].ResetAt.UTC().Format(time.RFC3339); got != "2026-04-26T04:34:11Z" {
+		t.Fatalf("primary reset_at = %s", got)
+	}
+	if got := rep.Windows[2].ResetAt.UTC().Format(time.RFC3339); got != "2026-04-26T09:13:45Z" {
+		t.Fatalf("extra reset_at = %s", got)
+	}
+}

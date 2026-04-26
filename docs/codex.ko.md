@@ -144,22 +144,57 @@ Codex는 세 포맷 중 usage 숫자를 가장 직접적으로 가져오는 구�
     },
     "secondary_window": {
       "used_percent": 55.0,
-      "limit_window_seconds": 86400,
+      "limit_window_seconds": 604800,
       "reset_at": "2026-04-26T18:00:00Z"
     }
-  }
+  },
+  "additional_rate_limits": [
+    {
+      "limit_name": "GPT-5.3-Codex-Spark",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 0,
+          "limit_window_seconds": 18000,
+          "reset_at": "2026-04-26T04:00:00Z"
+        },
+        "secondary_window": {
+          "used_percent": 30,
+          "limit_window_seconds": 604800,
+          "reset_at": "2026-04-29T03:00:00Z"
+        }
+      }
+    }
+  ]
 }
 ```
 
 현재 `UsageReport` 매핑:
 
 - `PlanTier`: `plan_type`
-- `RemainingPct`: `100 - primary_window.used_percent`
-- `Unit`: `limit_window_seconds` 기반 human label
-- `ResetAt`: `primary_window.reset_at`
-- `Notes`:
-  - secondary window 사용률/리셋 시각
-  - limit reached note
+- top-level summary `RemainingPct`: `100 - rate_limit.primary_window.used_percent`
+- top-level summary `ResetAt`: `rate_limit.primary_window.reset_at`
+- `Windows`에는 다음 bucket들이 들어간다:
+  - `5h limit`
+  - `Weekly limit`
+  - `<additional limit name> 5h limit`
+  - `<additional limit name> Weekly limit`
+- `Notes`에는 메인 rate limit과 추가 rate-limit 그룹의 `limit reached` 메모가 들어간다
+
+이 구조는 Codex `/status` 화면의 quota 구조와 직접 대응한다.
+
+- 기본 계정 5시간 / 주간 제한
+- `GPT-5.3-Codex-Spark` 같은 추가 모델별 제한
+
+notifier는 이 window들을 남은 퍼센트와 reset 시각 중심으로 렌더링한다.
+
+예시:
+
+```text
+5h limit: 97% left, resets ...
+Weekly limit: 54% left, resets ...
+GPT-5.3-Codex-Spark 5h limit: 100% left, resets ...
+GPT-5.3-Codex-Spark Weekly limit: 70% left, resets ...
+```
 
 ## redaction-safe summary
 

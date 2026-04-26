@@ -128,6 +128,42 @@ validation은 로컬 판정만 한다.
 }
 ```
 
+Quota probe 후속 호출:
+
+- method: `POST`
+- URL: 같은 base에 `:retrieveUserQuota`
+- body:
+
+```json
+{
+  "project": "projects/..."
+}
+```
+
+관련 quota 응답 조각:
+
+```json
+{
+  "buckets": [
+    {
+      "modelId": "gemini-3.1-flash",
+      "remainingFraction": 1,
+      "resetTime": "2026-04-26T23:24:00Z"
+    },
+    {
+      "modelId": "gemini-3.1-flash-lite",
+      "remainingFraction": 1,
+      "resetTime": "2026-04-26T23:24:00Z"
+    },
+    {
+      "modelId": "gemini-3.1-pro",
+      "remainingFraction": 1,
+      "resetTime": "2026-04-26T23:24:00Z"
+    }
+  ]
+}
+```
+
 현재 `UsageReport` 매핑:
 
 - `PlanTier`: `currentTier.id`
@@ -135,11 +171,12 @@ validation은 로컬 판정만 한다.
   - `tier: <currentTier.name>`
   - `paid-tier: <paidTier.id>` if different
   - `project: <cloudaicompanionProject>`
+- `Windows`:
+  - `Flash`
+  - `Flash Lite`
+  - `Pro`
 
-제한사항:
-
-- 현재 구현은 숫자형 remaining quota를 제공하지 않는다
-- 더 자세한 quota endpoint를 쓸 여지는 있지만, 현 notifier 모델에는 너무 noisy해서 아직 쓰지 않는다
+Gemini CLI는 여러 raw `modelId` bucket을 이 세 라벨로 묶고, 각 라벨 그룹에서 가장 낮은 remaining fraction을 화면에 보여준다. notifier도 같은 grouping을 써서 `/model` 화면과 같은 범주를 보여준다.
 
 ## redaction-safe summary
 
@@ -162,4 +199,4 @@ redacted summary에 포함될 수 있는 값:
 
 - `id_token`이 없거나 깨져 있으면 account partition이 shared bucket으로 약해질 수 있다.
 - 5분 eager-refresh window 안에 들어온 토큰은 전파할 가치가 없다고 보고 탈락시킨다.
-- Gemini 알림은 현재 usage 숫자보다는 validity, tier, project 정보 중심이다.
+- Gemini 알림은 upstream quota endpoint가 응답하면 `Flash`, `Flash Lite`, `Pro`별 남은 quota도 함께 포함한다.

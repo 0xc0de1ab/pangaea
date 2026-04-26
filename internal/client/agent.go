@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -97,6 +99,8 @@ func Run(ctx context.Context, cfg *config.ClientConfig, opts Options, log *slog.
 			agentVer:         agentVer,
 			failFast:         opts.FailFast,
 			jwtTokenOverride: opts.JWTToken,
+			now:              time.Now,
+			runCommand:       defaultRunCommand,
 		}
 		eg.Go(func() error { return ag.run(egCtx) })
 	}
@@ -167,11 +171,18 @@ type agent struct {
 	failFast         bool
 	jwtTokenOverride string
 	jwtUseFirstFrame bool
+	now              func() time.Time
+	runCommand       func(ctx context.Context, cmd refreshCommand) ([]byte, error)
 
 	// pendingMu guards pending — the "latest watcher event per path" buffer
 	// used while the session is disconnected.
 	pendingMu sync.Mutex
 	pending   map[string]watcher.Event // path -> latest
+
+	refreshMu              sync.Mutex
+	lastRefreshAttemptAt   time.Time
+	lastRefreshFingerprint string
+	lastRefreshReason      string
 }
 
 // resolveAccount calls the format's AccountAware hook (if implemented) and
@@ -252,6 +263,8 @@ func (a *agent) run(ctx context.Context) error {
 		}
 	}()
 
+	go a.refreshLoop(ctx)
+
 	if a.failFast {
 		conn, err := a.dial(ctx, buildWSURL(a.cfg.Server, a.profile))
 		if err != nil {
@@ -262,6 +275,15 @@ func (a *agent) run(ctx context.Context) error {
 	}
 
 	return reconnectLoop(ctx, a.cfg, a.profile, a.log, a.dial, a.session)
+}
+
+func defaultRunCommand(ctx context.Context, cmd refreshCommand) ([]byte, error) {
+	c := exec.CommandContext(ctx, cmd.Name, cmd.Args...)
+	c.Dir = cmd.Dir
+	if len(cmd.Env) > 0 {
+		c.Env = append(os.Environ(), cmd.Env...)
+	}
+	return c.CombinedOutput()
 }
 
 // session runs one connected lifetime: hello → welcome → concurrent read &
@@ -303,7 +325,9 @@ func (a *agent) session(ctx context.Context, conn transport.Conn) error {
 		a.jwtUseFirstFrame = false
 	}
 
-	// Drain the pending buffer: one snapshot.report per path.
+	// Re-report the current state on every successful connect. This avoids
+	// reconnect/displacement races where the watcher buffer has not yet replayed
+	// but the server needs a fresh candidate before the next propagation pass.
 	if err := a.flushPending(ctx, conn); err != nil {
 		return err
 	}
@@ -341,34 +365,15 @@ func (a *agent) session(ctx context.Context, conn transport.Conn) error {
 	}
 }
 
-// flushPending re-reports the current credential state for every changed
-// watched file, then clears the buffer. Called once on session open to replay
-// buffered state.
+// flushPending clears the buffered watcher state and re-reports the current
+// credential snapshot once. On reconnect we only care about the latest current
+// view; replaying each historical watched-file event is redundant and makes the
+// displacement path timing-sensitive.
 func (a *agent) flushPending(ctx context.Context, conn transport.Conn) error {
 	a.pendingMu.Lock()
-	evs := make([]watcher.Event, 0, len(a.pending))
-	for _, ev := range a.pending {
-		evs = append(evs, ev)
-	}
 	a.pending = make(map[string]watcher.Event)
 	a.pendingMu.Unlock()
-
-	for _, ev := range evs {
-		if err := a.reportEvent(ctx, conn, ev); err != nil {
-			return err
-		}
-	}
-	// If no events fired (rare — watcher emits initial state), still report
-	// snapshot.absent so the server has state.
-	if len(evs) == 0 {
-		abs := transport.SnapshotAbsent{
-			Profile: a.profile,
-			Account: a.resolveAccountWithoutSnapshot(ctx),
-			Path:    a.path,
-		}
-		return sendEnvelope(ctx, conn, transport.KindSnapshotAbsent, abs)
-	}
-	return nil
+	return a.reportCurrentState(ctx, conn)
 }
 
 // writeLoop drains watcher events while the session is live and sends
@@ -462,8 +467,15 @@ func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher
 		slog.String(logging.FieldFingerprint, snap.Fingerprint()),
 		slog.String(logging.FieldStatus, string(res.Status)),
 	)
+	if res.Status == formats.StatusExpired {
+		a.maybeRefreshAsync(ctx)
+	}
 
 	return sendEnvelope(ctx, conn, transport.KindSnapshotReport, report)
+}
+
+func (a *agent) reportCurrentState(ctx context.Context, conn transport.Conn) error {
+	return a.reportEvent(ctx, conn, watcher.Event{Path: a.path})
 }
 
 // readLoop handles truth.push envelopes and writes truth.ack responses.

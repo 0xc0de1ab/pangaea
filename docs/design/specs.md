@@ -390,7 +390,7 @@ profiles:
       - ".credentials.json"
       - "~/.claude.json"
       - ".config.json"
-    allowed_clients: ["host-a", "host-b", "server-self"]
+    allowed_clients: ["host-a", "host-b", "hub(server)"]
     validate:
       strategy: "expires_at_max"  # format이 정의하는 비교 전략 키
       live_check: true            # /api/oauth/profile 호출 여부

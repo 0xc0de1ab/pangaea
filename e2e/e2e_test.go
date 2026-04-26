@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -148,7 +149,6 @@ func TestE2E_JWTProfileDeniedRejected(t *testing.T) {
 }
 
 func TestE2E_SessionDisplacementKeepsReplacementLive(t *testing.T) {
-	t.Parallel()
 	env := newE2EEnv(t, config.AuthModeMTLS)
 	older := sampleCreds(time.Now().Add(5*time.Minute), "OLD")
 	newer := sampleCreds(time.Now().Add(2*time.Hour), "NEW")
@@ -172,14 +172,20 @@ func TestE2E_SessionDisplacementKeepsReplacementLive(t *testing.T) {
 
 	startClientAsync(clientCtx, cloneClientConfig(env.clientB), client.Options{AgentVersion: "test"}, log)
 	waitForClientExit(t, b1Done, 5*time.Second)
-	// Ensure the replacement session has re-reported its current snapshot
-	// before node-a advances truth; propagation is account-scoped and only
-	// reaches nodes the mediator has seen in that account bucket.
-	writeMaybeFile(t, env.pathB, older)
-	time.Sleep(300 * time.Millisecond)
+	writeMaybeFile(t, env.pathA, newer)
+	waitForFileContent(t, env.pathB, newer)
 
-	for i := 0; i < 4; i++ {
+	// Make node-b diverge after the replacement session has already proven it
+	// can receive truth from node-a. Re-writing node-a with the same truth
+	// should still re-push to stale members under stale_only mode.
+	writeMaybeFile(t, env.pathB, sampleCreds(time.Now().Add(4*time.Minute), "OLD2"))
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		writeMaybeFile(t, env.pathA, newer)
+		if bytes.Equal(mustReadFile(t, env.pathB), newer) {
+			return
+		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	waitForFileContent(t, env.pathB, newer)

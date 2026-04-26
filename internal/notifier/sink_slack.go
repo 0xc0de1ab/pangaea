@@ -27,8 +27,9 @@ type SlackSinkConfig struct {
 // SlackSink is a Sink that posts to Slack incoming webhooks. Each webhook
 // URL is treated as a secret and never logged.
 type SlackSink struct {
-	cfg    SlackSinkConfig
-	client *slack.Client
+	cfg      SlackSinkConfig
+	client   *slack.Client
+	periodic periodicState
 }
 
 // NewSlackSink constructs a sink. client may be nil to use a freshly-built
@@ -52,6 +53,32 @@ func (s *SlackSink) Notify(ctx context.Context, r TruthRecord, u formats.UsageRe
 		return false, nil
 	}
 	return true, s.client.PostMessage(ctx, url, renderSlack(r, u))
+}
+
+func (s *SlackSink) NotifyPeriodic(ctx context.Context, records []ReportRecord) error {
+	groups := groupPeriodicRecords(records, s.routeFor)
+	for _, url := range sortedGroupKeys(groups) {
+		signature := periodicDigest(groups[url])
+		body := renderPeriodicMrkdwn(groups[url])
+		if s.periodic.unchanged(url, signature) {
+			continue
+		}
+		if err := s.client.PostMessage(ctx, url, body); err != nil {
+			return err
+		}
+		s.periodic.remember(url, signature)
+	}
+	return nil
+}
+
+func (s *SlackSink) NotifySessionBatch(ctx context.Context, events []TruthRecord) error {
+	groups := groupSessionEvents(events, s.routeFor)
+	for _, url := range sortedTruthGroupKeys(groups) {
+		if err := s.client.PostMessage(ctx, url, renderSessionBatchMrkdwn(groups[url])); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SlackSink) routeFor(profile, account string) string {

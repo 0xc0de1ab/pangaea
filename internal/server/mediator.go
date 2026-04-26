@@ -90,6 +90,7 @@ type MirrorTruth struct {
 	Format      string
 	RawB64      string
 	Summary     transport.SummaryCarrier
+	Nodes       []string
 }
 
 // SnapshotTruths returns a copy of the current per-account truth state.
@@ -108,9 +109,18 @@ func (m *Mediator) SnapshotTruths() map[string]MirrorTruth {
 // reselect. It rebuilds the mirror from scratch — the cost is small (a
 // handful of accounts) and a stale entry from a removed account would
 // confuse downstream readers.
-func (m *Mediator) updateMirror(truths map[string]*truthState) {
+func (m *Mediator) updateMirror(truths map[string]*truthState, cands map[string]*candidate) {
 	next := make(map[string]MirrorTruth, len(truths))
 	for a, t := range truths {
+		nodes := make([]string, 0)
+		for nodeID, c := range cands {
+			if c.account != a {
+				continue
+			}
+			nodes = append(nodes, nodeID)
+		}
+		sort.Strings(nodes)
+		nodes = slices.Compact(nodes)
 		next[a] = MirrorTruth{
 			Account:     t.account,
 			Fingerprint: t.fingerprint,
@@ -119,6 +129,7 @@ func (m *Mediator) updateMirror(truths map[string]*truthState) {
 			Format:      t.format,
 			RawB64:      t.rawB64,
 			Summary:     t.summary,
+			Nodes:       nodes,
 		}
 	}
 	m.mirrorMu.Lock()
@@ -230,9 +241,7 @@ func (m *Mediator) run(ctx context.Context) {
 			m.onAck(candidates, a)
 		case nid := <-m.disconnects:
 			delete(candidates, nid)
-			// If the disconnected node was the one we last pulled truth from
-			// we still keep `truths` — the raw bytes are already broadcast; a
-			// re-selection will happen on the next report.
+			m.reselect(ctx, candidates, truths, m.profile.Format)
 		}
 	}
 }
@@ -374,7 +383,42 @@ func (m *Mediator) reselect(ctx context.Context, cands map[string]*candidate, tr
 		slog.Int("accounts", len(byAccount)),
 	)
 
+	lostAccounts := make([]string, 0)
+	for account := range truths {
+		if _, ok := byAccount[account]; ok {
+			continue
+		}
+		lostAccounts = append(lostAccounts, account)
+	}
+	sort.Strings(lostAccounts)
+	for _, account := range lostAccounts {
+		prev := truths[account]
+		delete(truths, account)
+		m.log.Warn("truth lost",
+			slog.String(logging.FieldEvent, logging.EvtMediatorCandidates),
+			slog.String(logging.FieldOutcome, logging.OutcomeDegraded),
+			slog.String(logging.FieldAccount, account),
+			slog.String(logging.FieldFingerprint, prev.fingerprint),
+		)
+		if m.notifyFn != nil {
+			record := notifier.TruthRecord{
+				Profile:     m.profile.Name,
+				Account:     account,
+				Format:      prev.format,
+				Fingerprint: prev.fingerprint,
+				IssuedAt:    prev.issuedAt,
+				PushedAt:    prev.pushedAt,
+				Summary:     prev.summary,
+				PrevSummary: prev.summary,
+				Nodes:       accountNodes(cands, account),
+				EventKind:   notifier.EventTruthLost,
+			}
+			go m.notifyFn(context.WithoutCancel(ctx), record)
+		}
+	}
+
 	if len(byAccount) == 0 {
+		m.updateMirror(truths, cands)
 		m.log.Warn("no viable candidate",
 			slog.String(logging.FieldEvent, logging.EvtMediatorCandidates),
 			slog.String(logging.FieldOutcome, logging.OutcomeDegraded),
@@ -432,7 +476,6 @@ func (m *Mediator) reselect(ctx context.Context, cands map[string]*candidate, tr
 				pushedAt:    now,
 			}
 			truths[account] = ts
-			m.updateMirror(truths)
 
 			m.log.Info("truth selected",
 				slog.String(logging.FieldEvent, logging.EvtTruthSelected),
@@ -441,6 +484,22 @@ func (m *Mediator) reselect(ctx context.Context, cands map[string]*candidate, tr
 				slog.String(logging.FieldNodeID, best.nodeID),
 				slog.String(logging.FieldStrategy, strategy),
 			)
+			if prev == nil && m.notifyFn != nil {
+				record := notifier.TruthRecord{
+					Profile:     m.profile.Name,
+					Account:     ts.account,
+					Format:      ts.format,
+					Fingerprint: ts.fingerprint,
+					IssuedAt:    ts.issuedAt,
+					PushedAt:    ts.pushedAt,
+					RawB64:      ts.rawB64,
+					Summary:     ts.summary,
+					SourceNode:  best.nodeID,
+					Nodes:       accountNodes(cands, ts.account),
+					EventKind:   notifier.EventTruthRestored,
+				}
+				go m.notifyFn(context.WithoutCancel(ctx), record)
+			}
 		} else {
 			m.log.Debug("truth unchanged; checking stale members",
 				slog.String(logging.FieldEvent, logging.EvtTruthUnchanged),
@@ -453,7 +512,7 @@ func (m *Mediator) reselect(ctx context.Context, cands map[string]*candidate, tr
 		// authoritative dedupe so a node that just reported with an older
 		// fingerprint catches up even when the truth itself didn't change.
 		targets := m.pushTruth(ctx, cands, ts, best.nodeID)
-		if truthChanged && len(targets) > 0 && m.notifyFn != nil {
+		if len(targets) > 0 && m.notifyFn != nil {
 			record := notifier.TruthRecord{
 				Profile:     m.profile.Name,
 				Account:     ts.account,
@@ -463,12 +522,15 @@ func (m *Mediator) reselect(ctx context.Context, cands map[string]*candidate, tr
 				PushedAt:    time.Now(),
 				RawB64:      ts.rawB64,
 				Summary:     ts.summary,
+				PrevSummary: prevSummary(prev),
 				SourceNode:  best.nodeID,
 				TargetNodes: targets,
+				Nodes:       accountNodes(cands, ts.account),
 			}
 			go m.notifyFn(context.WithoutCancel(ctx), record)
 		}
 	}
+	m.updateMirror(truths, cands)
 }
 
 // pushTruth delivers truth for one account to nodes that participate in
@@ -547,6 +609,25 @@ func (m *Mediator) pushTruth(ctx context.Context, cands map[string]*candidate, t
 	}
 	sort.Strings(sent)
 	return sent
+}
+
+func prevSummary(ts *truthState) transport.SummaryCarrier {
+	if ts == nil {
+		return transport.SummaryCarrier{}
+	}
+	return ts.summary
+}
+
+func accountNodes(cands map[string]*candidate, account string) []string {
+	nodes := make([]string, 0)
+	for nodeID, c := range cands {
+		if c.account != account {
+			continue
+		}
+		nodes = append(nodes, nodeID)
+	}
+	sort.Strings(nodes)
+	return slices.Compact(nodes)
 }
 
 // currentTruthMeta returns the truth metadata suitable for welcome.known_truth.

@@ -3,6 +3,8 @@
 /bin/
 /dist/
 /build/
+/back/
+/backup/
 
 # dev pki / credentials (never commit!)
 /pki/

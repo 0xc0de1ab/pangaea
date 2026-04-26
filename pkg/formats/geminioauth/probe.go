@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
@@ -27,9 +30,9 @@ var LoadCodeAssistEndpoint = func() string {
 }()
 
 type loadCodeAssistRequest struct {
-	CloudaiCompanionProject string                  `json:"cloudaicompanionProject,omitempty"`
-	Metadata                loadCodeAssistMetadata  `json:"metadata"`
-	Mode                    string                  `json:"mode,omitempty"`
+	CloudaiCompanionProject string                 `json:"cloudaicompanionProject,omitempty"`
+	Metadata                loadCodeAssistMetadata `json:"metadata"`
+	Mode                    string                 `json:"mode,omitempty"`
 }
 
 type loadCodeAssistMetadata struct {
@@ -50,13 +53,24 @@ type loadCodeAssistResponse struct {
 	CloudaiCompanionProject string `json:"cloudaicompanionProject"`
 }
 
-// Probe issues a lightweight POST to v1internal:loadCodeAssist. Successful
-// response → token works; we surface the user's currentTier (free /
-// standard / legacy), the paid tier id if any, and the assigned project
-// id. Gemini does not expose a usage-percent endpoint reachable by Bearer
-// alone — retrieveUserQuota needs a project, which we have, but its
-// response shape is per-bucket and noisy for a one-line summary; we leave
-// it for a future enhancement.
+type retrieveUserQuotaRequest struct {
+	Project string `json:"project,omitempty"`
+}
+
+type quotaBucket struct {
+	ModelID           string  `json:"modelId"`
+	RemainingFraction float64 `json:"remainingFraction"`
+	RemainingAmount   string  `json:"remainingAmount"`
+	ResetTime         string  `json:"resetTime"`
+}
+
+type retrieveUserQuotaResponse struct {
+	Buckets []quotaBucket `json:"buckets"`
+}
+
+// Probe issues a lightweight POST to v1internal:loadCodeAssist followed by
+// retrieveUserQuota for the assigned project. This mirrors Gemini CLI's own
+// quota refresh path used by the `/model` UI.
 func (Format) Probe(ctx context.Context, snap formats.Snapshot, _ string, httpClient *http.Client) (formats.UsageReport, error) {
 	cs, ok := snap.(*snapshot)
 	if !ok {
@@ -114,5 +128,126 @@ func (Format) Probe(ctx context.Context, snap formats.Snapshot, _ string, httpCl
 	if out.CloudaiCompanionProject != "" {
 		rep.Notes = append(rep.Notes, "project: "+out.CloudaiCompanionProject)
 	}
+	if out.CloudaiCompanionProject == "" {
+		return rep, nil
+	}
+
+	quotaReqBody, err := json.Marshal(retrieveUserQuotaRequest{Project: out.CloudaiCompanionProject})
+	if err != nil {
+		return formats.UsageReport{}, err
+	}
+	quotaReq, err := http.NewRequestWithContext(ctx, http.MethodPost, retrieveUserQuotaEndpoint(LoadCodeAssistEndpoint), bytes.NewReader(quotaReqBody))
+	if err != nil {
+		return formats.UsageReport{}, err
+	}
+	quotaReq.Header.Set("Authorization", "Bearer "+cs.accessToken)
+	quotaReq.Header.Set("Content-Type", "application/json")
+	quotaReq.Header.Set("Accept", "application/json")
+	quotaResp, err := httpClient.Do(quotaReq)
+	if err != nil {
+		return formats.UsageReport{}, err
+	}
+	defer quotaResp.Body.Close()
+	quotaBody, _ := io.ReadAll(quotaResp.Body)
+	if quotaResp.StatusCode/100 != 2 {
+		preview := quotaBody
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return formats.UsageReport{}, fmt.Errorf("geminioauth.Probe quota: HTTP %d: %s", quotaResp.StatusCode, preview)
+	}
+	var quota retrieveUserQuotaResponse
+	if err := json.Unmarshal(quotaBody, &quota); err != nil {
+		return formats.UsageReport{}, fmt.Errorf("geminioauth.Probe quota: decode: %w", err)
+	}
+	rep.Windows = buildQuotaWindows(quota.Buckets)
+	if len(rep.Windows) > 0 {
+		rep.RemainingPct = rep.Windows[0].RemainingPct
+		rep.ResetAt = rep.Windows[0].ResetAt
+	}
 	return rep, nil
+}
+
+func retrieveUserQuotaEndpoint(loadEndpoint string) string {
+	return strings.Replace(loadEndpoint, ":loadCodeAssist", ":retrieveUserQuota", 1)
+}
+
+func buildQuotaWindows(buckets []quotaBucket) []formats.UsageWindow {
+	type agg struct {
+		label        string
+		remainingPct float64
+		resetAt      string
+	}
+	byLabel := map[string]agg{}
+	for _, bucket := range buckets {
+		label := geminiQuotaLabel(bucket.ModelID)
+		if label == "" || (bucket.RemainingFraction < 0 && bucket.RemainingAmount == "") {
+			continue
+		}
+		current, ok := byLabel[label]
+		if !ok || bucket.RemainingFraction < current.remainingPct/100 {
+			byLabel[label] = agg{
+				label:        label,
+				remainingPct: bucket.RemainingFraction * 100,
+				resetAt:      bucket.ResetTime,
+			}
+		}
+	}
+	order := []string{"Flash", "Flash Lite", "Pro"}
+	out := make([]formats.UsageWindow, 0, len(byLabel))
+	for _, label := range order {
+		current, ok := byLabel[label]
+		if !ok {
+			continue
+		}
+		out = append(out, formats.UsageWindow{
+			Label:        current.label,
+			RemainingPct: current.remainingPct,
+			ResetAt:      parseQuotaReset(current.resetAt),
+		})
+		delete(byLabel, label)
+	}
+	if len(byLabel) > 0 {
+		rest := make([]string, 0, len(byLabel))
+		for label := range byLabel {
+			rest = append(rest, label)
+		}
+		slices.Sort(rest)
+		for _, label := range rest {
+			current := byLabel[label]
+			out = append(out, formats.UsageWindow{
+				Label:        current.label,
+				RemainingPct: current.remainingPct,
+				ResetAt:      parseQuotaReset(current.resetAt),
+			})
+		}
+	}
+	return out
+}
+
+func geminiQuotaLabel(modelID string) string {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.Contains(modelID, "flash-lite"):
+		return "Flash Lite"
+	case strings.Contains(modelID, "flash"):
+		return "Flash"
+	case strings.Contains(modelID, "pro"):
+		return "Pro"
+	default:
+		return ""
+	}
+}
+
+func parseQuotaReset(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	layouts := []string{time.RFC3339Nano, time.RFC3339}
+	for _, layout := range layouts {
+		if ts, err := time.Parse(layout, raw); err == nil {
+			return ts
+		}
+	}
+	return time.Time{}
 }

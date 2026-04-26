@@ -127,7 +127,6 @@ func (h *Hub) Register(ctx context.Context, profileName string, auth handshakeAu
 	}
 
 	ph.mu.Lock()
-	defer ph.mu.Unlock()
 
 	// Displace any prior session for this CN. We close the old conn outside
 	// the lock via a deferred call to avoid lock-inversion with session code.
@@ -138,6 +137,7 @@ func (h *Hub) Register(ctx context.Context, profileName string, auth handshakeAu
 	ph.sessions[s.nodeID] = s
 	ph.sessionsByIdentity[auth.identity] = s
 	s.hub = ph
+	ph.mu.Unlock()
 
 	if displaced != nil {
 		// Close after returning, outside the lock.
@@ -152,6 +152,17 @@ func (h *Hub) Register(ctx context.Context, profileName string, auth handshakeAu
 			)
 			_ = p.conn.Close(1008, common.ErrSessionDisplaced.Error())
 		}(displaced)
+	}
+	if h.notifyFn != nil {
+		h.notifyFn(ctx, notifier.TruthRecord{
+			Profile:   profileName,
+			Format:    ph.format.Name(),
+			EventKind: notifier.EventSessionConnected,
+			NodeID:    s.nodeID,
+			PeerCN:    s.peerCN,
+			AuthMode:  string(s.authMode),
+			Nodes:     ph.snapshotNodeIDs(),
+		})
 	}
 	return nil
 }
@@ -175,6 +186,17 @@ func (h *Hub) Unregister(s *Session) {
 	// Let mediator update candidate state.
 	if removedCurrent {
 		ph.mediator.NotifyDisconnect(s.nodeID)
+	}
+	if removedCurrent && h.notifyFn != nil {
+		h.notifyFn(context.Background(), notifier.TruthRecord{
+			Profile:   ph.profile.Name,
+			Format:    ph.format.Name(),
+			EventKind: notifier.EventSessionDisconnected,
+			NodeID:    s.nodeID,
+			PeerCN:    s.peerCN,
+			AuthMode:  string(s.authMode),
+			Nodes:     ph.snapshotNodeIDs(),
+		})
 	}
 }
 
@@ -222,6 +244,18 @@ func (ph *profileHub) snapshotSessions() []*Session {
 	for _, s := range ph.sessions {
 		out = append(out, s)
 	}
+	return out
+}
+
+func (ph *profileHub) snapshotNodeIDs() []string {
+	ph.mu.Lock()
+	defer ph.mu.Unlock()
+	out := make([]string, 0, len(ph.sessions))
+	for _, s := range ph.sessions {
+		out = append(out, s.nodeID)
+	}
+	slices.Sort(out)
+	out = slices.Compact(out)
 	return out
 }
 

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
@@ -30,10 +32,10 @@ var ChatGPTUsageEndpoint = func() string {
 
 // rateLimitWindow mirrors RateLimitWindowSnapshot from the codex OpenAPI.
 type rateLimitWindow struct {
-	UsedPercent         float64   `json:"used_percent"`
-	LimitWindowSeconds  int64     `json:"limit_window_seconds"`
-	ResetAfterSeconds   int64     `json:"reset_after_seconds"`
-	ResetAt             time.Time `json:"reset_at"`
+	UsedPercent        float64  `json:"used_percent"`
+	LimitWindowSeconds int64    `json:"limit_window_seconds"`
+	ResetAfterSeconds  int64    `json:"reset_after_seconds"`
+	ResetAt            flexTime `json:"reset_at"`
 }
 
 type rateLimitDetails struct {
@@ -46,8 +48,50 @@ type rateLimitDetails struct {
 // rateLimitStatusPayload mirrors RateLimitStatusPayload. We pick the fields
 // most useful for human-facing output and ignore the rest.
 type rateLimitStatusPayload struct {
-	PlanType  string           `json:"plan_type"`
-	RateLimit rateLimitDetails `json:"rate_limit"`
+	PlanType             string           `json:"plan_type"`
+	RateLimit            rateLimitDetails `json:"rate_limit"`
+	AdditionalRateLimits []struct {
+		LimitName string           `json:"limit_name"`
+		RateLimit rateLimitDetails `json:"rate_limit"`
+	} `json:"additional_rate_limits"`
+}
+
+type flexTime struct {
+	time.Time
+}
+
+func (ft *flexTime) UnmarshalJSON(data []byte) error {
+	raw := string(data)
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		ft.Time = time.Time{}
+		return nil
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			ft.Time = time.Time{}
+			return nil
+		}
+		if ts, err := time.Parse(time.RFC3339, s); err == nil {
+			ft.Time = ts.UTC()
+			return nil
+		}
+		if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			ft.Time = ts.UTC()
+			return nil
+		}
+		return fmt.Errorf("invalid RFC3339 time %q", s)
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid unix timestamp %q: %w", raw, err)
+	}
+	ft.Time = time.Unix(n, 0).UTC()
+	return nil
 }
 
 // Probe calls /backend-api/wham/usage. The codex auth.json file already
@@ -101,14 +145,27 @@ func (Format) Probe(ctx context.Context, snap formats.Snapshot, _ string, httpCl
 	if w := out.RateLimit.PrimaryWindow; w != nil {
 		rep.RemainingPct = 100 - w.UsedPercent
 		rep.Unit = humanWindowUnit(w.LimitWindowSeconds)
-		rep.ResetAt = w.ResetAt
+		rep.ResetAt = w.ResetAt.Time
+		rep.Windows = append(rep.Windows, usageWindow("", w))
 	}
 	if w := out.RateLimit.SecondaryWindow; w != nil {
+		rep.Windows = append(rep.Windows, usageWindow("", w))
 		rep.Notes = append(rep.Notes,
 			fmt.Sprintf("%s window: %.1f%% used (resets %s)",
 				humanWindowUnit(w.LimitWindowSeconds),
 				w.UsedPercent,
 				w.ResetAt.UTC().Format(time.RFC3339)))
+	}
+	for _, extra := range out.AdditionalRateLimits {
+		if w := extra.RateLimit.PrimaryWindow; w != nil {
+			rep.Windows = append(rep.Windows, usageWindow(extra.LimitName, w))
+		}
+		if w := extra.RateLimit.SecondaryWindow; w != nil {
+			rep.Windows = append(rep.Windows, usageWindow(extra.LimitName, w))
+		}
+		if extra.RateLimit.LimitReached && extra.LimitName != "" {
+			rep.Notes = append(rep.Notes, extra.LimitName+": limit reached on at least one window")
+		}
 	}
 	if out.RateLimit.LimitReached {
 		rep.Notes = append(rep.Notes, "limit reached on at least one window")
@@ -128,5 +185,35 @@ func humanWindowUnit(seconds int64) string {
 		return fmt.Sprintf("%dh window", seconds/3600)
 	default:
 		return fmt.Sprintf("%dd window", seconds/86400)
+	}
+}
+
+func usageWindow(prefix string, w *rateLimitWindow) formats.UsageWindow {
+	label := humanWindowLabel(w.LimitWindowSeconds)
+	if prefix != "" {
+		label = prefix + " " + label
+	}
+	return formats.UsageWindow{
+		Label:        label,
+		RemainingPct: 100 - w.UsedPercent,
+		ResetAt:      w.ResetAt.Time,
+		Unit:         humanWindowUnit(w.LimitWindowSeconds),
+	}
+}
+
+func humanWindowLabel(seconds int64) string {
+	switch seconds {
+	case 5 * 60 * 60:
+		return "5h limit"
+	case 7 * 24 * 60 * 60:
+		return "Weekly limit"
+	}
+	switch {
+	case seconds <= 0:
+		return "limit"
+	case seconds < 24*60*60:
+		return fmt.Sprintf("%dh limit", seconds/3600)
+	default:
+		return fmt.Sprintf("%dd limit", seconds/86400)
 	}
 }

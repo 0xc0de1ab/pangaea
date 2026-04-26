@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/client"
@@ -35,6 +36,13 @@ func SelfClientFactory(
 			return common.Wrap(nil, common.ErrProfileNotFound, common.MsgProfileUnknown, profileName)
 		}
 
+		nodeID := defaultSelfNodeID()
+		if cert, err := pki.VerifyClientCert(serverCfg.PKI.CACert, serverCfg.SelfNode.ClientCert, "", time.Now()); err == nil {
+			if cn := cert.Subject.CommonName; cn != "" {
+				nodeID = cn
+			}
+		}
+
 		// Build an inline ClientConfig. The server URL is the HTTPS listen
 		// address under wss://localhost:<port> so the SAN "localhost"
 		// matches. We expect server.yaml to list localhost among the server
@@ -43,7 +51,7 @@ func SelfClientFactory(
 		clientCfg := &config.ClientConfig{
 			Server:   serverURL,
 			AuthMode: serverCfg.AuthMode,
-			NodeID:   "server-self",
+			NodeID:   nodeID,
 			Profiles: []config.ProfileBinding{{
 				Name:       profileName,
 				Format:     p.Format,
@@ -97,6 +105,14 @@ func SelfClientFactory(
 			JWTToken:     jwtToken,
 		}, log)
 	}
+}
+
+func defaultSelfNodeID() string {
+	host, err := os.Hostname()
+	if err == nil && host != "" {
+		return host + "(server)"
+	}
+	return "server(server)"
 }
 
 // listenToLocalhost rewrites "0.0.0.0:8443" / ":8443" / "[::]:8443" style

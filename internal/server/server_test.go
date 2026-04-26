@@ -241,7 +241,7 @@ func TestServer_PropagationNotifierEmitsSourceAndTargets(t *testing.T) {
 	p := mintPKI(t)
 	ps := config.NewProfileStore(testProfile([]string{"node-a", "node-b"}, 0))
 	hub := NewHub(ps, logging.New(logging.Options{Level: "error"}))
-	events := make(chan notifier.TruthRecord, 1)
+	events := make(chan notifier.TruthRecord, 8)
 	hub.SetPropagationNotifier(func(_ context.Context, r notifier.TruthRecord) {
 		select {
 		case events <- r:
@@ -276,16 +276,158 @@ func TestServer_PropagationNotifierEmitsSourceAndTargets(t *testing.T) {
 
 	require.Equal(t, transport.KindTruthPush, readEnv(t, b).Type)
 
-	select {
-	case evt := <-events:
-		require.Equal(t, "p1", evt.Profile)
-		require.Equal(t, "claude-credentials-json-format", evt.Format)
-		require.Equal(t, "node-a", evt.SourceNode)
-		require.Equal(t, []string{"node-b"}, evt.TargetNodes)
-		require.NotEmpty(t, evt.Fingerprint)
-		require.NotEmpty(t, evt.RawB64)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for propagation notification")
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			if evt.EventKind != "" {
+				continue
+			}
+			require.Equal(t, "p1", evt.Profile)
+			require.Equal(t, "claude-credentials-json-format", evt.Format)
+			require.Equal(t, "node-a", evt.SourceNode)
+			require.Equal(t, []string{"node-b"}, evt.TargetNodes)
+			require.Equal(t, []string{"node-a", "node-b"}, evt.Nodes)
+			require.NotEmpty(t, evt.Fingerprint)
+			require.NotEmpty(t, evt.RawB64)
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for propagation notification")
+		}
+	}
+}
+
+func TestServer_PropagationNotifierEmitsForLateStaleJoiner(t *testing.T) {
+	p := mintPKI(t)
+	ps := config.NewProfileStore(testProfile([]string{"node-a", "node-b"}, 0))
+	hub := NewHub(ps, logging.New(logging.Options{Level: "error"}))
+	events := make(chan notifier.TruthRecord, 8)
+	hub.SetPropagationNotifier(func(_ context.Context, r notifier.TruthRecord) {
+		select {
+		case events <- r:
+		default:
+		}
+	})
+	srv := startTestServerWithHub(t, p, ps, hub)
+	defer srv.Close()
+
+	a := dialClient(t, srv, p, p.clientACert, p.clientAKey, "p1")
+	defer a.Close()
+	writeEnv(t, a, transport.KindHello, transport.Hello{NodeID: "node-a", AgentVersion: "0.1", OS: "linux"})
+	require.Equal(t, transport.KindWelcome, readEnv(t, a).Type)
+
+	newer := sampleCreds(time.Now().Add(2*time.Hour), "NEWA")
+	writeEnv(t, a, transport.KindSnapshotReport, transport.SnapshotReport{
+		Profile: "p1", Path: "/tmp/a", Format: "claude-credentials-json-format",
+		RawB64: base64.StdEncoding.EncodeToString(newer), RawSize: len(newer),
+		LiveCheck: transport.LiveCheckMeta{Performed: false},
+	})
+
+	quietUntil := time.After(250 * time.Millisecond)
+	for {
+		select {
+		case evt := <-events:
+			if evt.EventKind != "" {
+				continue
+			}
+			t.Fatalf("unexpected early propagation notification without targets: %+v", evt)
+		case <-quietUntil:
+			goto lateJoiner
+		}
+	}
+
+lateJoiner:
+	b := dialClient(t, srv, p, p.clientBCert, p.clientBKey, "p1")
+	defer b.Close()
+	writeEnv(t, b, transport.KindHello, transport.Hello{NodeID: "node-b", AgentVersion: "0.1", OS: "linux"})
+	require.Equal(t, transport.KindWelcome, readEnv(t, b).Type)
+
+	older := sampleCreds(time.Now().Add(10*time.Minute), "OLDB")
+	writeEnv(t, b, transport.KindSnapshotReport, transport.SnapshotReport{
+		Profile: "p1", Path: "/tmp/b", Format: "claude-credentials-json-format",
+		RawB64: base64.StdEncoding.EncodeToString(older), RawSize: len(older),
+		LiveCheck: transport.LiveCheckMeta{Performed: false},
+	})
+
+	require.Equal(t, transport.KindTruthPush, readEnv(t, b).Type)
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			if evt.EventKind != "" {
+				continue
+			}
+			require.Equal(t, "p1", evt.Profile)
+			require.Equal(t, "claude-credentials-json-format", evt.Format)
+			require.Equal(t, "node-a", evt.SourceNode)
+			require.Equal(t, []string{"node-b"}, evt.TargetNodes)
+			require.NotEmpty(t, evt.Fingerprint)
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for late-join propagation notification")
+		}
+	}
+}
+
+func TestServer_TruthRestoredAndLostNotifications(t *testing.T) {
+	p := mintPKI(t)
+	ps := config.NewProfileStore(testProfile([]string{"node-a"}, 0))
+	hub := NewHub(ps, logging.New(logging.Options{Level: "error"}))
+	events := make(chan notifier.TruthRecord, 16)
+	hub.SetPropagationNotifier(func(_ context.Context, r notifier.TruthRecord) {
+		select {
+		case events <- r:
+		default:
+		}
+	})
+	srv := startTestServerWithHub(t, p, ps, hub)
+	defer srv.Close()
+
+	a := dialClient(t, srv, p, p.clientACert, p.clientAKey, "p1")
+	writeEnv(t, a, transport.KindHello, transport.Hello{NodeID: "node-a", AgentVersion: "0.1", OS: "linux"})
+	require.Equal(t, transport.KindWelcome, readEnv(t, a).Type)
+
+	newer := sampleCreds(time.Now().Add(2*time.Hour), "NEWA")
+	writeEnv(t, a, transport.KindSnapshotReport, transport.SnapshotReport{
+		Profile: "p1", Path: "/tmp/a", Format: "claude-credentials-json-format",
+		RawB64: base64.StdEncoding.EncodeToString(newer), RawSize: len(newer),
+		LiveCheck: transport.LiveCheckMeta{Performed: false},
+	})
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			if evt.EventKind != notifier.EventTruthRestored {
+				continue
+			}
+			require.Equal(t, "p1", evt.Profile)
+			require.Equal(t, "node-a", evt.SourceNode)
+			require.Equal(t, []string{"node-a"}, evt.Nodes)
+			require.NotEmpty(t, evt.RawB64)
+			goto disconnect
+		case <-deadline:
+			t.Fatal("timed out waiting for truth restored notification")
+		}
+	}
+
+disconnect:
+	require.NoError(t, a.Close())
+
+	deadline = time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			if evt.EventKind != notifier.EventTruthLost {
+				continue
+			}
+			require.Equal(t, "p1", evt.Profile)
+			require.NotEmpty(t, evt.Fingerprint)
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for truth lost notification")
+		}
 	}
 }
 

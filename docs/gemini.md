@@ -128,6 +128,42 @@ Relevant response shape:
 }
 ```
 
+Quota probe follow-up:
+
+- method: `POST`
+- URL: same base with `:retrieveUserQuota`
+- body:
+
+```json
+{
+  "project": "projects/..."
+}
+```
+
+Relevant quota response slice:
+
+```json
+{
+  "buckets": [
+    {
+      "modelId": "gemini-3.1-flash",
+      "remainingFraction": 1,
+      "resetTime": "2026-04-26T23:24:00Z"
+    },
+    {
+      "modelId": "gemini-3.1-flash-lite",
+      "remainingFraction": 1,
+      "resetTime": "2026-04-26T23:24:00Z"
+    },
+    {
+      "modelId": "gemini-3.1-pro",
+      "remainingFraction": 1,
+      "resetTime": "2026-04-26T23:24:00Z"
+    }
+  ]
+}
+```
+
 Current `UsageReport` mapping:
 
 - `PlanTier`: `currentTier.id`
@@ -135,11 +171,12 @@ Current `UsageReport` mapping:
   - `tier: <currentTier.name>`
   - `paid-tier: <paidTier.id>` when different
   - `project: <cloudaicompanionProject>`
+- `Windows`:
+  - `Flash`
+  - `Flash Lite`
+  - `Pro`
 
-Important limitation:
-
-- this implementation does not currently expose a numeric remaining quota
-- richer quota endpoints may exist, but they are not used by the current notifier because they are noisier than the current summary model
+The Gemini CLI groups multiple raw `modelId` buckets into those three display labels and keeps the lowest remaining fraction seen in each label group. The notifier mirrors that UI-centric grouping, so operators see the same categories they see in `/model`.
 
 ## Redaction-Safe Summary
 
@@ -162,4 +199,4 @@ It never includes:
 
 - If `id_token` is absent or malformed, account partitioning may fall back to the shared bucket.
 - A token inside the 5-minute eager-refresh window is treated as not worth propagating.
-- Gemini notifications currently emphasize validity, tier, and assigned project rather than a remaining usage number.
+- Gemini notifications now include per-model-family remaining quota (`Flash`, `Flash Lite`, `Pro`) when the upstream quota endpoint responds successfully.

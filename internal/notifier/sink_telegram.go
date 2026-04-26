@@ -2,7 +2,9 @@ package notifier
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/0xc0de1ab/pangaea/internal/notifier/telegram"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
@@ -26,8 +28,9 @@ type TelegramSinkConfig struct {
 // TelegramSink is a Sink that routes per (profile, account) to chat IDs
 // and renders messages with HTML parse mode.
 type TelegramSink struct {
-	cfg    TelegramSinkConfig
-	client *telegram.Client
+	cfg      TelegramSinkConfig
+	client   *telegram.Client
+	periodic periodicState
 }
 
 // NewTelegramSink constructs a sink. Caller is responsible for setting
@@ -55,6 +58,42 @@ func (s *TelegramSink) Notify(ctx context.Context, r TruthRecord, u formats.Usag
 	})
 }
 
+func (s *TelegramSink) NotifySessionBatch(ctx context.Context, events []TruthRecord) error {
+	groups := groupSessionEvents(events, s.routeFor)
+	for _, chatID := range sortedTruthGroupKeys(groups) {
+		if err := s.client.SendMessage(ctx, telegram.SendMessageRequest{
+			ChatID:              chatID,
+			Text:                renderSessionBatchTelegram(groups[chatID]),
+			ParseMode:           "HTML",
+			DisableNotification: s.cfg.DisableNotification,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *TelegramSink) NotifyPeriodic(ctx context.Context, records []ReportRecord) error {
+	groups := groupPeriodicRecords(records, s.routeFor)
+	for _, chatID := range sortedGroupKeys(groups) {
+		signature := periodicDigest(groups[chatID])
+		text := renderPeriodicTelegram(groups[chatID])
+		if s.periodic.unchanged(chatID, signature) {
+			continue
+		}
+		if err := s.client.SendMessage(ctx, telegram.SendMessageRequest{
+			ChatID:              chatID,
+			Text:                text,
+			ParseMode:           "HTML",
+			DisableNotification: s.cfg.DisableNotification,
+		}); err != nil {
+			return err
+		}
+		s.periodic.remember(chatID, signature)
+	}
+	return nil
+}
+
 func (s *TelegramSink) routeFor(profile, account string) string {
 	for _, r := range s.cfg.Routes {
 		if (r.Profile == "" || r.Profile == profile) &&
@@ -67,7 +106,245 @@ func (s *TelegramSink) routeFor(profile, account string) string {
 
 // renderTelegram composes the human-facing text in Telegram's HTML mode.
 func renderTelegram(r TruthRecord, u formats.UsageReport) string {
-	return renderHTML(r, u)
+	if r.EventKind == EventSessionConnected || r.EventKind == EventSessionDisconnected || r.EventKind == EventSessionReconnected {
+		v := buildView(r, u)
+		lines := []string{
+			telegramKV("Profile", v.Profile),
+			telegramKV("LLM", v.Model),
+			telegramKV("Node", v.NodeID),
+		}
+		if v.AuthMode != "" {
+			lines = append(lines, telegramKV("Auth Mode", v.AuthMode))
+		}
+		if v.PeerCN != "" {
+			lines = append(lines, telegramKV("Peer CN", v.PeerCN))
+		}
+		if v.HasNodes {
+			lines = append(lines, telegramKV("Connected", strings.Join(v.Nodes, ", ")))
+		}
+		return strings.Join([]string{
+			telegramHTMLBold(v.Heading),
+			"<pre>" + htmlEscape(strings.Join(lines, "\n")) + "</pre>",
+		}, "\n")
+	}
+
+	v := buildView(r, u)
+	lines := []string{
+		telegramHTMLBold(v.Heading),
+		"<pre>" + htmlEscape(strings.Join(renderTelegramTableLines(v), "\n")) + "</pre>",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderPeriodicTelegram(records []ReportRecord) string {
+	lines := []string{
+		telegramHTMLBold("Auth State"),
+		"<pre>" + htmlEscape(strings.Join(renderPeriodicTelegramLines(records), "\n")) + "</pre>",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderSessionBatchTelegram(events []TruthRecord) string {
+	v := buildSessionBatchView(events)
+	lines := []string{}
+	lines = append(lines, telegramKV("Node", v.NodeID))
+	if v.AuthMode != "" {
+		lines = append(lines, telegramKV("Auth Mode", v.AuthMode))
+	}
+	if v.PeerCN != "" {
+		lines = append(lines, telegramKV("Peer CN", v.PeerCN))
+	}
+	lines = append(lines, "")
+	lines = append(lines, sessionBatchTableLines(v)...)
+	return strings.Join([]string{
+		telegramHTMLBold(v.Heading),
+		"<pre>" + htmlEscape(strings.Join(lines, "\n")) + "</pre>",
+	}, "\n")
+}
+
+func renderTelegramTableLines(v renderView) []string {
+	rows := [][2]string{
+		{"Profile", v.Profile},
+		{"LLM", v.Model},
+	}
+	if v.HasNodes {
+		rows = append(rows, [2]string{"Nodes", strings.Join(v.Nodes, ", ")})
+	}
+	if v.HasSourceNode {
+		rows = append(rows, [2]string{"Latest Detected", v.SourceNode})
+	}
+	if v.HasTargetNodes {
+		rows = append(rows, [2]string{"Propagated To", strings.Join(v.TargetNodes, ", ")})
+	}
+	if v.HasAccount {
+		rows = append(rows, [2]string{"Account", v.AccountID})
+	}
+	if v.HasLastRefresh {
+		rows = append(rows, [2]string{"Refresh", v.LastRefresh})
+	}
+	if v.HasExpiryChange {
+		rows = append(rows, [2]string{"Expiry Change", v.ExpiryChange})
+	} else if v.HasValidity {
+		rows = append(rows, [2]string{"Valid Until", v.Validity})
+	}
+	if v.HasPlan {
+		rows = append(rows, [2]string{"Plan", v.Plan})
+	}
+	if v.HasFingerprint {
+		rows = append(rows, [2]string{"Fingerprint", v.Fingerprint})
+	}
+	lines := make([]string, 0, len(rows)+len(v.UsageDetails)+len(v.Notes)+4)
+	for _, row := range rows {
+		lines = append(lines, telegramKV(row[0], row[1]))
+	}
+	if v.HasUsage {
+		lines = append(lines, telegramKV("Usage", v.Usage))
+	}
+	if len(v.UsageDetails) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "USAGE")
+		for _, detail := range v.UsageDetails {
+			lines = append(lines, telegramBarRows(detail)...)
+		}
+	}
+	if len(v.Notes) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "NOTES")
+		for _, note := range v.Notes {
+			lines = append(lines, "  "+truncateTelegram(note, 92))
+		}
+	}
+	return lines
+}
+
+func renderPeriodicTelegramLines(records []ReportRecord) []string {
+	header := fmt.Sprintf("%-10s %-5s %-20s %-22s %-31s", "PROFILE", "TRUTH", "NODES", "ACCOUNT", "VALID UNTIL")
+	type block struct {
+		lines        []string
+		dividerWidth int
+	}
+	blocks := make([]block, 0, len(records))
+	for _, record := range records {
+		v := buildPeriodicView(record)
+		row := fmt.Sprintf(
+			"%-10s %-5s %-20s %-22s %-31s",
+			truncateTelegram(v.Profile, 10),
+			truncateTelegram(v.TruthStatus, 5),
+			truncateTelegram(strings.Join(v.Nodes, ","), 20),
+			truncateTelegram(v.AccountID, 22),
+			truncateTelegram(v.ValidUntil, 31),
+		)
+		current := block{lines: []string{row}, dividerWidth: telegramDisplayWidth(row)}
+		if v.LastRefresh != "-" {
+			refreshLine := "  Last refresh  " + truncateTelegram(v.LastRefresh, 48)
+			current.lines = append(current.lines, refreshLine)
+			if w := telegramDisplayWidth(refreshLine); w > current.dividerWidth {
+				current.dividerWidth = w
+			}
+		}
+		usageWidth := 0
+		for _, detail := range v.UsageDetails {
+			rows := telegramBarRows(detail)
+			current.lines = append(current.lines, rows...)
+			for _, line := range rows {
+				if w := telegramDisplayWidth(line); w > usageWidth {
+					usageWidth = w
+				}
+			}
+		}
+		if usageWidth > 0 {
+			current.dividerWidth = usageWidth
+		}
+		blocks = append(blocks, current)
+	}
+
+	lines := []string{header}
+	for i, current := range blocks {
+		lines = append(lines, current.lines...)
+		if i < len(blocks)-1 {
+			lines = append(lines, strings.Repeat("─", current.dividerWidth))
+		}
+	}
+	return lines
+}
+
+func telegramKV(label, value string) string {
+	return fmt.Sprintf("%-8s %s", label, truncateTelegram(value, 96))
+}
+
+func telegramBarRows(detail string) []string {
+	label, pct, reset := splitUsageDetail(detail)
+	bar := usageBarFromDetail(detail, 12)
+	if pct == "" {
+		return []string{"  " + truncateTelegram(detail, 96)}
+	}
+	line1 := strings.TrimSpace(fmt.Sprintf("%-24s %s", truncateTelegram(label, 24), bar+" "+pct))
+	if reset == "" {
+		return []string{"  " + line1}
+	}
+	line2 := "      " + truncateTelegram(reset, 48)
+	return []string{"  " + line1, line2}
+}
+
+func splitUsageDetail(detail string) (label, pct, reset string) {
+	parts := strings.SplitN(detail, ": ", 2)
+	if len(parts) == 2 {
+		label = parts[0]
+		detail = parts[1]
+	} else {
+		label = "usage"
+	}
+	if idx := strings.Index(detail, "% left"); idx >= 0 {
+		pct = detail[:idx+6]
+		if next := strings.Index(detail[idx+6:], "resets "); next >= 0 {
+			reset = strings.TrimSpace(detail[idx+6+next+7:])
+		}
+	}
+	return strings.TrimSpace(label), strings.TrimSpace(pct), strings.TrimSpace(reset)
+}
+
+func usageBarFromDetail(detail string, width int) string {
+	_, pct, _ := splitUsageDetail(detail)
+	if pct == "" {
+		return ""
+	}
+	var remaining float64
+	if _, err := fmt.Sscanf(pct, "%f%% left", &remaining); err != nil {
+		return ""
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	if remaining > 100 {
+		remaining = 100
+	}
+	filled := int((remaining / 100) * float64(width))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+}
+
+func truncateTelegram(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max == 1 {
+		return s[:1]
+	}
+	return s[:max-1] + "…"
+}
+
+func telegramDisplayWidth(s string) int {
+	return utf8.RuneCountInString(strings.TrimRight(s, " "))
+}
+
+func telegramHTMLBold(s string) string {
+	return "<b>" + htmlEscape(s) + "</b>"
 }
 
 func htmlEscape(s string) string {
@@ -86,8 +363,5 @@ func shortAccount(a string) string {
 	if a == "" {
 		return "<no-account>"
 	}
-	if len(a) > 24 {
-		return a[:24] + "…"
-	}
-	return a
+	return displayAccountID(a)
 }

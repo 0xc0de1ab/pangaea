@@ -58,6 +58,24 @@ type WatchPathsAware interface {
 	WatchPaths(dir string) []string
 }
 
+// UsageWindow is one named quota / rate-limit bucket. Formats that expose
+// multiple windows (for example "5h" and "weekly", or per-model Gemini
+// quotas) populate UsageReport.Windows so notifiers can render richer,
+// provider-specific output without losing a stable generic structure.
+type UsageWindow struct {
+	Label string `json:"label,omitempty"`
+	// Used / Limit describe the current bucket. When the upstream only exposes
+	// a fraction, these may remain zero and RemainingPct carries the signal.
+	Used  int64 `json:"used,omitempty"`
+	Limit int64 `json:"limit,omitempty"`
+	// RemainingPct is 0..100 left in this window.
+	RemainingPct float64 `json:"remaining_pct,omitempty"`
+	// Unit labels Used/Limit when present (e.g. "messages", "requests").
+	Unit string `json:"unit,omitempty"`
+	// ResetAt is when this bucket rolls over.
+	ResetAt time.Time `json:"reset_at,omitempty"`
+}
+
 // UsageReport is the structured outcome of UsageProbe.Probe. It is meant
 // for human-facing notification output (Telegram, status command) — every
 // field is optional and may be omitted when the upstream API does not
@@ -80,6 +98,9 @@ type UsageReport struct {
 	// Notes carries any free-form per-format human-readable hints
 	// (organization name, role, plan label) the notifier should surface.
 	Notes []string `json:"notes,omitempty"`
+	// Windows carries richer per-bucket usage information when a provider
+	// exposes more than one relevant limit window.
+	Windows []UsageWindow `json:"windows,omitempty"`
 }
 
 // UsageProbe is an optional interface a Format may implement when the

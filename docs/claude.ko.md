@@ -115,47 +115,60 @@ live check endpoint:
 
 - `ANTHROPIC_OAUTH_PROFILE_URL`
 
-## usage / plan / organization 정보
+## usage / plan 정보
 
-현재 Claude probe는 직접적인 usage 숫자 `Used`, `Limit`를 반환하지 않는다. 대신 OAuth profile endpoint에서 plan과 organization 정보를 읽는다.
+Claude usage probe는 이제 Claude CLI `/usage`와 같은 endpoint를 사용한다.
 
 요청:
 
 - method: `GET`
-- URL: `https://api.anthropic.com/api/oauth/profile`
+- URL: `https://api.anthropic.com/api/oauth/usage`
 - headers:
   - `Authorization: Bearer <accessToken>`
   - `Accept: application/json`
+  - `Content-Type: application/json`
+  - `anthropic-beta: oauth-2025-04-20`
+
+런타임 override:
+
+- `ANTHROPIC_OAUTH_USAGE_URL`
 
 관련 응답 조각:
 
 ```json
 {
-  "account": {
-    "uuid": "acc_...",
-    "email_address": "user@example.com"
-  },
-  "organization": {
-    "uuid": "org_...",
-    "name": "Acme Inc",
-    "organization_type": "claude_max",
-    "rate_limit_tier": "default_claude_max_20x"
+  "five_hour": { "utilization": 7, "resets_at": "2026-04-26T03:30:00Z" },
+  "seven_day": { "utilization": 31, "resets_at": "2026-04-29T07:00:00Z" },
+  "seven_day_sonnet": { "utilization": 0, "resets_at": "2026-04-29T07:00:00Z" },
+  "extra_usage": {
+    "is_enabled": true,
+    "monthly_limit": 5000,
+    "used_credits": 258,
+    "utilization": 5.16
   }
 }
 ```
 
 현재 `UsageReport` 매핑:
 
-- `PlanTier`: `organization.organization_type`
+- `PlanTier`: `claudeAiOauth.subscriptionType`
 - `Notes`:
-  - `org: <organization.name>`
-  - `rate-limit-tier: <organization.rate_limit_tier>`
-  - `email: <account.email_address>`
+  - `rate-limit-tier: <claudeAiOauth.rateLimitTier>`가 있으면 포함
+  - `pro` / `max` 플랜에서 extra usage가 꺼져 있으면 `extra usage: not enabled`
+  - `pro` / `max` 플랜에서 unlimited면 `extra usage: unlimited`
+  - 월별 spend 정보가 있으면 `extra usage spend: $x / $y`
+- `Windows`:
+  - `Current session` <- `five_hour`
+  - `Current week (all models)` <- `seven_day`
+  - `Current week (Sonnet only)` <- `seven_day_sonnet`, 단 `max`, `team`, 또는 subscription unknown일 때만
+  - `Extra usage` <- `extra_usage`, 단 `pro` / `max`에서 utilization이 있을 때만
 
-제한사항:
+구독 타입별 분기는 Claude CLI와 동일하게 맞춘다.
 
-- 현재 구현은 Anthropic의 실시간 usage counter를 직접 노출하지 않는다
-- 그래서 Claude 알림은 plan, org, validity 위주가 될 수 있고, 남은 quota 숫자가 항상 나오지는 않는다
+- `max`, `team`, subscription unknown: Sonnet 전용 weekly window를 별도로 보여준다
+- `pro`, `enterprise`: Sonnet-only window를 숨긴다. weekly와 중복이기 때문이다
+- `pro`, `max`: `extra_usage` 상태를 알림에 반영한다
+- `team`, `enterprise`: CLI Usage 탭과 맞추기 위해 `extra_usage`는 알림에서 무시한다
 
 ## redaction-safe summary
 

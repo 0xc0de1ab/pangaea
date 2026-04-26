@@ -31,8 +31,9 @@ type NtfySinkConfig struct {
 }
 
 type NtfySink struct {
-	cfg    NtfySinkConfig
-	client *ntfy.Client
+	cfg      NtfySinkConfig
+	client   *ntfy.Client
+	periodic periodicState
 }
 
 func NewNtfySink(cfg NtfySinkConfig, client *ntfy.Client) *NtfySink {
@@ -59,6 +60,41 @@ func (s *NtfySink) Notify(ctx context.Context, r TruthRecord, u formats.UsageRep
 		Priority: s.cfg.Priority,
 		Tags:     s.cfg.Tags,
 	})
+}
+
+func (s *NtfySink) NotifyPeriodic(ctx context.Context, records []ReportRecord) error {
+	groups := groupPeriodicRecords(records, s.routeFor)
+	for _, url := range sortedGroupKeys(groups) {
+		signature := periodicDigest(groups[url])
+		body := renderPeriodicPlain(groups[url])
+		if s.periodic.unchanged(url, signature) {
+			continue
+		}
+		if err := s.client.Post(ctx, url, body, ntfy.PostOptions{
+			Title:    "Auth State",
+			Priority: s.cfg.Priority,
+			Tags:     s.cfg.Tags,
+		}); err != nil {
+			return err
+		}
+		s.periodic.remember(url, signature)
+	}
+	return nil
+}
+
+func (s *NtfySink) NotifySessionBatch(ctx context.Context, events []TruthRecord) error {
+	groups := groupSessionEvents(events, s.routeFor)
+	for _, url := range sortedTruthGroupKeys(groups) {
+		v := buildSessionBatchView(groups[url])
+		if err := s.client.Post(ctx, url, renderSessionBatchPlain(groups[url]), ntfy.PostOptions{
+			Title:    v.Title,
+			Priority: s.cfg.Priority,
+			Tags:     s.cfg.Tags,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *NtfySink) routeFor(profile, account string) string {

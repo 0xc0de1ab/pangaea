@@ -142,22 +142,57 @@ Relevant response shape:
     },
     "secondary_window": {
       "used_percent": 55.0,
-      "limit_window_seconds": 86400,
+      "limit_window_seconds": 604800,
       "reset_at": "2026-04-26T18:00:00Z"
     }
-  }
+  },
+  "additional_rate_limits": [
+    {
+      "limit_name": "GPT-5.3-Codex-Spark",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 0,
+          "limit_window_seconds": 18000,
+          "reset_at": "2026-04-26T04:00:00Z"
+        },
+        "secondary_window": {
+          "used_percent": 30,
+          "limit_window_seconds": 604800,
+          "reset_at": "2026-04-29T03:00:00Z"
+        }
+      }
+    }
+  ]
 }
 ```
 
 Current `UsageReport` mapping:
 
 - `PlanTier`: `plan_type`
-- `RemainingPct`: `100 - primary_window.used_percent`
-- `Unit`: a human window label derived from `limit_window_seconds`
-- `ResetAt`: `primary_window.reset_at`
-- `Notes`:
-  - secondary window utilization and reset time
-  - limit reached note when applicable
+- top-level summary `RemainingPct`: `100 - rate_limit.primary_window.used_percent`
+- top-level summary `ResetAt`: `rate_limit.primary_window.reset_at`
+- `Windows` contains:
+  - `5h limit`
+  - `Weekly limit`
+  - `<additional limit name> 5h limit`
+  - `<additional limit name> Weekly limit`
+- `Notes` carries limit-reached annotations for the main rate limit and any additional rate-limit group
+
+This maps directly to the UI-style limits operators see in Codex `/status`:
+
+- main account 5h / weekly limits
+- additional model-specific limits such as `GPT-5.3-Codex-Spark`
+
+The notifier formats those windows as per-bucket remaining percentage plus reset time.
+
+Example periodic/event-relevant windows:
+
+```text
+5h limit: 97% left, resets ...
+Weekly limit: 54% left, resets ...
+GPT-5.3-Codex-Spark 5h limit: 100% left, resets ...
+GPT-5.3-Codex-Spark Weekly limit: 70% left, resets ...
+```
 
 ## Redaction-Safe Summary
 

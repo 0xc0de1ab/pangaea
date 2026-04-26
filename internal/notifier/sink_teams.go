@@ -24,8 +24,9 @@ type TeamsSinkConfig struct {
 }
 
 type TeamsSink struct {
-	cfg    TeamsSinkConfig
-	client *teams.Client
+	cfg      TeamsSinkConfig
+	client   *teams.Client
+	periodic periodicState
 }
 
 func NewTeamsSink(cfg TeamsSinkConfig, client *teams.Client) *TeamsSink {
@@ -50,6 +51,45 @@ func (s *TeamsSink) Notify(ctx context.Context, r TruthRecord, u formats.UsageRe
 		Text:       renderTeams(r, u),
 	}
 	return true, s.client.PostCard(ctx, url, card)
+}
+
+func (s *TeamsSink) NotifyPeriodic(ctx context.Context, records []ReportRecord) error {
+	groups := groupPeriodicRecords(records, s.routeFor)
+	for _, url := range sortedGroupKeys(groups) {
+		signature := periodicDigest(groups[url])
+		body := renderPeriodicTeams(groups[url])
+		if s.periodic.unchanged(url, signature) {
+			continue
+		}
+		card := teams.Card{
+			Summary:    "Auth State",
+			Title:      "Auth State",
+			ThemeColor: s.cfg.ThemeColor,
+			Text:       body,
+		}
+		if err := s.client.PostCard(ctx, url, card); err != nil {
+			return err
+		}
+		s.periodic.remember(url, signature)
+	}
+	return nil
+}
+
+func (s *TeamsSink) NotifySessionBatch(ctx context.Context, events []TruthRecord) error {
+	groups := groupSessionEvents(events, s.routeFor)
+	for _, url := range sortedTruthGroupKeys(groups) {
+		v := buildSessionBatchView(groups[url])
+		card := teams.Card{
+			Summary:    v.Title,
+			Title:      v.Title,
+			ThemeColor: s.cfg.ThemeColor,
+			Text:       renderSessionBatchTeams(groups[url]),
+		}
+		if err := s.client.PostCard(ctx, url, card); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *TeamsSink) routeFor(profile, account string) string {

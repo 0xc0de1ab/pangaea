@@ -20,8 +20,9 @@ type MattermostSinkConfig struct {
 }
 
 type MattermostSink struct {
-	cfg    MattermostSinkConfig
-	client *mattermost.Client
+	cfg      MattermostSinkConfig
+	client   *mattermost.Client
+	periodic periodicState
 }
 
 func NewMattermostSink(cfg MattermostSinkConfig, client *mattermost.Client) *MattermostSink {
@@ -39,6 +40,32 @@ func (s *MattermostSink) Notify(ctx context.Context, r TruthRecord, u formats.Us
 		return false, nil
 	}
 	return true, s.client.Post(ctx, url, renderMattermost(r, u))
+}
+
+func (s *MattermostSink) NotifyPeriodic(ctx context.Context, records []ReportRecord) error {
+	groups := groupPeriodicRecords(records, s.routeFor)
+	for _, url := range sortedGroupKeys(groups) {
+		signature := periodicDigest(groups[url])
+		body := renderPeriodicMrkdwn(groups[url])
+		if s.periodic.unchanged(url, signature) {
+			continue
+		}
+		if err := s.client.Post(ctx, url, body); err != nil {
+			return err
+		}
+		s.periodic.remember(url, signature)
+	}
+	return nil
+}
+
+func (s *MattermostSink) NotifySessionBatch(ctx context.Context, events []TruthRecord) error {
+	groups := groupSessionEvents(events, s.routeFor)
+	for _, url := range sortedTruthGroupKeys(groups) {
+		if err := s.client.Post(ctx, url, renderSessionBatchMrkdwn(groups[url])); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *MattermostSink) routeFor(profile, account string) string {

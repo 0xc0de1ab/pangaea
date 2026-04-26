@@ -21,8 +21,9 @@ type DiscordSinkConfig struct {
 }
 
 type DiscordSink struct {
-	cfg    DiscordSinkConfig
-	client *discord.Client
+	cfg      DiscordSinkConfig
+	client   *discord.Client
+	periodic periodicState
 }
 
 func NewDiscordSink(cfg DiscordSinkConfig, client *discord.Client) *DiscordSink {
@@ -40,6 +41,32 @@ func (s *DiscordSink) Notify(ctx context.Context, r TruthRecord, u formats.Usage
 		return false, nil
 	}
 	return true, s.client.Post(ctx, url, renderDiscord(r, u))
+}
+
+func (s *DiscordSink) NotifyPeriodic(ctx context.Context, records []ReportRecord) error {
+	groups := groupPeriodicRecords(records, s.routeFor)
+	for _, url := range sortedGroupKeys(groups) {
+		signature := periodicDigest(groups[url])
+		body := renderPeriodicMarkdown(groups[url])
+		if s.periodic.unchanged(url, signature) {
+			continue
+		}
+		if err := s.client.Post(ctx, url, body); err != nil {
+			return err
+		}
+		s.periodic.remember(url, signature)
+	}
+	return nil
+}
+
+func (s *DiscordSink) NotifySessionBatch(ctx context.Context, events []TruthRecord) error {
+	groups := groupSessionEvents(events, s.routeFor)
+	for _, url := range sortedTruthGroupKeys(groups) {
+		if err := s.client.Post(ctx, url, renderSessionBatchMarkdown(groups[url])); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *DiscordSink) routeFor(profile, account string) string {
