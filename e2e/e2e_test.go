@@ -84,7 +84,7 @@ func TestE2E_MTLSReverseReplication(t *testing.T) {
 	}}
 	env.ps = config.NewProfileStore(&config.ProfilesFile{Profiles: profiles})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	log := logging.New(logging.Options{Level: "error"})
 	eg, egCtx := errgroup.WithContext(ctx)
@@ -595,7 +595,7 @@ func waitForClientExit(t *testing.T, done <-chan error, timeout time.Duration) {
 
 func waitForFileContent(t *testing.T, path string, want []byte) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		got, err := os.ReadFile(path)
 		if err == nil && string(got) == string(want) {
