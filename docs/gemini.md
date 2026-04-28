@@ -200,3 +200,4 @@ It never includes:
 - If `id_token` is absent or malformed, account partitioning may fall back to the shared bucket.
 - A token inside the 5-minute eager-refresh window is treated as not worth propagating.
 - Gemini notifications now include per-model-family remaining quota (`Flash`, `Flash Lite`, `Pro`) when the upstream quota endpoint responds successfully.
+- The client daemon may run the official `gemini` CLI as a refresh nudge when credentials are expired or near expiry, but only when `gemini` is discoverable in `PATH` and the configured directory is a standard `.gemini` directory.

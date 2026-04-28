@@ -188,7 +188,8 @@ redacted summary에 포함되는 값:
 
 ## 운영 메모
 
-- 이 프로젝트는 Claude token refresh를 하지 않는다. Claude Code가 디스크에 쓴 결과만 읽고 전파한다.
+- Claude format package 자체는 token refresh를 하지 않는다. 다만 client daemon은 인증 정보가 만료됐거나 만료 임박이면 공식 `claude` CLI를 refresh nudge로 실행할 수 있다. 이 동작은 `claude`가 `PATH`에서 발견되는 경우로 한정된다.
+- refresh nudge로 credentials 파일이 바뀌면 기존 watcher 경로가 새 snapshot을 감지하고 그 결과가 전파된다.
 - 정확한 account partition을 위해서는 `~/.claude.json` 또는 동등한 메타 파일이 필요하다.
 - `watch_files`를 override할 때 `~/.claude.json`을 빼면 계정 메타 변경을 놓칠 수 있다.
-- Claude 알림은 validity와 plan 정보는 잘 나오지만, 수치형 남은 quota는 현재 구현상 없을 수 있다.
+- Claude 알림은 upstream usage endpoint가 응답하면 usage window를 포함한다. probe가 실패해도 validity와 plan metadata는 계속 표시될 수 있다.

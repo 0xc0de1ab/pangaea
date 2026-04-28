@@ -71,7 +71,7 @@ At a high level:
 
 Supported deployment styles:
 
-- direct `client -> server` over `wss://` with `mtls`
+- direct `client -> server` over `wss://` with `mtls` or `jwt`
 - reverse connectivity with `reverse-client` and `reverse-connect`
 - SSH-managed reverse connectivity, where the server host SSHes into a remote node and starts `reverse-client`
 
@@ -81,7 +81,7 @@ The default and recommended auth mode is `mtls`.
 
 Build the binary first. See the build guide:
 
-- [docs/build.md](/workspace/claude-creds-share/docs/build.md:1)
+- [docs/build.md](./docs/build.md)
 
 Create server assets:
 
@@ -150,12 +150,12 @@ pangaeactl status --socket /tmp/pangaea.sock
 
 ## Documentation
 
-- Build guide: [docs/build.md](/workspace/claude-creds-share/docs/build.md:1)
-- Deployment guide: [docs/deploy.md](/workspace/claude-creds-share/docs/deploy.md:1)
-- Feature overview: [docs/features.md](/workspace/claude-creds-share/docs/features.md:1)
-- Claude format notes: [docs/claude.md](/workspace/claude-creds-share/docs/claude.md:1)
-- Codex format notes: [docs/codex.md](/workspace/claude-creds-share/docs/codex.md:1)
-- Gemini format notes: [docs/gemini.md](/workspace/claude-creds-share/docs/gemini.md:1)
+- Build guide: [docs/build.md](./docs/build.md)
+- Deployment guide: [docs/deploy.md](./docs/deploy.md)
+- Feature overview: [docs/features.md](./docs/features.md)
+- Claude format notes: [docs/claude.md](./docs/claude.md)
+- Codex format notes: [docs/codex.md](./docs/codex.md)
+- Gemini format notes: [docs/gemini.md](./docs/gemini.md)
 
 ## License
 

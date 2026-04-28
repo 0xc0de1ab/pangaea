@@ -188,7 +188,8 @@ The summary never includes:
 
 ## Operational Notes
 
-- This project never refreshes Claude tokens. It only reads and propagates what Claude Code already wrote to disk.
+- The Claude format package itself never refreshes tokens. The client daemon may trigger the official `claude` CLI as a refresh nudge when credentials are expired or near expiry, but only when `claude` is discoverable in `PATH`.
+- If the refresh nudge changes the credentials file, the normal watcher path detects the new snapshot and propagation continues from there.
 - Accurate account partitioning requires `~/.claude.json` or an equivalent metadata file.
 - If you override `watch_files`, removing `~/.claude.json` can cause account metadata changes to be missed.
-- Notifications for Claude may include validity and plan metadata without a concrete remaining quota value.
+- Claude notifications include usage windows when the upstream usage endpoint responds. If probing fails, notifications can still show validity and plan metadata.

@@ -4,7 +4,7 @@ This document summarizes the features currently provided by the repository and r
 
 ## Status Summary
 
-As of 2026-04-26, the core product work is largely implemented, but not every supporting item is complete.
+As of 2026-04-29, the core product work is largely implemented, but not every supporting item is complete.
 
 ### Implemented
 
@@ -37,6 +37,8 @@ As of 2026-04-26, the core product work is largely implemented, but not every su
   - ntfy
   - Teams
 - Event-driven propagation notifications enriched with usage/validity metadata
+- Telegram bot command polling for `/claude`, `/codex`, `/gemini`, `/status`, and `/help`
+- Official-CLI refresh nudges for Claude, Codex, and Gemini when credentials are expired or near expiry and the provider CLI is available in `PATH`
 - Unit tests and end-to-end tests for major synchronization and auth scenarios
 - GitHub Actions CI with test, coverage, and multi-target build jobs
 
@@ -115,6 +117,7 @@ See also:
 - JWT header or first-frame auth behavior
 - Format-aware account resolution
 - Watcher-driven re-reporting when auxiliary metadata files change
+- Near-expiry refresh nudges through the official provider CLI only; `pangaeactl` does not implement provider OAuth refresh itself
 - Optional reverse-client listener for server-initiated tunnel topologies
 
 ## CLI Features
@@ -140,7 +143,10 @@ See also:
 ## Notification Features
 
 - Periodic truth summaries
-- Immediate propagation notifications when a new truth is pushed to peers
+- Periodic summaries are sent no more frequently than once per hour and are skipped when the rendered digest has not changed
+- Immediate propagation notifications when a new truth is pushed to peers and the usage/validity probe has useful metadata
+- Session connect/disconnect events are currently suppressed at the notifier layer to avoid high-volume noise
+- Telegram command replies for `/claude`, `/codex`, `/gemini`, `/status`, and `/help`
 - Rich sink formatting per destination
 - Included metadata may contain:
   - source node
@@ -157,7 +163,7 @@ See also:
 - Release builds for Linux, macOS, and Windows
 - Static Linux release output
 - Version injection at build time
-- Coverage badge generation in CI
+- CI runs E2E separately, measures coverage for library/internal packages, and generates a coverage badge
 
 ## Recommended Next Cleanup Items
 

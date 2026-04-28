@@ -4,7 +4,7 @@
 
 ## 상태 요약
 
-2026-04-26 기준으로 핵심 제품 기능은 대부분 구현되었지만, 보조 항목까지 완전히 끝난 것은 아니다.
+2026-04-29 기준으로 핵심 제품 기능은 대부분 구현되었지만, 보조 항목까지 완전히 끝난 것은 아니다.
 
 ### 구현 완료
 
@@ -39,6 +39,8 @@
   - ntfy
   - Teams
 - usage/validity 메타데이터를 포함한 event-driven propagation notification
+- `/claude`, `/codex`, `/gemini`, `/status`, `/help` Telegram bot command polling
+- 인증 정보가 만료됐거나 만료 임박이고 provider CLI가 `PATH`에서 발견될 때 Claude, Codex, Gemini 공식 CLI를 통한 refresh nudge
 - 주요 sync/auth 시나리오를 다루는 unit/e2e 테스트
 - test, coverage, multi-target build를 수행하는 GitHub Actions CI
 
@@ -117,6 +119,7 @@
 - JWT header 또는 first-frame 인증
 - format-aware account resolution
 - 보조 메타 파일 변경 시 watcher 기반 재보고
+- 만료 임박 시 공식 provider CLI를 통한 refresh nudge. `pangaeactl` 자체가 provider OAuth refresh를 구현하지는 않음
 - 서버가 먼저 접속하는 reverse-client listener 옵션
 
 ## CLI 기능
@@ -142,7 +145,10 @@
 ## 알림 기능
 
 - 주기적인 truth summary
-- 새 truth가 peer로 push될 때 즉시 전파 알림
+- 주기 summary는 최소 1시간 간격으로만 보내며, 렌더링 digest가 이전과 같으면 생략
+- 새 truth가 peer로 push되고 usage/validity probe가 의미 있는 metadata를 만들었을 때 즉시 전파 알림
+- session connect/disconnect 이벤트는 알림 노이즈를 줄이기 위해 현재 notifier layer에서 억제
+- `/claude`, `/codex`, `/gemini`, `/status`, `/help` Telegram command 응답
 - 목적지별 렌더링 최적화
 - 알림에 포함될 수 있는 정보
   - source node
@@ -159,7 +165,7 @@
 - Linux, macOS, Windows release build
 - Linux static release output
 - build time version injection
-- CI coverage badge 생성
+- CI에서 E2E를 별도 실행하고 library/internal package coverage를 측정해 coverage badge 생성
 
 ## 다음 정리 우선순위
 

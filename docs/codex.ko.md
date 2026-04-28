@@ -222,3 +222,4 @@ redacted summary에 포함될 수 있는 값:
 - usage probe는 `chatgpt_account_id` 또는 `tokens.account_id`가 있어야 한다.
 - JWT가 아직 살아 있어도 `last_refresh`가 8일을 넘으면 stale로 간주한다.
 - Codex는 파일 하나에 토큰과 계정 메타가 함께 있어서 account partition 신뢰도가 높다.
+- client daemon은 인증 정보가 만료됐거나 만료 임박이면 `codex exec`를 refresh nudge로 실행할 수 있다. 이 동작은 `codex`가 `PATH`에서 발견되는 경우로 한정되며, Codex OAuth refresh를 직접 구현하지는 않는다.

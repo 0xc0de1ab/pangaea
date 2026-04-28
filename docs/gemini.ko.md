@@ -200,3 +200,4 @@ redacted summary에 포함될 수 있는 값:
 - `id_token`이 없거나 깨져 있으면 account partition이 shared bucket으로 약해질 수 있다.
 - 5분 eager-refresh window 안에 들어온 토큰은 전파할 가치가 없다고 보고 탈락시킨다.
 - Gemini 알림은 upstream quota endpoint가 응답하면 `Flash`, `Flash Lite`, `Pro`별 남은 quota도 함께 포함한다.
+- client daemon은 인증 정보가 만료됐거나 만료 임박이면 공식 `gemini` CLI를 refresh nudge로 실행할 수 있다. 이 동작은 `gemini`가 `PATH`에서 발견되고 설정 디렉토리가 표준 `.gemini` 디렉토리인 경우로 한정된다.

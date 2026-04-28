@@ -151,8 +151,8 @@ make vet
 
 현재 GitHub Actions는:
 
-- `go test ./...` 실행
-- coverage 측정
+- E2E package를 `go test ./e2e`로 먼저 실행
+- `cmd/pangaeactl`과 `e2e`를 제외한 package 대상으로 `go test -covermode=atomic` coverage 측정
 - 여러 타깃에 대한 release 빌드 수행
 - `vSEMVER-YYYYMM.seq` 형태의 tag push 시 GitHub Release 생성
 - `main`에서 coverage badge 갱신

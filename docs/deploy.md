@@ -172,6 +172,7 @@ profiles:
       - "laptop-a"
     reverse_targets:
       - node_id: "laptop-a"
+        transport: "direct"
         url: "wss://laptop-a.example.net:9443"
 ```
 
@@ -183,7 +184,6 @@ auth_mode: "mtls"
 profiles_file: "/abs/path/deploy/server/profiles.yaml"
 self_node:
   enabled: true
-  node_id: "hub-bridge"
   client_cert: "/abs/path/deploy/server/issued-clients/hub-bridge/client.crt"
   client_key: "/abs/path/deploy/server/issued-clients/hub-bridge/client.key"
 pki:
@@ -191,6 +191,10 @@ pki:
   server_cert: "/abs/path/deploy/server/pki/server/server.crt"
   server_key: "/abs/path/deploy/server/pki/server/server.key"
 ```
+
+There is no `self_node.node_id` config field. The self-node identity is the Common Name of `self_node.client_cert`; if that cannot be read, it falls back to `<hostname>(server)`. For reverse-client `allowed_peers`, use the CN of this self-node certificate.
+
+Create this self-node certificate with `pangaeactl ca issue-client --cn hub-bridge ...` or another explicit CN before starting `reverse-connect`. If you also run `serve --also-client`, include that self-node CN in the relevant profile `allowed_clients`.
 
 Run the main server as usual:
 
@@ -419,7 +423,7 @@ Important points:
 - the backend server still runs `wss://`
 - TLS on the backend is still required
 - JWT replaces client identity authentication, not transport encryption
-- backend plain HTTP is allowed by policy, but not recommended
+- backend plain HTTP is not supported by the current CLI/config path; clients require `wss://` and the server requires a TLS certificate/key
 - for Kubernetes ingress, HTTPS re-encryption from ingress to backend is strongly recommended
 
 The client first tries `Authorization: Bearer <jwt>`. If that header is unavailable or stripped, the server can require `auth.jwt` as the first WebSocket frame. Use `jwt.send_via: auto` unless you know you need `header` or `first_frame`.
@@ -615,6 +619,8 @@ notifier:
     enabled: true
     bot_token_env: "PANGAEA_TELEGRAM_BOT_TOKEN"
     default_chat_id: "-1001234567890"
+    interval: "1h"
+    probe_timeout: "8s"
     disable_notification: false
 ```
 
@@ -638,6 +644,8 @@ If you used `pangaeactl setup server` and enabled Telegram, the wizard created a
 ```
 
 Fill in the bot token before starting the service.
+
+The notifier enforces a minimum periodic interval of one hour. Periodic summaries are de-duplicated per sink/route, so unchanged auth state is not sent again. Event-driven propagation notifications are sent only when the usage/validity probe produced useful metadata; session connect/disconnect notifications are currently suppressed to avoid noise.
 
 ### Telegram Commands
 

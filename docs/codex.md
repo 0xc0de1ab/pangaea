@@ -220,3 +220,4 @@ It never includes:
 - Usage probing requires `chatgpt_account_id` or `tokens.account_id`.
 - A JWT can still be valid while being considered stale due to `last_refresh > 8 days`.
 - Codex account partitioning is generally strong because the file is self-contained.
+- The client daemon may run `codex exec` as a refresh nudge when credentials are expired or near expiry, but only when `codex` is discoverable in `PATH`. It does not implement Codex OAuth refresh itself.

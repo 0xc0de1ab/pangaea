@@ -151,8 +151,8 @@ make vet
 
 GitHub Actions currently:
 
-- runs `go test ./...`
-- measures coverage
+- runs the end-to-end package with `go test ./e2e`
+- measures package coverage with `go test -covermode=atomic`, excluding `cmd/pangaeactl` and `e2e`
 - builds release artifacts for multiple targets
 - creates a GitHub Release when a `vSEMVER-YYYYMM.seq` tag is pushed
 - updates the coverage badge on `main`

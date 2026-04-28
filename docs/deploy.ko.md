@@ -172,6 +172,7 @@ profiles:
       - "laptop-a"
     reverse_targets:
       - node_id: "laptop-a"
+        transport: "direct"
         url: "wss://laptop-a.example.net:9443"
 ```
 
@@ -183,7 +184,6 @@ auth_mode: "mtls"
 profiles_file: "/abs/path/deploy/server/profiles.yaml"
 self_node:
   enabled: true
-  node_id: "hub-bridge"
   client_cert: "/abs/path/deploy/server/issued-clients/hub-bridge/client.crt"
   client_key: "/abs/path/deploy/server/issued-clients/hub-bridge/client.key"
 pki:
@@ -191,6 +191,10 @@ pki:
   server_cert: "/abs/path/deploy/server/pki/server/server.crt"
   server_key: "/abs/path/deploy/server/pki/server/server.key"
 ```
+
+`self_node.node_id` 설정 필드는 없습니다. self-node identity는 `self_node.client_cert`의 Common Name이고, 인증서를 읽지 못하면 `<hostname>(server)`로 fallback됩니다. reverse-client의 `allowed_peers`에는 이 self-node 인증서 CN을 넣어야 합니다.
+
+이 self-node 인증서는 `pangaeactl ca issue-client --cn hub-bridge ...`처럼 명시적인 CN으로 미리 발급하세요. `serve --also-client`도 함께 쓴다면 해당 self-node CN을 관련 profile의 `allowed_clients`에 포함해야 합니다.
 
 메인 서버는 평소처럼 실행:
 
@@ -419,7 +423,7 @@ pangaeactl connect -c ./deploy/client/pangaea-client.yaml
 - backend 서버는 여전히 `wss://`로 떠야 합니다
 - backend TLS는 계속 필요합니다
 - JWT는 client identity를 대체할 뿐 transport 암호화를 대체하지 않습니다
-- backend plain HTTP는 정책상 막지는 않지만 권장하지 않습니다
+- backend plain HTTP는 현재 CLI/config 경로에서 지원하지 않습니다. 클라이언트는 `wss://`를 요구하고 서버도 TLS certificate/key를 요구합니다
 - Kubernetes ingress라면 ingress -> backend HTTPS 재암호화를 강하게 권장합니다
 
 클라이언트는 먼저 `Authorization: Bearer <jwt>`를 시도합니다. 그 헤더가 프록시에서 제거되면 서버가 `auth.jwt` 첫 프레임 fallback을 요구할 수 있습니다. 특별한 이유가 없으면 `jwt.send_via: auto`를 유지하세요.
@@ -615,6 +619,8 @@ notifier:
     enabled: true
     bot_token_env: "PANGAEA_TELEGRAM_BOT_TOKEN"
     default_chat_id: "-1001234567890"
+    interval: "1h"
+    probe_timeout: "8s"
     disable_notification: false
 ```
 
@@ -638,6 +644,8 @@ notifier:
 ```
 
 서비스 시작 전에 bot token 값을 채워 넣으세요.
+
+notifier는 주기 알림의 최소 interval을 1시간으로 강제합니다. 주기 summary는 sink/route별 digest가 이전과 같으면 다시 보내지 않습니다. event-driven propagation 알림은 usage/validity probe가 의미 있는 metadata를 만들었을 때만 보내며, session connect/disconnect 알림은 노이즈를 줄이기 위해 현재 sink로 보내지 않습니다.
 
 ### Telegram 명령
 
