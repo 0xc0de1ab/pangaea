@@ -639,6 +639,27 @@ If you used `pangaeactl setup server` and enabled Telegram, the wizard created a
 
 Fill in the bot token before starting the service.
 
+### Telegram Commands
+
+When Telegram is enabled, the server also polls configured chats for profile commands.
+
+Supported commands:
+
+- `/claude`
+- `/codex`
+- `/gemini`
+- `/status`
+- `/help`
+
+Profile commands ask connected nodes for an immediate snapshot report, wait briefly, and then reply with the current redacted auth state and usage metadata known by the server.
+
+Only configured Telegram chats are accepted:
+
+- `default_chat_id`
+- any `routes[].chat_id`
+
+Commands from other chats are ignored. Unknown profile commands receive an error message with the available profile names.
+
 ## systemd Service Registration
 
 The interactive `setup` commands can generate systemd unit files under:

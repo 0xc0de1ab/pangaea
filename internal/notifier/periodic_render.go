@@ -17,10 +17,11 @@ type periodicMarkup struct {
 
 type periodicView struct {
 	TruthStatus  string
+	NoTruth      bool
 	Profile      string
 	Nodes        []string
 	ValidUntil   string
-	AccountID    string
+	AccountLabel string
 	LastRefresh  string
 	UsageDetails []string
 }
@@ -79,7 +80,9 @@ func renderPeriodicRich(records []ReportRecord, m periodicMarkup) string {
 		lines = append(lines, "Profile: "+m.escape(profile))
 		lines = append(lines, "Truth: "+m.escape(v.TruthStatus))
 		lines = append(lines, "Valid Until: "+m.escape(v.ValidUntil))
-		lines = append(lines, "Account Id: "+m.escape(v.AccountID))
+		if v.AccountLabel != "" && v.AccountLabel != "-" {
+			lines = append(lines, "Account: "+m.escape(v.AccountLabel))
+		}
 		lines = append(lines, "Last Refresh: "+m.escape(v.LastRefresh))
 		for _, detail := range v.UsageDetails {
 			if detail == "" {
@@ -94,18 +97,7 @@ func renderPeriodicRich(records []ReportRecord, m periodicMarkup) string {
 func buildPeriodicView(record ReportRecord) periodicView {
 	sum := parseSummary(record.Truth.Summary)
 	nodes := normalizedNodes(record.Truth)
-	accountID := strings.TrimSpace(sum.Extra["account_id"])
-	if accountID == "" {
-		accountID = strings.TrimSpace(record.Truth.Account)
-	}
-	if accountID == "" {
-		accountID = strings.TrimSpace(sum.Identity)
-	}
-	if accountID == "" {
-		accountID = "-"
-	} else {
-		accountID = displayAccountID(accountID)
-	}
+	accountLabel := periodicAccountLabel(sum)
 
 	lastRefresh := "-"
 	if ts, ok := parseSummaryTime(sum.Extra["last_refresh"]); ok {
@@ -124,13 +116,29 @@ func buildPeriodicView(record ReportRecord) periodicView {
 
 	return periodicView{
 		TruthStatus:  truthStatus,
+		NoTruth:      record.Truth.NoTruth,
 		Profile:      record.Truth.Profile,
 		Nodes:        nodes,
 		ValidUntil:   validUntil,
-		AccountID:    accountID,
+		AccountLabel: accountLabel,
 		LastRefresh:  lastRefresh,
 		UsageDetails: usageDetailLines(record.Usage),
 	}
+}
+
+func periodicAccountLabel(sum renderSummary) string {
+	for _, raw := range []string{
+		sum.Extra["display_account"],
+		sum.Extra["email"],
+		sum.Extra["masked_email"],
+	} {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || raw == "-" {
+			continue
+		}
+		return displayAccountLabel(raw)
+	}
+	return "-"
 }
 
 func normalizedNodes(r TruthRecord) []string {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/0xc0de1ab/pangaea/internal/notifier/telegram"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
@@ -137,9 +136,19 @@ func renderTelegram(r TruthRecord, u formats.UsageReport) string {
 }
 
 func renderPeriodicTelegram(records []ReportRecord) string {
-	lines := []string{
-		telegramHTMLBold("Auth State"),
-		"<pre>" + htmlEscape(strings.Join(renderPeriodicTelegramLines(records), "\n")) + "</pre>",
+	lines := []string{telegramHTMLBold("Auth State")}
+	seqByProfile := map[string]int{}
+	for _, record := range records {
+		v := buildPeriodicView(record)
+		seqByProfile[v.Profile]++
+		if len(lines) > 1 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, renderPeriodicTelegramAccountTitle(v, seqByProfile[v.Profile]))
+		lines = append(lines, renderPeriodicTelegramMetaLines(v)...)
+		if usageLines := renderPeriodicTelegramUsageBlock(v); len(usageLines) > 0 {
+			lines = append(lines, "<pre>"+htmlEscape(strings.Join(usageLines, "\n"))+"</pre>")
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -177,7 +186,7 @@ func renderTelegramTableLines(v renderView) []string {
 		rows = append(rows, [2]string{"Propagated To", strings.Join(v.TargetNodes, ", ")})
 	}
 	if v.HasAccount {
-		rows = append(rows, [2]string{"Account", v.AccountID})
+		rows = append(rows, [2]string{"Account", v.AccountLabel})
 	}
 	if v.HasLastRefresh {
 		rows = append(rows, [2]string{"Refresh", v.LastRefresh})
@@ -217,53 +226,44 @@ func renderTelegramTableLines(v renderView) []string {
 	return lines
 }
 
-func renderPeriodicTelegramLines(records []ReportRecord) []string {
-	header := fmt.Sprintf("%-10s %-5s %-20s %-22s %-31s", "PROFILE", "TRUTH", "NODES", "ACCOUNT", "VALID UNTIL")
-	type block struct {
-		lines        []string
-		dividerWidth int
+func renderPeriodicTelegramAccountTitle(v periodicView, seq int) string {
+	profile := v.Profile
+	if profile == "" {
+		profile = "profile"
 	}
-	blocks := make([]block, 0, len(records))
-	for _, record := range records {
-		v := buildPeriodicView(record)
-		row := fmt.Sprintf(
-			"%-10s %-5s %-20s %-22s %-31s",
-			truncateTelegram(v.Profile, 10),
-			truncateTelegram(v.TruthStatus, 5),
-			truncateTelegram(strings.Join(v.Nodes, ","), 20),
-			truncateTelegram(v.AccountID, 22),
-			truncateTelegram(v.ValidUntil, 31),
-		)
-		current := block{lines: []string{row}, dividerWidth: telegramDisplayWidth(row)}
-		if v.LastRefresh != "-" {
-			refreshLine := "  Last refresh  " + truncateTelegram(v.LastRefresh, 48)
-			current.lines = append(current.lines, refreshLine)
-			if w := telegramDisplayWidth(refreshLine); w > current.dividerWidth {
-				current.dividerWidth = w
-			}
-		}
-		usageWidth := 0
-		for _, detail := range v.UsageDetails {
-			rows := telegramBarRows(detail)
-			current.lines = append(current.lines, rows...)
-			for _, line := range rows {
-				if w := telegramDisplayWidth(line); w > usageWidth {
-					usageWidth = w
-				}
-			}
-		}
-		if usageWidth > 0 {
-			current.dividerWidth = usageWidth
-		}
-		blocks = append(blocks, current)
+	title := fmt.Sprintf("%s #%d", profile, seq)
+	if v.NoTruth {
+		return fmt.Sprintf("%s - ❌ no truth", telegramHTMLBold(title))
 	}
+	account := v.AccountLabel
+	if account == "" || account == "-" {
+		account = "unknown account"
+	}
+	valid := v.ValidUntil
+	if valid == "" || valid == "-" {
+		return fmt.Sprintf("%s - %s", telegramHTMLBold(title), telegramHTMLCode(account))
+	}
+	return fmt.Sprintf("%s - %s - %s", telegramHTMLBold(title), telegramHTMLCode(account), htmlEscape(valid))
+}
 
-	lines := []string{header}
-	for i, current := range blocks {
-		lines = append(lines, current.lines...)
-		if i < len(blocks)-1 {
-			lines = append(lines, strings.Repeat("─", current.dividerWidth))
-		}
+func renderPeriodicTelegramMetaLines(v periodicView) []string {
+	lines := make([]string, 0, 3)
+	if len(v.Nodes) > 0 {
+		lines = append(lines, "nodes: "+telegramHTMLCode(strings.Join(v.Nodes, ",")))
+	}
+	if v.LastRefresh != "" && v.LastRefresh != "-" {
+		lines = append(lines, "last refresh: "+htmlEscape(v.LastRefresh))
+	}
+	if v.NoTruth && len(v.Nodes) == 0 {
+		lines = append(lines, "nodes: "+telegramHTMLCode("-"))
+	}
+	return lines
+}
+
+func renderPeriodicTelegramUsageBlock(v periodicView) []string {
+	lines := make([]string, 0, len(v.UsageDetails)*2)
+	for _, detail := range v.UsageDetails {
+		lines = append(lines, telegramBarRows(detail)...)
 	}
 	return lines
 }
@@ -339,12 +339,12 @@ func truncateTelegram(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
-func telegramDisplayWidth(s string) int {
-	return utf8.RuneCountInString(strings.TrimRight(s, " "))
-}
-
 func telegramHTMLBold(s string) string {
 	return "<b>" + htmlEscape(s) + "</b>"
+}
+
+func telegramHTMLCode(s string) string {
+	return "<code>" + htmlEscape(s) + "</code>"
 }
 
 func htmlEscape(s string) string {
@@ -357,11 +357,4 @@ func shortFP(fp string) string {
 		return fp[:12]
 	}
 	return fp
-}
-
-func shortAccount(a string) string {
-	if a == "" {
-		return "<no-account>"
-	}
-	return displayAccountID(a)
 }

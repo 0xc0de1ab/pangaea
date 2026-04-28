@@ -30,7 +30,7 @@ type renderView struct {
 	Model           string
 	Profile         string
 	Account         string
-	AccountID       string
+	AccountLabel    string
 	Nodes           []string
 	LastRefresh     string
 	SourceNode      string
@@ -119,11 +119,7 @@ func buildView(r TruthRecord, u formats.UsageReport) renderView {
 	if account == "" {
 		account = "<no-account>"
 	}
-	accountID := strings.TrimSpace(sum.Extra["account_id"])
-	if accountID == "" {
-		accountID = account
-	}
-	accountID = displayAccountID(accountID)
+	accountLabel := accountLabelFromSummary(sum)
 
 	lastRefresh := ""
 	if ts, ok := parseSummaryTime(sum.Extra["last_refresh"]); ok {
@@ -156,7 +152,7 @@ func buildView(r TruthRecord, u formats.UsageReport) renderView {
 	slices.Sort(extraKeys)
 	for _, k := range extraKeys {
 		switch k {
-		case "account_id", "email", "masked_email", "last_refresh":
+		case "account_id", "display_account", "email", "masked_email", "last_refresh":
 			continue
 		}
 		v := strings.TrimSpace(sum.Extra[k])
@@ -186,7 +182,10 @@ func buildView(r TruthRecord, u formats.UsageReport) renderView {
 	} else if r.SourceNode != "" && len(targets) > 0 {
 		heading = "Auth Propagated"
 	}
-	title := fmt.Sprintf("%s · %s · %s", heading, model, shortAccount(accountID))
+	title := fmt.Sprintf("%s · %s", heading, model)
+	if accountLabel != "" {
+		title += " · " + accountLabel
+	}
 
 	return renderView{
 		Heading:         heading,
@@ -194,7 +193,7 @@ func buildView(r TruthRecord, u formats.UsageReport) renderView {
 		Model:           model,
 		Profile:         r.Profile,
 		Account:         account,
-		AccountID:       accountID,
+		AccountLabel:    accountLabel,
 		Nodes:           nodes,
 		LastRefresh:     lastRefresh,
 		SourceNode:      r.SourceNode,
@@ -215,7 +214,7 @@ func buildView(r TruthRecord, u formats.UsageReport) renderView {
 		HasUsage:        usage != "",
 		HasReset:        resetAt != "",
 		HasPlan:         plan != "",
-		HasAccount:      accountID != "",
+		HasAccount:      accountLabel != "",
 		HasLastRefresh:  lastRefresh != "",
 		HasTargetNodes:  len(targets) > 0,
 		HasSourceNode:   r.SourceNode != "",
@@ -306,7 +305,7 @@ func renderRichText(r TruthRecord, u formats.UsageReport, m richMarkup) string {
 		lines = append(lines, line(fmt.Sprintf("propagated to (%d)", len(v.TargetNodes)), codeList(v.TargetNodes)))
 	}
 	if v.HasAccount {
-		lines = append(lines, line("account id", m.code(m.escape(v.AccountID))))
+		lines = append(lines, line("account", m.code(m.escape(v.AccountLabel))))
 	}
 	if v.HasLastRefresh {
 		lines = append(lines, line("last refresh", m.escape(v.LastRefresh)))
@@ -581,12 +580,9 @@ func usageWindowLine(w formats.UsageWindow) string {
 			remainingPct = (float64(remaining) / float64(w.Limit)) * 100
 		}
 		parts = append(parts, fmt.Sprintf("%.0f%% left", remainingPct))
-	case w.RemainingPct > 0:
+	case w.Label != "" || !w.ResetAt.IsZero():
 		parts = append(parts, fmt.Sprintf("%.0f%% left", w.RemainingPct))
 	default:
-		if !w.ResetAt.IsZero() {
-			return timeLine(w.ResetAt)
-		}
 		return ""
 	}
 	if !w.ResetAt.IsZero() {
@@ -678,42 +674,20 @@ func compact(lines []string) []string {
 	return out
 }
 
-func displayAccountID(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
+func accountLabelFromSummary(sum renderSummary) string {
+	for _, raw := range []string{
+		sum.Extra["display_account"],
+		sum.Extra["email"],
+		sum.Extra["masked_email"],
+	} {
+		raw = strings.TrimSpace(raw)
+		if raw != "" {
+			return displayAccountLabel(raw)
+		}
 	}
-	if strings.Contains(s, "@") {
-		return maskEmail(s)
-	}
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:8] + "…" + s[len(s)-4:]
+	return ""
 }
 
-func maskEmail(s string) string {
-	at := strings.LastIndexByte(s, '@')
-	if at <= 0 || at == len(s)-1 {
-		return displayAccountIDFallback(s)
-	}
-	local := s[:at]
-	domain := s[at+1:]
-	localMask := local[:1] + "***"
-	domainParts := strings.Split(domain, ".")
-	if len(domainParts) == 0 || domainParts[0] == "" {
-		return localMask + "@***"
-	}
-	hostMask := domainParts[0][:1] + "***"
-	if len(domainParts) == 1 {
-		return localMask + "@" + hostMask
-	}
-	return localMask + "@" + hostMask + "." + domainParts[len(domainParts)-1]
-}
-
-func displayAccountIDFallback(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:8] + "…" + s[len(s)-4:]
+func displayAccountLabel(s string) string {
+	return strings.TrimSpace(s)
 }

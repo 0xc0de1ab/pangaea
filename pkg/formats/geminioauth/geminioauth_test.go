@@ -2,6 +2,7 @@ package geminioauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -11,6 +12,17 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/common"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
+
+func makeIDToken(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	payloadJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	return header + "." + payload + "."
+}
 
 // authJSON returns a freshly serialised gemini oauth_creds.json body. expMs
 // is the epoch-ms expiry (0 to omit the field).
@@ -48,6 +60,35 @@ func TestParse_HappyPath(t *testing.T) {
 	}
 	if len(snap.Fingerprint()) != 64 {
 		t.Fatalf("Fingerprint length = %d, want 64", len(snap.Fingerprint()))
+	}
+}
+
+func TestAccountDisplay_UsesEmail(t *testing.T) {
+	exp := time.Now().Add(time.Hour).UnixMilli()
+	body := map[string]any{
+		"access_token":  "ya29.display",
+		"refresh_token": "1//rt-display",
+		"id_token": makeIDToken(t, map[string]any{
+			"sub":   "google-sub-1",
+			"email": "gemini@example.com",
+		}),
+		"expiry_date": exp,
+	}
+	raw, _ := json.Marshal(body)
+	snap, err := (Format{}).Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Format{}).AccountDisplay(context.Background(), snap, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "gemini@example.com" {
+		t.Fatalf("AccountDisplay = %q", got)
+	}
+	sum := (Format{}).Redact(snap)
+	if sum.Extra["email"] != "gemini@example.com" {
+		t.Fatalf("summary email = %q", sum.Extra["email"])
 	}
 }
 

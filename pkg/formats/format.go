@@ -41,6 +41,15 @@ type AccountAware interface {
 	Account(ctx context.Context, snap Snapshot, path string) (string, error)
 }
 
+// AccountDisplayAware is an optional companion to AccountAware for formats
+// that can provide a human-friendly account label (usually an email address).
+// The returned value is only for operator-facing notifications/status output;
+// it is never used for routing, grouping, or truth partitioning. It MUST NOT
+// contain tokens or other authentication secrets.
+type AccountDisplayAware interface {
+	AccountDisplay(ctx context.Context, snap Snapshot, path string) (string, error)
+}
+
 // DirResolver is an optional interface a Format may implement when operators
 // configure a profile with a config directory rather than a concrete
 // credentials file path. Implementations map that directory to the primary

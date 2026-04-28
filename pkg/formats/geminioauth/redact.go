@@ -42,6 +42,9 @@ func (f Format) Redact(snap formats.Snapshot) formats.Summary {
 	if cs.tokenType != "" {
 		extra["token_type"] = cs.tokenType
 	}
+	if cs.googleEmail != "" {
+		extra["email"] = cs.googleEmail
+	}
 	if len(extra) == 0 {
 		extra = nil
 	}

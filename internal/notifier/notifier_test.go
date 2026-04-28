@@ -486,7 +486,8 @@ func TestNotifier_PeriodicSummaryAggregatesAndSkipsUnchanged(t *testing.T) {
 			Format:  "claude-credentials-json-format",
 			RawB64:  base64.StdEncoding.EncodeToString([]byte(`{}`)),
 			Summary: mustSummaryRaw(t, time.Date(2026, 4, 30, 14, 31, 0, 0, time.UTC), "max", map[string]string{
-				"last_refresh": "2026-04-26T00:12:13Z",
+				"display_account": "acct@example.test",
+				"last_refresh":    "2026-04-26T00:12:13Z",
 			}),
 			Nodes: []string{"snowbox", "opi5"},
 		},
@@ -496,8 +497,9 @@ func TestNotifier_PeriodicSummaryAggregatesAndSkipsUnchanged(t *testing.T) {
 			Format:  "codex-auth-json-format",
 			RawB64:  base64.StdEncoding.EncodeToString([]byte(`{}`)),
 			Summary: mustSummaryRaw(t, time.Date(2026, 4, 28, 11, 0, 0, 0, time.UTC), "pro", map[string]string{
-				"account_id":   "user-123",
-				"last_refresh": "2026-04-26T01:02:03Z",
+				"account_id":      "user-123",
+				"display_account": "codex@example.test",
+				"last_refresh":    "2026-04-26T01:02:03Z",
 			}),
 			Nodes: []string{"snowbox"},
 		},
@@ -533,21 +535,16 @@ func TestNotifier_PeriodicSummaryAggregatesAndSkipsUnchanged(t *testing.T) {
 	body := bodies[0]
 	for _, want := range []string{
 		"<b>Auth State</b>",
-		"PROFILE",
-		"TRUTH",
-		"claude",
-		"✅",
+		"<b>claude #1</b>",
 		"opi5,snowbox",
-		"codex",
+		"<b>codex #1</b>",
 		"Current session",
 		"2026-04-30 23:31:00.000",
-		"user-123",
-		"Last refresh",
+		"acct@example.test",
+		"last refresh",
 		"2026-04-26 10:02:03.000",
-		"gemini",
-		"❌",
+		"<b>gemini #1</b> - ❌ no truth",
 		"█",
-		"────",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("periodic body missing %q\n--- body ---\n%s", want, body)
@@ -592,9 +589,15 @@ func TestNotifier_EmitSendsImmediately(t *testing.T) {
 
 	sink := NewTelegramSink(TelegramSinkConfig{DefaultChatID: "C"},
 		&telegram.Client{BotToken: "T", Endpoint: srv.URL, HTTP: srv.Client()})
+	probedFormat := fakeFormat{probe: func(_ context.Context, _ formats.Snapshot) (formats.UsageReport, error) {
+		return formats.UsageReport{Windows: []formats.UsageWindow{{
+			Label:        "Current session",
+			RemainingPct: 88,
+		}}}, nil
+	}}
 	n := New(Config{Interval: time.Hour}, []Sink{sink},
 		func(_ context.Context) []TruthRecord { return nil },
-		func(_ string) (formats.Format, bool) { return fakeFormat{}, true },
+		func(_ string) (formats.Format, bool) { return probedFormat, true },
 		srv.Client(), logging.New(logging.Options{Level: "error"}))
 
 	n.Emit(context.Background(), TruthRecord{
@@ -611,6 +614,36 @@ func TestNotifier_EmitSendsImmediately(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("message missing %q: %s", want, body)
 		}
+	}
+}
+
+func TestNotifier_PropagationWithoutUsageIsSuppressed(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	sink := NewTelegramSink(TelegramSinkConfig{DefaultChatID: "C"},
+		&telegram.Client{BotToken: "T", Endpoint: srv.URL, HTTP: srv.Client()})
+	n := New(Config{Interval: time.Hour}, []Sink{sink},
+		func(_ context.Context) []TruthRecord { return nil },
+		func(_ string) (formats.Format, bool) { return fakeFormat{}, true },
+		srv.Client(), logging.New(logging.Options{Level: "error"}))
+
+	n.Emit(context.Background(), TruthRecord{
+		Profile:     "claude-prod",
+		Account:     "acct@example.test",
+		Format:      "fake",
+		RawB64:      base64.StdEncoding.EncodeToString([]byte(`{}`)),
+		Summary:     mustSummaryRaw(t, time.Now().Add(time.Hour), "max", nil),
+		SourceNode:  "node-a",
+		TargetNodes: []string{"node-b"},
+	})
+
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("propagation without usage should be suppressed, got %d sends", got)
 	}
 }
 
@@ -662,6 +695,52 @@ func TestNotifier_TruthRestoredUsesHeadingAndUsageProbe(t *testing.T) {
 	}
 }
 
+func TestNotifier_StartupGraceSuppressesTruthEvents(t *testing.T) {
+	oldNow := nowFunc
+	currentNow := time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC)
+	nowFunc = func() time.Time { return currentNow }
+	defer func() { nowFunc = oldNow }()
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	sink := NewTelegramSink(TelegramSinkConfig{DefaultChatID: "C"},
+		&telegram.Client{BotToken: "T", Endpoint: srv.URL, HTTP: srv.Client()})
+	probedFormat := fakeFormat{probe: func(_ context.Context, _ formats.Snapshot) (formats.UsageReport, error) {
+		return formats.UsageReport{Windows: []formats.UsageWindow{{Label: "Current session", RemainingPct: 88}}}, nil
+	}}
+	n := New(Config{Interval: time.Hour, StartupEventGrace: time.Minute}, []Sink{sink},
+		func(_ context.Context) []TruthRecord { return nil },
+		func(_ string) (formats.Format, bool) { return probedFormat, true },
+		srv.Client(), logging.New(logging.Options{Level: "error"}))
+
+	rec := TruthRecord{
+		Profile:     "gemini",
+		Account:     "acct-1",
+		Format:      "fake",
+		Fingerprint: "fp-1",
+		RawB64:      base64.StdEncoding.EncodeToString([]byte(`{}`)),
+		Summary:     mustSummaryRaw(t, time.Now().Add(time.Hour), "max", nil),
+		SourceNode:  "snowbox",
+		Nodes:       []string{"snowbox"},
+		EventKind:   EventTruthRestored,
+	}
+	n.Emit(context.Background(), rec)
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("startup truth event should be suppressed, got %d sends", got)
+	}
+
+	currentNow = currentNow.Add(time.Minute + time.Second)
+	n.Emit(context.Background(), rec)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("truth event after startup grace should send once, got %d", got)
+	}
+}
+
 func TestNotifier_RunOnceSkipsBlankStartupState(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -691,7 +770,7 @@ func TestNotifier_RunOnceSkipsBlankStartupState(t *testing.T) {
 	}
 }
 
-func TestNotifier_MasksAccountIDsInMessages(t *testing.T) {
+func TestNotifier_HidesOpaqueAccountIDsInMessages(t *testing.T) {
 	var body string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
@@ -723,10 +802,42 @@ func TestNotifier_MasksAccountIDsInMessages(t *testing.T) {
 	})
 
 	if strings.Contains(body, testAccountID) {
-		t.Fatalf("full account id should be masked: %s", body)
+		t.Fatalf("opaque account id should be hidden: %s", body)
 	}
-	if !strings.Contains(body, "11111111…5555") {
-		t.Fatalf("masked account id missing: %s", body)
+	if strings.Contains(body, "11111111") || strings.Contains(body, "5555") {
+		t.Fatalf("opaque account id fragments should be hidden: %s", body)
+	}
+}
+
+func TestTelegramPeriodic_ZeroRemainingPctRendersProgress(t *testing.T) {
+	oldNow := nowFunc
+	nowFunc = func() time.Time { return time.Date(2026, 4, 29, 0, 5, 0, 0, seoulTZ) }
+	defer func() { nowFunc = oldNow }()
+
+	body := renderPeriodicTelegram([]ReportRecord{{
+		Truth: TruthRecord{
+			Profile: "claude",
+			Format:  "claude-credentials-json-format",
+			Summary: mustSummaryRaw(t, time.Date(2026, 4, 29, 2, 0, 0, 0, time.UTC), "max", map[string]string{
+				"display_account": "claude@example.test",
+			}),
+		},
+		Usage: formats.UsageReport{Windows: []formats.UsageWindow{{
+			Label:        "Current session",
+			RemainingPct: 0,
+			ResetAt:      time.Date(2026, 4, 28, 16, 30, 0, 0, time.UTC),
+		}}},
+	}})
+
+	for _, want := range []string{
+		"Current session",
+		"░░░░░░░░░░░░",
+		"0% left",
+		"2026-04-29 01:30:00.000",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q\n--- body ---\n%s", want, body)
+		}
 	}
 }
 

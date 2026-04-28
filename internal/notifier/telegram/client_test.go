@@ -88,3 +88,28 @@ func TestSendMessage_MissingChatID(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestGetUpdates_Success(t *testing.T) {
+	var gotBody GetUpdatesRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/botT123/getUpdates" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":[{"update_id":9,"message":{"message_id":3,"chat":{"id":-100},"text":"/gemini"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BotToken: "T123", Endpoint: srv.URL, HTTP: srv.Client()}
+	updates, err := c.GetUpdates(context.Background(), GetUpdatesRequest{Offset: 7, Timeout: 1, AllowedUpdates: []string{"message"}})
+	if err != nil {
+		t.Fatalf("GetUpdates: %v", err)
+	}
+	if gotBody.Offset != 7 || gotBody.Timeout != 1 || len(gotBody.AllowedUpdates) != 1 {
+		t.Fatalf("body = %+v", gotBody)
+	}
+	if len(updates) != 1 || updates[0].UpdateID != 9 || updates[0].Message.Text != "/gemini" {
+		t.Fatalf("updates = %+v", updates)
+	}
+}

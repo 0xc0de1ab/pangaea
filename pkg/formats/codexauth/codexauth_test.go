@@ -85,6 +85,77 @@ func TestParse_HappyPath(t *testing.T) {
 	}
 }
 
+func TestAccountDisplay_UsesEmail(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	snap, err := (Format{}).Parse(authJSON(t, exp, "", "AD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Format{}).AccountDisplay(context.Background(), snap, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "alice@example.com" {
+		t.Fatalf("AccountDisplay = %q", got)
+	}
+}
+
+func TestAccountDisplay_UsesTopLevelIDTokenEmail(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	access := makeJWT(t, map[string]any{"sub": "user-abc", "exp": exp})
+	id := makeJWT(t, map[string]any{"email": "top-level@example.com"})
+	raw, _ := json.Marshal(map[string]any{
+		"auth_mode": "Chatgpt",
+		"tokens": map[string]any{
+			"id_token":      id,
+			"access_token":  access,
+			"refresh_token": "rt",
+		},
+	})
+	snap, err := (Format{}).Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Format{}).AccountDisplay(context.Background(), snap, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "top-level@example.com" {
+		t.Fatalf("AccountDisplay = %q", got)
+	}
+}
+
+func TestAccountDisplay_FallsBackToAccessTokenEmail(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	access := makeJWT(t, map[string]any{
+		"sub": "user-abc",
+		"exp": exp,
+		"https://api.openai.com/profile": map[string]any{
+			"email": "access@example.com",
+		},
+	})
+	id := makeJWT(t, map[string]any{"sub": "id-token-without-email"})
+	raw, _ := json.Marshal(map[string]any{
+		"auth_mode": "Chatgpt",
+		"tokens": map[string]any{
+			"id_token":      id,
+			"access_token":  access,
+			"refresh_token": "rt",
+		},
+	})
+	snap, err := (Format{}).Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Format{}).AccountDisplay(context.Background(), snap, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "access@example.com" {
+		t.Fatalf("AccountDisplay = %q", got)
+	}
+}
+
 func TestParse_MissingTokensRejected(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{"auth_mode": "Chatgpt"})
 	_, err := (Format{}).Parse(raw)

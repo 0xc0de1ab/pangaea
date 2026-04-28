@@ -21,6 +21,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/config"
 	"github.com/0xc0de1ab/pangaea/internal/logging"
 	"github.com/0xc0de1ab/pangaea/internal/notifier"
+	"github.com/0xc0de1ab/pangaea/internal/transport"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
@@ -233,6 +234,33 @@ func (h *Hub) SnapshotTruths() []ProfileTruth {
 		}
 	}
 	return out
+}
+
+func (h *Hub) RequestSnapshot(ctx context.Context, profile string, reason string) (int, error) {
+	h.mu.Lock()
+	ph, ok := h.byProfile[profile]
+	h.mu.Unlock()
+	if !ok {
+		if _, exists := h.profilesRef.Get(profile); !exists {
+			return 0, common.Wrap(nil, common.ErrProfileNotFound, common.MsgProfileUnknown, profile)
+		}
+		return 0, nil
+	}
+	sessions := ph.snapshotSessions()
+	req := transport.SnapshotRequest{Profile: profile, Reason: reason}
+	sent := 0
+	for _, s := range sessions {
+		if err := s.sendSnapshotRequest(ctx, req); err != nil {
+			h.log.Warn("snapshot request failed",
+				slog.String(logging.FieldProfile, profile),
+				slog.String(logging.FieldNodeID, s.nodeID),
+				slog.String(logging.FieldReason, err.Error()),
+			)
+			continue
+		}
+		sent++
+	}
+	return sent, nil
 }
 
 // snapshotSessions returns a point-in-time list of *Session for the status

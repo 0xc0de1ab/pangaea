@@ -49,28 +49,47 @@ type claudeMetaShape struct {
 // A missing file is not an error — the caller (client) treats "" as "no
 // account known" and falls back to the shared bucket.
 func (Format) Account(_ context.Context, _ formats.Snapshot, path string) (string, error) {
-	candidates := metaPathCandidates(path)
-	for _, p := range candidates {
+	m, ok, err := readClaudeMeta(path)
+	if err != nil || !ok {
+		return "", err
+	}
+	if m.OauthAccount.AccountUUID != "" {
+		return m.OauthAccount.AccountUUID, nil
+	}
+	if m.OauthAccount.EmailAddress != "" {
+		return m.OauthAccount.EmailAddress, nil
+	}
+	return "", nil
+}
+
+func (Format) AccountDisplay(_ context.Context, _ formats.Snapshot, path string) (string, error) {
+	m, ok, err := readClaudeMeta(path)
+	if err != nil || !ok {
+		return "", err
+	}
+	if m.OauthAccount.EmailAddress != "" {
+		return m.OauthAccount.EmailAddress, nil
+	}
+	return "", nil
+}
+
+func readClaudeMeta(path string) (claudeMetaShape, bool, error) {
+	for _, p := range metaPathCandidates(path) {
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return "", common.Wrap(err, common.ErrParseFailed, "read claude meta %s", p)
+			return claudeMetaShape{}, false, common.Wrap(err, common.ErrParseFailed, "read claude meta %s", p)
 		}
 		var m claudeMetaShape
 		if err := json.Unmarshal(raw, &m); err != nil {
 			// Treat parse errors as "no account here, try the next candidate".
 			continue
 		}
-		if m.OauthAccount.AccountUUID != "" {
-			return m.OauthAccount.AccountUUID, nil
-		}
-		if m.OauthAccount.EmailAddress != "" {
-			return m.OauthAccount.EmailAddress, nil
-		}
+		return m, true, nil
 	}
-	return "", nil
+	return claudeMetaShape{}, false, nil
 }
 
 // metaPathCandidates returns the ordered list of paths to try when looking

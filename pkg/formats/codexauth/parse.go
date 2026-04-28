@@ -93,6 +93,9 @@ func (Format) Parse(raw []byte) (formats.Snapshot, error) {
 
 	exp, _ := jwtExp(f.Tokens.AccessToken)
 	email, _ := jwtEmail(f.Tokens.IDToken)
+	if email == "" {
+		email, _ = jwtEmail(f.Tokens.AccessToken)
+	}
 	chatgptUserID, _ := jwtChatGPTUserID(f.Tokens.IDToken)
 	chatgptAccountID, _ := jwtChatGPTAccountID(f.Tokens.IDToken)
 
@@ -200,9 +203,9 @@ func jwtExp(jwt string) (time.Time, error) {
 	}
 }
 
-// jwtEmail pulls the email claim from codex's namespaced id_token. Codex puts
-// the email under the `https://api.openai.com/profile` claim per
-// codex-rs/login/src/token_data.rs::parse_chatgpt_jwt_claims.
+// jwtEmail pulls the email claim from a Codex JWT. Depending on Codex version
+// and token kind, it can be either a top-level `email` claim or the
+// namespaced `https://api.openai.com/profile.email` claim.
 func jwtEmail(jwt string) (string, error) {
 	if jwt == "" {
 		return "", nil
@@ -211,12 +214,14 @@ func jwtEmail(jwt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	profile, ok := claims["https://api.openai.com/profile"].(map[string]any)
-	if !ok {
-		return "", nil
+	if email, ok := claims["email"].(string); ok && email != "" {
+		return email, nil
 	}
-	email, _ := profile["email"].(string)
-	return email, nil
+	if profile, ok := claims["https://api.openai.com/profile"].(map[string]any); ok {
+		email, _ := profile["email"].(string)
+		return email, nil
+	}
+	return "", nil
 }
 
 func decodeJWTClaims(jwt string) (map[string]any, error) {

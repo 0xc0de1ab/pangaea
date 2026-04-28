@@ -639,6 +639,27 @@ notifier:
 
 서비스 시작 전에 bot token 값을 채워 넣으세요.
 
+### Telegram 명령
+
+Telegram이 활성화되어 있으면 서버는 설정된 chat의 profile 명령도 polling합니다.
+
+지원 명령:
+
+- `/claude`
+- `/codex`
+- `/gemini`
+- `/status`
+- `/help`
+
+profile 명령은 연결된 노드에 즉시 snapshot report를 요청하고, 잠깐 기다린 뒤 서버가 알고 있는 현재 redacted auth state와 usage metadata를 응답합니다.
+
+명령은 설정된 Telegram chat에서만 허용됩니다.
+
+- `default_chat_id`
+- `routes[].chat_id`
+
+다른 chat의 명령은 무시됩니다. 알 수 없는 profile 명령은 사용 가능한 profile 이름과 함께 에러 메시지를 응답합니다.
+
 ## systemd 등록
 
 interactive `setup`은 다음 경로에 systemd unit을 생성할 수 있습니다.

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -473,6 +474,7 @@ func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher
 
 	account := a.resolveAccount(ctx, snap)
 	summary := a.format.Redact(snap)
+	a.enrichAccountDisplay(ctx, snap, &summary)
 	summaryRaw, _ := json.Marshal(summary)
 
 	report := transport.SnapshotReport{
@@ -504,6 +506,30 @@ func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher
 	}
 
 	return sendEnvelope(ctx, conn, transport.KindSnapshotReport, report)
+}
+
+func (a *agent) enrichAccountDisplay(ctx context.Context, snap formats.Snapshot, summary *formats.Summary) {
+	ad, ok := a.format.(formats.AccountDisplayAware)
+	if !ok || summary == nil {
+		return
+	}
+	accountHint := a.accountHint()
+	label, err := ad.AccountDisplay(ctx, snap, accountHint)
+	if err != nil {
+		a.log.Warn("account display resolution failed",
+			slog.String(logging.FieldPath, accountHint),
+			slog.String(logging.FieldReason, err.Error()),
+		)
+		return
+	}
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return
+	}
+	if summary.Extra == nil {
+		summary.Extra = map[string]string{}
+	}
+	summary.Extra["display_account"] = label
 }
 
 func (a *agent) reportCurrentState(ctx context.Context, conn transport.Conn) error {
@@ -539,6 +565,15 @@ func (a *agent) handleEnvelope(ctx context.Context, conn transport.Conn, env tra
 		}
 		ack := applyTruth(ctx, a.log, push, a.path)
 		return sendEnvelope(ctx, conn, transport.KindTruthAck, ack)
+	case transport.KindSnapshotRequest:
+		var req transport.SnapshotRequest
+		if err := json.Unmarshal(env.Payload, &req); err != nil {
+			return common.Wrap(err, common.ErrInvalidMessage, "snapshot.request payload")
+		}
+		if req.Profile != "" && req.Profile != a.profile {
+			return nil
+		}
+		return a.reportCurrentState(ctx, conn)
 	case transport.KindError:
 		var p transport.ErrorPayload
 		_ = json.Unmarshal(env.Payload, &p)

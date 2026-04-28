@@ -32,6 +32,7 @@ const (
 	EventTruthRestored       = "truth.restored"
 	EventTruthLost           = "truth.lost"
 	startupRetryInterval     = 15 * time.Second
+	DefaultStartupEventGrace = time.Minute
 )
 
 var (
@@ -113,6 +114,10 @@ type Config struct {
 	Interval time.Duration
 	// ProbeTimeout caps each UsageProbe HTTP call. Zero falls back to 8s.
 	ProbeTimeout time.Duration
+	// StartupEventGrace suppresses event-driven truth/session notifications
+	// emitted during initial server convergence after process start. Periodic
+	// summaries are not affected.
+	StartupEventGrace time.Duration
 }
 
 // Notifier is the periodic reporter. Construct with New and call Run from
@@ -131,6 +136,7 @@ type Notifier struct {
 	sessionMu     sync.Mutex
 	sessionRecent map[string]recentSessionBatch
 	sessionWait   map[string]*pendingSessionBatch
+	startedAt     time.Time
 }
 
 type pendingSessionBatch struct {
@@ -181,6 +187,7 @@ func New(cfg Config, sinks []Sink, ts TruthSource, fl FormatLookup, httpClient *
 		warnSent:      map[string]bool{},
 		sessionRecent: map[string]recentSessionBatch{},
 		sessionWait:   map[string]*pendingSessionBatch{},
+		startedAt:     nowFunc(),
 	}
 }
 
@@ -212,10 +219,26 @@ func (n *Notifier) Run(ctx context.Context) error {
 // Emit sends one record immediately. It is used for event-driven propagation
 // notifications; periodic summaries still flow through Run.
 func (n *Notifier) Emit(ctx context.Context, r TruthRecord) {
+	if n.suppressStartupEvent(r) {
+		n.log.Debug("event notification suppressed during startup grace",
+			slog.String(logging.FieldEvent, r.EventKind),
+			slog.String(logging.FieldProfile, r.Profile),
+			slog.String(logging.FieldAccount, r.Account),
+		)
+		return
+	}
 	if isSessionEvent(r) {
 		return
 	}
 	usage := n.probe(ctx, r)
+	if isPropagationEvent(r) && !hasUsageSignal(usage) {
+		n.log.Debug("propagation notification suppressed without usage",
+			slog.String(logging.FieldProfile, r.Profile),
+			slog.String(logging.FieldAccount, r.Account),
+			slog.String(logging.FieldFingerprint, r.Fingerprint),
+		)
+		return
+	}
 	for _, sink := range n.sinks {
 		n.dispatchEventToSink(ctx, sink, r, usage)
 	}
@@ -430,6 +453,34 @@ func (n *Notifier) probe(ctx context.Context, r TruthRecord) formats.UsageReport
 
 func isSessionEvent(r TruthRecord) bool {
 	return r.EventKind == EventSessionConnected || r.EventKind == EventSessionDisconnected || r.EventKind == EventSessionReconnected
+}
+
+func isTruthStateEvent(r TruthRecord) bool {
+	return r.EventKind == EventTruthRestored || r.EventKind == EventTruthLost
+}
+
+func isPropagationEvent(r TruthRecord) bool {
+	return r.SourceNode != "" && len(r.TargetNodes) > 0
+}
+
+func (n *Notifier) suppressStartupEvent(r TruthRecord) bool {
+	if n.cfg.StartupEventGrace <= 0 {
+		return false
+	}
+	if !(isSessionEvent(r) || isTruthStateEvent(r) || isPropagationEvent(r)) {
+		return false
+	}
+	return nowFunc().Sub(n.startedAt) < n.cfg.StartupEventGrace
+}
+
+func hasUsageSignal(u formats.UsageReport) bool {
+	if len(u.Windows) > 0 {
+		return true
+	}
+	if u.PlanTier != "" || u.Unit != "" || len(u.Notes) > 0 || !u.ResetAt.IsZero() {
+		return true
+	}
+	return u.Limit > 0 || u.Used > 0 || u.RemainingPct > 0
 }
 
 func sessionEventGroupKey(r TruthRecord) string {

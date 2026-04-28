@@ -123,7 +123,7 @@ func (s *Session) handle(ctx context.Context, env transport.Envelope) {
 		if s.hub != nil {
 			s.hub.mediator.Ack(mediatorAck{session: s, payload: p})
 		}
-	case transport.KindAuthJWT, transport.KindHello, transport.KindWelcome, transport.KindTruthPush:
+	case transport.KindAuthJWT, transport.KindHello, transport.KindWelcome, transport.KindSnapshotRequest, transport.KindTruthPush:
 		// Unexpected direction — server never receives these after handshake.
 		s.protocolError(ctx, "unexpected message for server direction")
 	case transport.KindError:
@@ -151,6 +151,18 @@ func (s *Session) protocolError(ctx context.Context, msg string) {
 // sendTruthPush delivers an envelope to this session. Used by the mediator.
 func (s *Session) sendTruthPush(ctx context.Context, push transport.TruthPush) error {
 	data, err := transport.Marshal(transport.KindTruthPush, common.EnvelopeV, transport.NewID(), time.Now(), push)
+	if err != nil {
+		return err
+	}
+	var env transport.Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return err
+	}
+	return s.conn.Send(ctx, env)
+}
+
+func (s *Session) sendSnapshotRequest(ctx context.Context, req transport.SnapshotRequest) error {
+	data, err := transport.Marshal(transport.KindSnapshotRequest, common.EnvelopeV, transport.NewID(), time.Now(), req)
 	if err != nil {
 		return err
 	}

@@ -60,59 +60,15 @@ func Run(ctx context.Context, cfg *config.ServerConfig, ps config.ProfileStore, 
 
 	sinks := buildNotifierSinks(cfg.Notifier, log)
 	intvl, probeTO := notifierTimings(cfg.Notifier)
+	truthSrc := notifierTruthSource(hub, ps)
 	var n *notifier.Notifier
 	if len(sinks) > 0 {
 		n = notifier.New(notifier.Config{
-			Interval:     intvl,
-			ProbeTimeout: probeTO,
+			Interval:          intvl,
+			ProbeTimeout:      probeTO,
+			StartupEventGrace: notifier.DefaultStartupEventGrace,
 		}, sinks,
-			func(_ context.Context) []notifier.TruthRecord {
-				raw := hub.SnapshotTruths()
-				out := make([]notifier.TruthRecord, 0, len(raw))
-				withTruth := make(map[string]bool, len(raw))
-				for _, t := range raw {
-					withTruth[t.Profile] = true
-					out = append(out, notifier.TruthRecord{
-						Profile:     t.Profile,
-						Account:     t.Account,
-						Format:      t.Format,
-						Fingerprint: t.Fingerprint,
-						IssuedAt:    t.IssuedAt,
-						PushedAt:    t.PushedAt,
-						RawB64:      t.RawB64,
-						Summary:     t.Summary,
-						Nodes:       append([]string(nil), t.Nodes...),
-					})
-				}
-				for _, p := range ps.List() {
-					if withTruth[p.Name] {
-						continue
-					}
-					nodes := snapshotProfileNodes(hub, p.Name)
-					out = append(out, notifier.TruthRecord{
-						Profile: p.Name,
-						Format:  p.Format,
-						NoTruth: true,
-						Nodes:   nodes,
-					})
-				}
-				slices.SortFunc(out, func(a, b notifier.TruthRecord) int {
-					if a.Profile != b.Profile {
-						if a.Profile < b.Profile {
-							return -1
-						}
-						return 1
-					}
-					if a.Account != b.Account {
-						if a.Account < b.Account {
-							return -1
-						}
-						return 1
-					}
-					return 0
-				})
-				return out
-			},
+			truthSrc,
 			formats.Get,
 			nil,
 			log,
@@ -185,6 +141,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, ps config.ProfileStore, 
 	if n != nil {
 		eg.Go(func() error { return n.Run(egCtx) })
 	}
+	if poller := buildTelegramCommandPoller(cfg.Notifier.Telegram, truthSrc, hub, probeTO, log); poller != nil {
+		eg.Go(func() error { return poller.Run(egCtx) })
+	}
 
 	// Self-client launch (specs §15.3 --also-client).
 	if opts.SelfClientFn != nil {
@@ -237,6 +196,56 @@ var readyDelay = 100 * time.Millisecond
 
 var _ = readyDelay
 
+func notifierTruthSource(hub *Hub, ps config.ProfileStore) notifier.TruthSource {
+	return func(_ context.Context) []notifier.TruthRecord {
+		raw := hub.SnapshotTruths()
+		out := make([]notifier.TruthRecord, 0, len(raw))
+		withTruth := make(map[string]bool, len(raw))
+		for _, t := range raw {
+			withTruth[t.Profile] = true
+			out = append(out, notifier.TruthRecord{
+				Profile:     t.Profile,
+				Account:     t.Account,
+				Format:      t.Format,
+				Fingerprint: t.Fingerprint,
+				IssuedAt:    t.IssuedAt,
+				PushedAt:    t.PushedAt,
+				RawB64:      t.RawB64,
+				Summary:     t.Summary,
+				Nodes:       append([]string(nil), t.Nodes...),
+			})
+		}
+		for _, p := range ps.List() {
+			if withTruth[p.Name] {
+				continue
+			}
+			nodes := snapshotProfileNodes(hub, p.Name)
+			out = append(out, notifier.TruthRecord{
+				Profile: p.Name,
+				Format:  p.Format,
+				NoTruth: true,
+				Nodes:   nodes,
+			})
+		}
+		slices.SortFunc(out, func(a, b notifier.TruthRecord) int {
+			if a.Profile != b.Profile {
+				if a.Profile < b.Profile {
+					return -1
+				}
+				return 1
+			}
+			if a.Account != b.Account {
+				if a.Account < b.Account {
+					return -1
+				}
+				return 1
+			}
+			return 0
+		})
+		return out
+	}
+}
+
 func snapshotProfileNodes(h *Hub, profile string) []string {
 	h.mu.Lock()
 	ph, ok := h.byProfile[profile]
@@ -273,12 +282,8 @@ func buildNotifierSinks(cfg config.NotifierConfig, log *slog.Logger) []notifier.
 			if cfg.Telegram.Endpoint != "" {
 				tgClient.Endpoint = cfg.Telegram.Endpoint
 			}
-			routes := make([]notifier.TelegramRoute, 0, len(cfg.Telegram.Routes))
-			for _, r := range cfg.Telegram.Routes {
-				routes = append(routes, notifier.TelegramRoute{Profile: r.Profile, Account: r.Account, ChatID: r.ChatID})
-			}
 			sinks = append(sinks, notifier.NewTelegramSink(notifier.TelegramSinkConfig{
-				Routes:              routes,
+				Routes:              telegramRoutes(cfg.Telegram.Routes),
 				DefaultChatID:       cfg.Telegram.DefaultChatID,
 				DisableNotification: cfg.Telegram.DisableNotification,
 			}, tgClient))
@@ -392,6 +397,50 @@ func buildNotifierSinks(cfg config.NotifierConfig, log *slog.Logger) []notifier.
 	}
 
 	return sinks
+}
+
+func buildTelegramCommandPoller(
+	cfg config.TelegramConfig,
+	truthSrc notifier.TruthSource,
+	hub *Hub,
+	probeTimeout time.Duration,
+	log *slog.Logger,
+) *notifier.TelegramCommandPoller {
+	if !cfg.Enabled {
+		return nil
+	}
+	token := os.Getenv(cfg.BotTokenEnv)
+	if token == "" {
+		return nil
+	}
+	tgClient := telegram.New(token)
+	if cfg.Endpoint != "" {
+		tgClient.Endpoint = cfg.Endpoint
+	}
+	tgClient.HTTP = &http.Client{Timeout: 40 * time.Second}
+	return notifier.NewTelegramCommandPoller(
+		notifier.TelegramCommandConfig{
+			Routes:        telegramRoutes(cfg.Routes),
+			DefaultChatID: cfg.DefaultChatID,
+			ProbeTimeout:  probeTimeout,
+		},
+		tgClient,
+		truthSrc,
+		formats.Get,
+		nil,
+		func(ctx context.Context, profile string) (int, error) {
+			return hub.RequestSnapshot(ctx, profile, "telegram command")
+		},
+		log,
+	)
+}
+
+func telegramRoutes(routes []config.TelegramRoute) []notifier.TelegramRoute {
+	out := make([]notifier.TelegramRoute, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, notifier.TelegramRoute{Profile: r.Profile, Account: r.Account, ChatID: r.ChatID})
+	}
+	return out
 }
 
 // resolvedRoute is the post-env-lookup form of a sink route. We keep it

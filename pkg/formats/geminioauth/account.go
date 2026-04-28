@@ -28,3 +28,14 @@ func (Format) Account(_ context.Context, snap formats.Snapshot, _ string) (strin
 	}
 	return "", nil
 }
+
+func (Format) AccountDisplay(_ context.Context, snap formats.Snapshot, _ string) (string, error) {
+	cs, ok := snap.(*snapshot)
+	if !ok {
+		return "", nil
+	}
+	if cs.googleEmail != "" {
+		return cs.googleEmail, nil
+	}
+	return "", nil
+}

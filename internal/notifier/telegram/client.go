@@ -50,6 +50,30 @@ type SendMessageRequest struct {
 	Text                string `json:"text"`
 	ParseMode           string `json:"parse_mode,omitempty"`
 	DisableNotification bool   `json:"disable_notification,omitempty"`
+	ReplyToMessageID    int    `json:"reply_to_message_id,omitempty"`
+}
+
+type GetUpdatesRequest struct {
+	Offset         int      `json:"offset,omitempty"`
+	Timeout        int      `json:"timeout,omitempty"`
+	AllowedUpdates []string `json:"allowed_updates,omitempty"`
+}
+
+type Update struct {
+	UpdateID    int      `json:"update_id"`
+	Message     *Message `json:"message,omitempty"`
+	ChannelPost *Message `json:"channel_post,omitempty"`
+}
+
+type Message struct {
+	MessageID int    `json:"message_id"`
+	Chat      Chat   `json:"chat"`
+	Text      string `json:"text,omitempty"`
+}
+
+type Chat struct {
+	ID   int64  `json:"id"`
+	Type string `json:"type,omitempty"`
 }
 
 // SendMessage POSTs sendMessage. On any non-200 / Telegram-error the
@@ -98,6 +122,51 @@ func (c *Client) SendMessage(ctx context.Context, req SendMessageRequest) error 
 		return fmt.Errorf("telegram: api: %s", apiResp.Description)
 	}
 	return nil
+}
+
+func (c *Client) GetUpdates(ctx context.Context, req GetUpdatesRequest) ([]Update, error) {
+	if c.BotToken == "" {
+		return nil, fmt.Errorf("telegram: BotToken is empty")
+	}
+	endpoint := c.Endpoint
+	if endpoint == "" {
+		endpoint = DefaultEndpoint
+	}
+	hc := c.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: time.Duration(req.Timeout+5) * time.Second}
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: marshal: %w", err)
+	}
+	url := strings.TrimRight(endpoint, "/") + "/bot" + c.BotToken + "/getUpdates"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("telegram: new request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := hc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: getUpdates: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("telegram: HTTP %d: %s", resp.StatusCode, scrubToken(string(respBody), c.BotToken))
+	}
+	var apiResp struct {
+		OK          bool     `json:"ok"`
+		Description string   `json:"description"`
+		Result      []Update `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return nil, fmt.Errorf("telegram: decode getUpdates: %w", err)
+	}
+	if !apiResp.OK {
+		return nil, fmt.Errorf("telegram: api: %s", apiResp.Description)
+	}
+	return apiResp.Result, nil
 }
 
 // scrubToken removes the bot token from any error string before bubbling it

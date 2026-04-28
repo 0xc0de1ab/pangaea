@@ -21,20 +21,21 @@ import (
 type Kind string
 
 const (
-	KindAuthJWT        Kind = "auth.jwt"
-	KindHello          Kind = "hello"
-	KindWelcome        Kind = "welcome"
-	KindSnapshotReport Kind = "snapshot.report"
-	KindSnapshotAbsent Kind = "snapshot.absent"
-	KindTruthPush      Kind = "truth.push"
-	KindTruthAck       Kind = "truth.ack"
-	KindError          Kind = "error"
+	KindAuthJWT         Kind = "auth.jwt"
+	KindHello           Kind = "hello"
+	KindWelcome         Kind = "welcome"
+	KindSnapshotRequest Kind = "snapshot.request"
+	KindSnapshotReport  Kind = "snapshot.report"
+	KindSnapshotAbsent  Kind = "snapshot.absent"
+	KindTruthPush       Kind = "truth.push"
+	KindTruthAck        Kind = "truth.ack"
+	KindError           Kind = "error"
 )
 
 // validKinds returns true for any Kind defined above.
 func validKind(k Kind) bool {
 	switch k {
-	case KindAuthJWT, KindHello, KindWelcome, KindSnapshotReport, KindSnapshotAbsent,
+	case KindAuthJWT, KindHello, KindWelcome, KindSnapshotRequest, KindSnapshotReport, KindSnapshotAbsent,
 		KindTruthPush, KindTruthAck, KindError:
 		return true
 	}
@@ -78,6 +79,14 @@ type Hello struct {
 	AgentVersion string   `json:"agent_version"`
 	OS           string   `json:"os"`
 	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// SnapshotRequest — S→C request for an immediate current-state report.
+// It is used by operator commands to refresh the server's mirror before
+// rendering an on-demand status response.
+type SnapshotRequest struct {
+	Profile string `json:"profile"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // AuthJWT — C→S JWT bearer used only when the server asks for post-upgrade

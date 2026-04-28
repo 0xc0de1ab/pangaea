@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -61,6 +63,33 @@ func TestParse_GoldenAcceptedFields(t *testing.T) {
 	tokSum := sha256.Sum256([]byte("test-claude-WXYZ"))
 	if got, w := snap.Identity(), hex.EncodeToString(tokSum[:])[:16]; got != w {
 		t.Errorf("Identity = %q, want %q", got, w)
+	}
+}
+
+func TestAccountDisplay_UsesClaudeMetaEmail(t *testing.T) {
+	dir := t.TempDir()
+	meta := filepath.Join(dir, ".claude.json")
+	if err := os.WriteFile(meta, []byte(`{
+		"oauthAccount": {
+			"accountUuid": "11111111-2222-3333-4444-555555555555",
+			"emailAddress": "claude@example.com"
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (Format{}).AccountDisplay(context.Background(), nil, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "claude@example.com" {
+		t.Fatalf("AccountDisplay = %q", got)
+	}
+	stable, err := (Format{}).Account(context.Background(), nil, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stable != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("Account = %q", stable)
 	}
 }
 
