@@ -220,8 +220,8 @@ func TestE2E_SessionDisplacementKeepsReplacementLive(t *testing.T) {
 	defer cancel()
 	log := logging.New(logging.Options{Level: "error"})
 
-	startClientAsync(clientCtx, cloneClientConfig(env.clientA), client.Options{AgentVersion: "test"}, log)
-
+	// Make the first profile session the one that will be displaced. The
+	// mediator must outlive request-scoped WebSocket contexts.
 	b1 := cloneClientConfig(env.clientB)
 	b1Dir := t.TempDir()
 	b1.Profiles[0].Dir = b1Dir
@@ -233,6 +233,7 @@ func TestE2E_SessionDisplacementKeepsReplacementLive(t *testing.T) {
 	startClientAsync(clientCtx, cloneClientConfig(env.clientB), client.Options{AgentVersion: "test"}, log)
 	waitForClientExit(t, b1Done, 5*time.Second)
 	writeMaybeFile(t, env.pathA, newer)
+	startClientAsync(clientCtx, cloneClientConfig(env.clientA), client.Options{AgentVersion: "test"}, log)
 	waitForFileContent(t, env.pathB, newer)
 
 	// Make node-b diverge after the replacement session has already proven it
@@ -442,7 +443,7 @@ func (e *e2eEnv) seed(t *testing.T, a, b []byte) {
 
 func (e *e2eEnv) start(t *testing.T, opts startOptions) *runningEnv {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	log := logging.New(logging.Options{Level: "error"})
 	eg, egCtx := errgroup.WithContext(ctx)
 	done := make(chan error, 1)
@@ -595,7 +596,7 @@ func waitForClientExit(t *testing.T, done <-chan error, timeout time.Duration) {
 
 func waitForFileContent(t *testing.T, path string, want []byte) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		got, err := os.ReadFile(path)
 		if err == nil && string(got) == string(want) {

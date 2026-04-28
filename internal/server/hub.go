@@ -31,6 +31,9 @@ import (
 type Hub struct {
 	log *slog.Logger
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu          sync.Mutex
 	byProfile   map[string]*profileHub
 	profilesRef config.ProfileStore
@@ -61,8 +64,11 @@ type profileHub struct {
 // registration; the hub does not cache profile definitions so SIGHUP-driven
 // reloads take effect on the next connection.
 func NewHub(ps config.ProfileStore, log *slog.Logger) *Hub {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Hub{
 		log:         log.With(slog.String(logging.FieldComponent, logging.ComponentServer)),
+		ctx:         ctx,
+		cancel:      cancel,
 		byProfile:   make(map[string]*profileHub),
 		profilesRef: ps,
 	}
@@ -79,7 +85,7 @@ func (h *Hub) SetPropagationNotifier(fn func(context.Context, notifier.TruthReco
 // getOrStartProfile resolves a profileHub for name, creating and starting its
 // mediator if this is the first registration. Returns common.ErrProfileNotFound
 // if no such profile exists in the store. Caller must hold h.mu.
-func (h *Hub) getOrStartProfile(ctx context.Context, name string) (*profileHub, error) {
+func (h *Hub) getOrStartProfile(name string) (*profileHub, error) {
 	if ph, ok := h.byProfile[name]; ok {
 		return ph, nil
 	}
@@ -102,7 +108,7 @@ func (h *Hub) getOrStartProfile(ctx context.Context, name string) (*profileHub, 
 		sessionsByIdentity: make(map[string]*Session),
 	}
 	ph.mediator = newMediator(p, f, targetPath, h.log, ph, h.notifyFn)
-	go ph.mediator.run(ctx)
+	go ph.mediator.run(h.ctx)
 	h.byProfile[name] = ph
 	return ph, nil
 }
@@ -117,7 +123,7 @@ func (h *Hub) Register(ctx context.Context, profileName string, auth handshakeAu
 		h.mu.Unlock()
 		return common.Wrap(nil, common.ErrShutdown, "hub shutting down")
 	}
-	ph, err := h.getOrStartProfile(ctx, profileName)
+	ph, err := h.getOrStartProfile(profileName)
 	h.mu.Unlock()
 	if err != nil {
 		return err
@@ -292,6 +298,7 @@ func (ph *profileHub) snapshotNodeIDs() []string {
 func (h *Hub) Shutdown(ctx context.Context) {
 	h.mu.Lock()
 	h.shuttingDown = true
+	h.cancel()
 	phs := make([]*profileHub, 0, len(h.byProfile))
 	for _, ph := range h.byProfile {
 		phs = append(phs, ph)
