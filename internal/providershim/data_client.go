@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
@@ -106,6 +107,8 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 	}()
 	defer close(done)
 
+	state := newDataClientState(conn)
+	defer state.cancelAll()
 	for {
 		var request tunnel.DataRequest
 		if err := conn.ReadJSON(&request); err != nil {
@@ -114,12 +117,20 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 			}
 			return err
 		}
-		response := handleDataRequest(ctx, signer, registration, opts.Provider, request)
-		if err := conn.WriteJSON(response); err != nil {
-			if ctx.Err() != nil {
-				return nil
+		switch request.Type {
+		case "", tunnel.DataFrameRequest:
+			state.handleRequest(ctx, signer, registration, opts.Provider, request)
+		case tunnel.DataFrameCancel:
+			state.cancel(request.RequestID)
+		default:
+			if err := state.writeResponse(ctx, tunnel.DataResponse{
+				Type:      tunnel.DataFrameResponse,
+				RequestID: request.RequestID,
+				StreamID:  request.Descriptor.StreamID,
+				Error:     fmt.Sprintf("%s: unsupported data frame type %q", ErrShimConfig, request.Type),
+			}); err != nil {
+				return err
 			}
-			return err
 		}
 	}
 }
@@ -149,8 +160,99 @@ func DeriveDataURL(controlURL string, providerInstanceID string) (string, error)
 	return u.String(), nil
 }
 
+type dataClientState struct {
+	conn     *websocket.Conn
+	writeMu  sync.Mutex
+	mu       sync.Mutex
+	inflight map[string]context.CancelFunc
+}
+
+func newDataClientState(conn *websocket.Conn) *dataClientState {
+	return &dataClientState{
+		conn:     conn,
+		inflight: make(map[string]context.CancelFunc),
+	}
+}
+
+func (s *dataClientState) handleRequest(ctx context.Context, signer *tunnel.TokenSigner, registration provider.Registration, invoker providerInvoker, request tunnel.DataRequest) {
+	if strings.TrimSpace(request.RequestID) == "" {
+		_ = s.writeResponse(ctx, tunnel.DataResponse{
+			Type:     tunnel.DataFrameResponse,
+			StreamID: request.Descriptor.StreamID,
+			Error:    fmt.Sprintf("%s: request_id is required", ErrShimConfig),
+		})
+		return
+	}
+	requestCtx, cancel := context.WithCancel(ctx)
+	if !s.add(request.RequestID, cancel) {
+		cancel()
+		_ = s.writeResponse(ctx, tunnel.DataResponse{
+			Type:      tunnel.DataFrameResponse,
+			RequestID: request.RequestID,
+			StreamID:  request.Descriptor.StreamID,
+			Error:     fmt.Sprintf("%s: duplicate request_id %q", ErrShimConfig, request.RequestID),
+		})
+		return
+	}
+	go func() {
+		defer s.done(request.RequestID)
+		response := handleDataRequest(requestCtx, signer, registration, invoker, request)
+		_ = s.writeResponse(ctx, response)
+	}()
+}
+
+func (s *dataClientState) add(requestID string, cancel context.CancelFunc) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.inflight[requestID]; exists {
+		return false
+	}
+	s.inflight[requestID] = cancel
+	return true
+}
+
+func (s *dataClientState) cancel(requestID string) {
+	s.mu.Lock()
+	cancel := s.inflight[requestID]
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (s *dataClientState) done(requestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.inflight, requestID)
+}
+
+func (s *dataClientState) cancelAll() {
+	s.mu.Lock()
+	inflight := s.inflight
+	s.inflight = make(map[string]context.CancelFunc)
+	s.mu.Unlock()
+	for _, cancel := range inflight {
+		cancel()
+	}
+}
+
+func (s *dataClientState) writeResponse(ctx context.Context, response tunnel.DataResponse) error {
+	if response.Type == "" {
+		response.Type = tunnel.DataFrameResponse
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.conn.WriteJSON(response); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func handleDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registration provider.Registration, invoker providerInvoker, request tunnel.DataRequest) tunnel.DataResponse {
-	response := tunnel.DataResponse{RequestID: request.RequestID, StreamID: request.Descriptor.StreamID}
+	response := tunnel.DataResponse{Type: tunnel.DataFrameResponse, RequestID: request.RequestID, StreamID: request.Descriptor.StreamID}
 	if err := request.Descriptor.Validate(); err != nil {
 		response.Error = err.Error()
 		return response

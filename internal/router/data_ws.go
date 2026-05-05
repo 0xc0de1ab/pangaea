@@ -110,6 +110,7 @@ func (b *DataBroker) Invoke(ctx context.Context, registration provider.Registrat
 		return compat.Response{}, err
 	}
 	response, err := session.invoke(invokeCtx, tunnel.DataRequest{
+		Type:            tunnel.DataFrameRequest,
 		RequestID:       requestID,
 		Descriptor:      descriptor,
 		CapabilityToken: token,
@@ -213,10 +214,29 @@ func (s *dataSession) invoke(ctx context.Context, request tunnel.DataRequest) (t
 	}
 	select {
 	case <-ctx.Done():
+		s.sendCancel(request)
 		return tunnel.DataResponse{}, ctx.Err()
 	case response := <-responseCh:
 		return response, nil
 	}
+}
+
+func (s *dataSession) sendCancel(request tunnel.DataRequest) {
+	cancel := tunnel.DataRequest{
+		Type:      tunnel.DataFrameCancel,
+		RequestID: request.RequestID,
+		Descriptor: tunnel.StreamDescriptor{
+			StreamID:           request.Descriptor.StreamID,
+			ProviderInstanceID: request.Descriptor.ProviderInstanceID,
+			Model:              request.Descriptor.Model,
+			State:              tunnel.StateClosed,
+			CreatedAt:          request.Descriptor.CreatedAt,
+			UpdatedAt:          time.Now().UTC(),
+		},
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_ = s.conn.WriteJSON(cancel)
 }
 
 func (s *dataSession) readLoop() {
@@ -266,7 +286,7 @@ func (s *dataSession) closeWithError(err error) {
 	}
 	for requestID, ch := range pending {
 		select {
-		case ch <- tunnel.DataResponse{RequestID: requestID, Error: message}:
+		case ch <- tunnel.DataResponse{Type: tunnel.DataFrameResponse, RequestID: requestID, Error: message}:
 		default:
 		}
 	}
