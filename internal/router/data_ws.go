@@ -94,7 +94,7 @@ func (b *DataBroker) Invoke(ctx context.Context, registration provider.Registrat
 		return compat.Response{}, err
 	}
 	if response.Error != "" {
-		return compat.Response{}, fmt.Errorf("%w: %s", ErrDataRequestFailed, response.Error)
+		return compat.Response{}, dataResponseError(response)
 	}
 	if err := response.Response.Validate(); err != nil {
 		return compat.Response{}, err
@@ -350,7 +350,7 @@ func (s *dataSession) invokeStream(ctx context.Context, request tunnel.DataReque
 			return compat.Response{}, ctx.Err()
 		case response := <-pending.ch:
 			if response.Error != "" {
-				return compat.Response{}, fmt.Errorf("%w: %s", ErrDataRequestFailed, response.Error)
+				return compat.Response{}, dataResponseError(response)
 			}
 			switch response.Type {
 			case tunnel.DataFrameEvent:
@@ -373,6 +373,18 @@ func (s *dataSession) invokeStream(ctx context.Context, request tunnel.DataReque
 			return compat.Response{}, ErrNoDataSession
 		}
 	}
+}
+
+func dataResponseError(response tunnel.DataResponse) error {
+	if response.ErrorStatusCode != 0 || response.ErrorCode != "" || response.ErrorRetryAfter != "" {
+		return &provider.UpstreamError{
+			StatusCode: response.ErrorStatusCode,
+			Code:       response.ErrorCode,
+			Message:    response.Error,
+			RetryAfter: response.ErrorRetryAfter,
+		}
+	}
+	return fmt.Errorf("%w: %s", ErrDataRequestFailed, response.Error)
 }
 
 func (s *dataSession) sendCancel(request tunnel.DataRequest) {

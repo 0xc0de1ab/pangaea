@@ -2,6 +2,7 @@ package providershim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -275,7 +276,7 @@ func (s *dataClientState) handleDataRequest(ctx context.Context, signer *tunnel.
 	}
 	compatResponse, err := invoker.Invoke(ctx, registration, request.Request)
 	if err != nil {
-		response.Error = err.Error()
+		applyDataResponseError(&response, err)
 		return response
 	}
 	response.Response = compatResponse
@@ -310,7 +311,7 @@ func (s *dataClientState) handleStreamDataRequest(ctx context.Context, signer *t
 			})
 		})
 		if err != nil {
-			response.Error = err.Error()
+			applyDataResponseError(&response, err)
 			return response
 		}
 		response.Response = compatResponse
@@ -318,7 +319,7 @@ func (s *dataClientState) handleStreamDataRequest(ctx context.Context, signer *t
 	}
 	compatResponse, err := invoker.Invoke(ctx, registration, request.Request)
 	if err != nil {
-		response.Error = err.Error()
+		applyDataResponseError(&response, err)
 		return response
 	}
 	events, err := compat.EventsFromResponse(compatResponse)
@@ -339,4 +340,21 @@ func (s *dataClientState) handleStreamDataRequest(ctx context.Context, signer *t
 	}
 	response.Response = compatResponse
 	return response
+}
+
+func applyDataResponseError(response *tunnel.DataResponse, err error) {
+	if response == nil || err == nil {
+		return
+	}
+	response.Error = err.Error()
+	var upstream *provider.UpstreamError
+	if errors.As(err, &upstream) && upstream != nil {
+		response.Error = upstream.Message
+		if response.Error == "" {
+			response.Error = upstream.Error()
+		}
+		response.ErrorCode = upstream.Code
+		response.ErrorStatusCode = upstream.StatusCode
+		response.ErrorRetryAfter = upstream.RetryAfter
+	}
 }

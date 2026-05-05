@@ -3,6 +3,7 @@ package providershim
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -131,6 +132,49 @@ func TestRunSimulatorDataClientStreamsEventFrames(t *testing.T) {
 	}
 }
 
+func TestRunSimulatorDataClientPreservesUpstreamErrorMetadata(t *testing.T) {
+	tokenKey := []byte("test-data-client-upstream-error-key")
+	broker, err := router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{DataBroker: broker}))
+	defer server.Close()
+
+	registration := testDataClientRegistration("provider-upstream-error-a1")
+	failing := &upstreamErrorDataProvider{registration: registration}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunSimulatorDataClient(ctx, DataClientOptions{
+			DataURL:  dataURL(server.URL, registration.Identity.ProviderInstanceID),
+			TokenKey: tokenKey,
+			Provider: failing,
+		})
+	}()
+	waitForDataSession(t, broker, registration.Identity.ProviderInstanceID)
+
+	_, err = broker.Invoke(context.Background(), registration, testDataClientRequest("req_upstream_error_shim"))
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("expected upstream error across data plane, got %T %v", err, err)
+	}
+	if upstream.StatusCode != http.StatusTooManyRequests || upstream.Code != "rate_limit_exceeded" || upstream.Message != "upstream quota exhausted" || upstream.RetryAfter != "15" {
+		t.Fatalf("unexpected upstream error details: %#v", upstream)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("data client returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("data client did not stop")
+	}
+}
+
 type blockingDataProvider struct {
 	registration provider.Registration
 	invoked      chan struct{}
@@ -186,6 +230,23 @@ func (p *streamingDataProvider) InvokeStream(_ context.Context, _ provider.Regis
 		StopReason: "stop",
 		Usage:      compat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
 	}, nil
+}
+
+type upstreamErrorDataProvider struct {
+	registration provider.Registration
+}
+
+func (p *upstreamErrorDataProvider) Registration() (provider.Registration, error) {
+	return p.registration, nil
+}
+
+func (p *upstreamErrorDataProvider) Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error) {
+	return compat.Response{}, &provider.UpstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Code:       "rate_limit_exceeded",
+		Message:    "upstream quota exhausted",
+		RetryAfter: "15",
+	}
 }
 
 func dataURL(serverURL string, providerInstanceID string) string {

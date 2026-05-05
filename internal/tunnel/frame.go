@@ -20,10 +20,13 @@ type DataRequest struct {
 }
 
 type DataResponse struct {
-	Type      DataFrameType   `json:"type,omitempty"`
-	RequestID string          `json:"request_id"`
-	StreamID  StreamID        `json:"stream_id"`
-	Event     compat.Event    `json:"event,omitempty"`
-	Response  compat.Response `json:"response,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	Type            DataFrameType   `json:"type,omitempty"`
+	RequestID       string          `json:"request_id"`
+	StreamID        StreamID        `json:"stream_id"`
+	Event           compat.Event    `json:"event,omitempty"`
+	Response        compat.Response `json:"response,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	ErrorCode       string          `json:"error_code,omitempty"`
+	ErrorStatusCode int             `json:"error_status_code,omitempty"`
+	ErrorRetryAfter string          `json:"error_retry_after,omitempty"`
 }
