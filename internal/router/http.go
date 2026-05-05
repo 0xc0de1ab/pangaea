@@ -119,6 +119,7 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		c.JSON(http.StatusOK, gin.H{"providers": engine.Providers()})
 	})
+	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine))
 	r.POST("/router/v1/routes/dry-run", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
 		if !ok {

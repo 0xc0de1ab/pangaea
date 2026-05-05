@@ -27,6 +27,8 @@ const (
 	MessageTypeStreamOpenReady         MessageType = "stream.open.ready"
 	MessageTypeStreamCancel            MessageType = "stream.cancel"
 	MessageTypeStreamClosed            MessageType = "stream.closed"
+	MessageTypeAck                     MessageType = "control.ack"
+	MessageTypeControlError            MessageType = "control.error"
 )
 
 func (t MessageType) Valid() bool {
@@ -44,7 +46,9 @@ func (t MessageType) Valid() bool {
 		MessageTypeStreamOpenRequest,
 		MessageTypeStreamOpenReady,
 		MessageTypeStreamCancel,
-		MessageTypeStreamClosed:
+		MessageTypeStreamClosed,
+		MessageTypeAck,
+		MessageTypeControlError:
 		return true
 	default:
 		return false
@@ -231,6 +235,19 @@ type ErrorPayload struct {
 	Details   map[string]any `json:"details,omitempty"`
 }
 
+type Ack struct {
+	ReplyTo string `json:"reply_to"`
+	OK      bool   `json:"ok"`
+	Message string `json:"message,omitempty"`
+}
+
+type ControlError struct {
+	ReplyTo   string `json:"reply_to,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable,omitempty"`
+}
+
 type NodeHelloPayload = NodeHello
 type NodeHeartbeatPayload = NodeHeartbeat
 type ProviderHeartbeatPayload = ProviderHeartbeat
@@ -244,3 +261,5 @@ type StreamOpenRequestPayload = StreamOpenRequest
 type StreamOpenReadyPayload = StreamOpenReady
 type StreamCancelPayload = StreamCancel
 type StreamClosedPayload = StreamClosed
+type AckPayload = Ack
+type ControlErrorPayload = ControlError

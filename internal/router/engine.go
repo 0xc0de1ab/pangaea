@@ -92,6 +92,45 @@ func (e *Engine) Providers() []provider.Registration {
 	return e.registry.List()
 }
 
+func (e *Engine) UpsertProvider(registration provider.Registration) error {
+	if e == nil || e.registry == nil {
+		return ErrRouterNotReady
+	}
+	return e.registry.Upsert(registration)
+}
+
+func (e *Engine) UpdateProviderHeartbeat(providerInstanceID string, health provider.Health, auth provider.AuthState, limits provider.LimitState) error {
+	if e == nil || e.registry == nil {
+		return ErrRouterNotReady
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return provider.ErrProviderNotFound
+	}
+	if health.Status != "" {
+		registration.Health = health
+	}
+	if auth.Status != "" {
+		registration.Auth = auth
+	}
+	if limits != (provider.LimitState{}) {
+		registration.Limits = limits
+	}
+	return e.registry.Upsert(registration)
+}
+
+func (e *Engine) UpdateProviderAuth(providerInstanceID string, auth provider.AuthState) error {
+	if e == nil || e.registry == nil {
+		return ErrRouterNotReady
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return provider.ErrProviderNotFound
+	}
+	registration.Auth = auth
+	return e.registry.Upsert(registration)
+}
+
 func (e *Engine) ReserveRoute(request RouteExecutionRequest) (RouteExecution, error) {
 	if e == nil || e.registry == nil || e.ledger == nil {
 		return RouteExecution{}, ErrRouterNotReady

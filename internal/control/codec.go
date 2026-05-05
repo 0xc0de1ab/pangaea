@@ -157,6 +157,10 @@ func DecodeKnownPayload(env Envelope) (any, error) {
 		return Decode[StreamCancel](env, MessageTypeStreamCancel)
 	case MessageTypeStreamClosed:
 		return Decode[StreamClosed](env, MessageTypeStreamClosed)
+	case MessageTypeAck:
+		return Decode[Ack](env, MessageTypeAck)
+	case MessageTypeControlError:
+		return Decode[ControlError](env, MessageTypeControlError)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrInvalidMessageType, env.Type)
 	}

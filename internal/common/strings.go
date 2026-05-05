@@ -36,4 +36,5 @@ const (
 	CLIShortStatus  = "show the local daemon status"
 	CLIShortVersion = "print build version"
 	CLIShortRouter  = "run v2 router APIs"
+	CLIShortShim    = "run v2 provider shim"
 )
