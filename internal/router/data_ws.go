@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,12 @@ type DataBroker struct {
 	signer   *tunnel.TokenSigner
 	sessions map[string]*dataSession
 	nextID   atomic.Uint64
+}
+
+type DataSessionSnapshot struct {
+	ProviderInstanceID string    `json:"provider_instance_id"`
+	ConnectedAt        time.Time `json:"connected_at"`
+	PendingRequests    int       `json:"pending_requests"`
 }
 
 func NewDataBroker(tokenKey []byte) (*DataBroker, error) {
@@ -144,6 +151,26 @@ func (b *DataBroker) session(providerInstanceID string) *dataSession {
 	return b.sessions[providerInstanceID]
 }
 
+func (b *DataBroker) Sessions() []DataSessionSnapshot {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	sessions := make([]*dataSession, 0, len(b.sessions))
+	for _, session := range b.sessions {
+		sessions = append(sessions, session)
+	}
+	b.mu.RUnlock()
+	out := make([]DataSessionSnapshot, 0, len(sessions))
+	for _, session := range sessions {
+		out = append(out, session.snapshot())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ProviderInstanceID < out[j].ProviderInstanceID
+	})
+	return out
+}
+
 func (b *DataBroker) nextRequestID(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, b.nextID.Add(1))
 }
@@ -151,6 +178,7 @@ func (b *DataBroker) nextRequestID(prefix string) string {
 type dataSession struct {
 	providerInstanceID string
 	conn               *websocket.Conn
+	connectedAt        time.Time
 	writeMu            sync.Mutex
 	mu                 sync.Mutex
 	closed             bool
@@ -161,6 +189,7 @@ func newDataSession(providerInstanceID string, conn *websocket.Conn) *dataSessio
 	return &dataSession{
 		providerInstanceID: providerInstanceID,
 		conn:               conn,
+		connectedAt:        time.Now().UTC(),
 		pending:            make(map[string]chan tunnel.DataResponse),
 	}
 }
@@ -242,4 +271,14 @@ func (s *dataSession) closeWithError(err error) {
 		}
 	}
 	_ = s.conn.Close()
+}
+
+func (s *dataSession) snapshot() DataSessionSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return DataSessionSnapshot{
+		ProviderInstanceID: s.providerInstanceID,
+		ConnectedAt:        s.connectedAt,
+		PendingRequests:    len(s.pending),
+	}
 }

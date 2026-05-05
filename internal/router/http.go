@@ -262,6 +262,13 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		c.JSON(http.StatusOK, gin.H{"sessions": engine.ControlSessions()})
 	})
+	r.GET("/router/v1/data/sessions", func(c *gin.Context) {
+		if opts.DataBroker == nil {
+			c.JSON(http.StatusOK, gin.H{"sessions": []DataSessionSnapshot{}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"sessions": opts.DataBroker.Sessions()})
+	})
 	r.GET("/router/v1/usage/providers", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
 		if !ok {
