@@ -2,8 +2,14 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/0xc0de1ab/pangaea/internal/provider"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 func TestRunProviderShimRequiresRouterControlURL(t *testing.T) {
@@ -38,7 +44,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "model", "model-alias"} {
+	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "model", "model-alias", "auth-path", "auth-format", "refresh-command", "refresh-login-shell", "refresh-timeout"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -87,3 +93,137 @@ func TestBuildAPICompatibleProviderRequiresFields(t *testing.T) {
 		t.Fatalf("expected upstream base url error")
 	}
 }
+
+func TestBuildCLIContainerProviderUsesAuthFileAndRefreshCommand(t *testing.T) {
+	registerProviderShimTestFormat()
+	dir := t.TempDir()
+	authPath := dir + "/auth.json"
+	if err := os.WriteFile(authPath, []byte("healthy"), 0o600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	apiProvider, refresher, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
+		ProviderID:         "codex-samtest",
+		ProviderInstanceID: "codex-samtest-a1",
+		NodeID:             "node-a1",
+		HostName:           "snowbox",
+		Service:            "codex",
+		Account:            "fallback@example.test",
+		UpstreamBaseURL:    "http://127.0.0.1:4848",
+		UpstreamDialect:    "openai",
+		Model:              "gpt-5-codex",
+		ModelAlias:         "codex-default",
+		AuthPath:           authPath,
+		AuthFormat:         "provider-shim-test-format",
+		RefreshCommand:     "codex exec --skip-git-repo-check ping",
+		RefreshLoginShell:  true,
+		RefreshTimeout:     time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("build cli-container provider: %v", err)
+	}
+	if refresher == nil {
+		t.Fatalf("expected auth refresher")
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindCLIContainer || registration.Identity.Service != provider.ServiceCodex {
+		t.Fatalf("unexpected registration identity: %#v", registration.Identity)
+	}
+	if registration.Auth.Status != provider.AuthHealthy || !registration.Auth.Refreshable || registration.Auth.SelectedSource != "container" {
+		t.Fatalf("unexpected auth state: %#v", registration.Auth)
+	}
+	if registration.Auth.Account.ID != "test-account" || registration.Auth.Account.Display != "test@example.test" {
+		t.Fatalf("unexpected auth account: %#v", registration.Auth.Account)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityUsageRead, provider.CapabilityAuthFile, provider.CapabilityAuthRefreshOneshot} {
+		if !hasCapability(registration.Capabilities, capability) {
+			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+}
+
+func TestRefreshCommandArgsSourcesBashRC(t *testing.T) {
+	got := refreshCommandArgs("gemini --prompt ping", true)
+	if len(got) != 3 || got[0] != "bash" || got[1] != "-lc" {
+		t.Fatalf("unexpected login shell command: %v", got)
+	}
+	if !strings.Contains(got[2], ".bashrc") || !strings.Contains(got[2], "gemini --prompt ping") {
+		t.Fatalf("login shell command did not source bashrc and execute command: %v", got)
+	}
+	got = refreshCommandArgs("codex exec ping", false)
+	want := []string{"sh", "-c", "codex exec ping"}
+	if len(got) != len(want) {
+		t.Fatalf("plain shell command length = %d, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("plain shell command[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func hasCapability(capabilities []provider.Capability, want provider.Capability) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
+}
+
+var registerProviderShimTestFormatOnce sync.Once
+
+func registerProviderShimTestFormat() {
+	registerProviderShimTestFormatOnce.Do(func() {
+		formats.Register(providerShimTestFormat{})
+	})
+}
+
+type providerShimTestFormat struct{}
+
+func (providerShimTestFormat) Name() string         { return "provider-shim-test-format" }
+func (providerShimTestFormat) Strategies() []string { return []string{"default"} }
+func (providerShimTestFormat) Parse(raw []byte) (formats.Snapshot, error) {
+	status := formats.StatusOK
+	if strings.Contains(string(raw), "expired") {
+		status = formats.StatusExpired
+	}
+	return providerShimTestSnapshot{
+		raw:       append([]byte(nil), raw...),
+		expiresAt: time.Now().UTC().Add(time.Hour),
+		status:    status,
+	}, nil
+}
+func (providerShimTestFormat) Validate(_ context.Context, snapshot formats.Snapshot, _ formats.ValidateOpts) (formats.ValidationResult, error) {
+	status := formats.StatusOK
+	if testSnapshot, ok := snapshot.(providerShimTestSnapshot); ok {
+		status = testSnapshot.status
+	}
+	return formats.ValidationResult{Status: status, CheckedAt: time.Now().UTC()}, nil
+}
+func (providerShimTestFormat) Compare(_ string, _ formats.Snapshot, _ formats.Snapshot) int {
+	return 0
+}
+func (providerShimTestFormat) Redact(_ formats.Snapshot) formats.Summary {
+	return formats.Summary{}
+}
+func (providerShimTestFormat) Account(context.Context, formats.Snapshot, string) (string, error) {
+	return "test-account", nil
+}
+func (providerShimTestFormat) AccountDisplay(context.Context, formats.Snapshot, string) (string, error) {
+	return "test@example.test", nil
+}
+
+type providerShimTestSnapshot struct {
+	raw       []byte
+	expiresAt time.Time
+	status    formats.ValidationStatus
+}
+
+func (s providerShimTestSnapshot) Identity() string     { return "provider-shim-test-snapshot" }
+func (s providerShimTestSnapshot) ExpiresAt() time.Time { return s.expiresAt }
+func (s providerShimTestSnapshot) Raw() []byte          { return append([]byte(nil), s.raw...) }
+func (s providerShimTestSnapshot) Fingerprint() string  { return "provider-shim-test-fingerprint" }
