@@ -116,6 +116,33 @@ func TestDockerRuntimeInfoStatsAndLogs(t *testing.T) {
 	}
 }
 
+func TestDockerRuntimeCreateIncludesResourceLimits(t *testing.T) {
+	runner := &recordingRunner{}
+	rt := &DockerRuntime{Binary: "docker", Runner: runner}
+	_, err := rt.Create(context.Background(), ContainerSpec{
+		ProviderID: "deepseek-api",
+		Image:      "pangaea/provider-api:test",
+		Resources: ResourceLimits{
+			CPUs:      "1.5",
+			Memory:    "768MiB",
+			PIDsLimit: 256,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got := joinedCommands(runner.commands)
+	for _, want := range []string{
+		"--cpus 1.5",
+		"--memory 768MiB",
+		"--pids-limit 256",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected resource arg %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestDockerRuntimeFindByLabels(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string]ExecResult{
 		"ps -a --format {{json .}} --filter label=pangaea.provider_instance_id=codex-samtest-a1": {

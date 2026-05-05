@@ -70,6 +70,7 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 	if spec.WorkingDir != "" {
 		args = append(args, "--workdir", spec.WorkingDir)
 	}
+	args = appendResourceArgs(args, spec.Resources)
 	if len(spec.Entrypoint) > 0 {
 		args = append(args, "--entrypoint", strings.Join(spec.Entrypoint, " "))
 	}
@@ -275,6 +276,19 @@ func (d *DockerRuntime) run(ctx context.Context, args []string, stdin []byte) (E
 		runner = shellRunner{}
 	}
 	return runner.Run(ctx, binary, args, stdin)
+}
+
+func appendResourceArgs(args []string, limits ResourceLimits) []string {
+	if limits.CPUs != "" {
+		args = append(args, "--cpus", limits.CPUs)
+	}
+	if limits.Memory != "" {
+		args = append(args, "--memory", limits.Memory)
+	}
+	if limits.PIDsLimit > 0 {
+		args = append(args, "--pids-limit", strconv.Itoa(limits.PIDsLimit))
+	}
+	return args
 }
 
 type shellRunner struct{}

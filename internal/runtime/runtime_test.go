@@ -198,6 +198,15 @@ func TestContainerSpecValidateRejectsRelativeAuthCopyPath(t *testing.T) {
 	}
 }
 
+func TestContainerSpecValidateRejectsInvalidResourceLimits(t *testing.T) {
+	spec := validContainerSpec()
+	spec.Resources = ResourceLimits{CPUs: " 2", PIDsLimit: -1}
+
+	if err := spec.Validate(); !errors.Is(err, ErrInvalidContainerSpec) {
+		t.Fatalf("expected ErrInvalidContainerSpec, got %v", err)
+	}
+}
+
 func validContainerSpec() ContainerSpec {
 	return ContainerSpec{
 		ProviderID:         "codex-samtest",

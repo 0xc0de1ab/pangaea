@@ -112,6 +112,11 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 		},
 		Refresh: RefreshSpec{Command: []string{"codex", "exec", "Reply with OK only."}, Threshold: "5m", Cooldown: "90s", Timeout: "2m"},
 		Shim:    ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		Resources: ResourceSpec{
+			CPUs:      "2",
+			Memory:    "2GiB",
+			PidsLimit: 512,
+		},
 		Upstream: UpstreamSpec{
 			BaseURL:          "http://127.0.0.1:8080",
 			APIKeyFile:       "/run/secrets/codex-api-key",
@@ -156,6 +161,9 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	}
 	if !spec.Security.RunAsNonRoot || !spec.Security.ReadOnlyRootFS {
 		t.Fatalf("expected hardened defaults: %#v", spec.Security)
+	}
+	if spec.Resources.CPUs != "2" || spec.Resources.Memory != "2GiB" || spec.Resources.PIDsLimit != 512 {
+		t.Fatalf("unexpected resource limits: %#v", spec.Resources)
 	}
 }
 

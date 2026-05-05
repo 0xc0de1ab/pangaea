@@ -36,6 +36,9 @@ func (spec ContainerSpec) Validate() error {
 			return fmt.Errorf("%w: %w", ErrInvalidContainerSpec, err)
 		}
 	}
+	if err := spec.Resources.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidContainerSpec, err)
+	}
 	return nil
 }
 
@@ -58,6 +61,32 @@ func (spec CopySpec) Validate() error {
 	}
 	if spec.OwnerGID < 0 {
 		return fmt.Errorf("%w: owner_gid must be non-negative", ErrInvalidCopySpec)
+	}
+	return nil
+}
+
+func (limits ResourceLimits) Validate() error {
+	if err := validateOptionalRuntimeValue("resources.cpus", limits.CPUs); err != nil {
+		return err
+	}
+	if err := validateOptionalRuntimeValue("resources.memory", limits.Memory); err != nil {
+		return err
+	}
+	if limits.PIDsLimit < 0 {
+		return fmt.Errorf("resources.pids_limit must be non-negative")
+	}
+	return nil
+}
+
+func validateOptionalRuntimeValue(name, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", name)
+	}
+	if strings.ContainsAny(value, "\x00\r\n\t") {
+		return fmt.Errorf("%s must not contain control characters", name)
 	}
 	return nil
 }

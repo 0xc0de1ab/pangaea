@@ -62,6 +62,7 @@ type ContainerSpec struct {
 	WorkingDir         string            `json:"working_dir,omitempty"`
 	AuthCopy           *CopySpec         `json:"auth_copy,omitempty"`
 	Security           SecurityProfile   `json:"security,omitempty"`
+	Resources          ResourceLimits    `json:"resources,omitempty"`
 }
 
 type CopySpec struct {
@@ -70,6 +71,12 @@ type CopySpec struct {
 	OwnerUID      int         `json:"owner_uid,omitempty"`
 	OwnerGID      int         `json:"owner_gid,omitempty"`
 	FileMode      fs.FileMode `json:"file_mode,omitempty"`
+}
+
+type ResourceLimits struct {
+	CPUs      string `json:"cpus,omitempty"`
+	Memory    string `json:"memory,omitempty"`
+	PIDsLimit int    `json:"pids_limit,omitempty"`
 }
 
 type ExecSpec struct {

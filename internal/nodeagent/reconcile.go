@@ -229,6 +229,11 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		Env:                env,
 		Labels:             labels,
 		Security:           runtime.DefaultSecurityProfile(),
+		Resources: runtime.ResourceLimits{
+			CPUs:      strings.TrimSpace(spec.Resources.CPUs),
+			Memory:    strings.TrimSpace(spec.Resources.Memory),
+			PIDsLimit: spec.Resources.PidsLimit,
+		},
 	}
 	if spec.Auth.Mode == "file" {
 		perm, err := spec.Auth.FilePerm()
