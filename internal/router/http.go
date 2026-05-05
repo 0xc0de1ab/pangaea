@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -96,6 +97,10 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}, canonicalRequest)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		if openaiRequest.Stream {
+			writeOpenAIChatStream(c, response)
 			return
 		}
 		openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
@@ -196,6 +201,89 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		c.JSON(status, decision)
 	})
 	return r
+}
+
+type openAIChatStreamChunk struct {
+	ID      string                   `json:"id,omitempty"`
+	Object  string                   `json:"object"`
+	Created int64                    `json:"created,omitempty"`
+	Model   string                   `json:"model"`
+	Choices []openAIChatStreamChoice `json:"choices"`
+	Usage   *compat.OpenAIUsage      `json:"usage,omitempty"`
+}
+
+type openAIChatStreamChoice struct {
+	Index        int                   `json:"index"`
+	Delta        openAIChatStreamDelta `json:"delta"`
+	FinishReason string                `json:"finish_reason,omitempty"`
+}
+
+type openAIChatStreamDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
+	openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache")
+	c.Header("connection", "keep-alive")
+	c.Status(http.StatusOK)
+	created := time.Now().Unix()
+	content := ""
+	finishReason := ""
+	if len(openaiResponse.Choices) > 0 {
+		content = openaiResponse.Choices[0].Message.Content
+		finishReason = openaiResponse.Choices[0].FinishReason
+	}
+	writeSSEData(c, openAIChatStreamChunk{
+		ID:      openaiResponse.ID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   openaiResponse.Model,
+		Choices: []openAIChatStreamChoice{{
+			Index: 0,
+			Delta: openAIChatStreamDelta{
+				Role:    "assistant",
+				Content: content,
+			},
+		}},
+	})
+	writeSSEData(c, openAIChatStreamChunk{
+		ID:      openaiResponse.ID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   openaiResponse.Model,
+		Choices: []openAIChatStreamChoice{{
+			Index:        0,
+			Delta:        openAIChatStreamDelta{},
+			FinishReason: finishReason,
+		}},
+		Usage: openaiResponse.Usage,
+	})
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flushSSE(c)
+}
+
+func writeSSEData(c *gin.Context, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = c.Writer.Write([]byte("data: "))
+	_, _ = c.Writer.Write(data)
+	_, _ = c.Writer.Write([]byte("\n\n"))
+	flushSSE(c)
+}
+
+func flushSSE(c *gin.Context) {
+	if flusher, ok := c.Writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {

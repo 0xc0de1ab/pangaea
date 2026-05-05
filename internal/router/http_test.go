@@ -166,6 +166,39 @@ func TestHTTPOpenAIChatCompletionsWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPOpenAIChatCompletionsStreamsSSEWithSimulator(t *testing.T) {
+	engine, _ := testEngine(t)
+	sim, err := providersim.New(providersim.Options{
+		Registration: registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0),
+	})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model":"gpt-5-codex",
+		"stream":true,
+		"messages":[{"role":"user","content":"hello stream"}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_http_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("content-type"); got != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %q", got)
+	}
+	body := rec.Body.String()
+	if !bytes.Contains([]byte(body), []byte("data:")) || !bytes.Contains([]byte(body), []byte("providersim: hello stream")) || !bytes.Contains([]byte(body), []byte("data: [DONE]")) {
+		t.Fatalf("unexpected SSE body: %s", body)
+	}
+}
+
 func TestHTTPAnthropicMessagesWithSimulator(t *testing.T) {
 	engine, sim := testDialectEngine(t, compat.APIDialectAnthropic, provider.CapabilityAnthropicMessages, provider.ServiceAnthropic, "claude-sim", "claude-native")
 	engine.SetInvoker(sim)

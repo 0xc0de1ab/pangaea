@@ -81,6 +81,10 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	if response.Usage == nil || response.Usage.TotalTokens == 0 {
 		t.Fatalf("expected usage in response, got %#v", response.Usage)
 	}
+	streamBody := waitForV2OpenAIChatStream(t, client, server.URL)
+	if !strings.Contains(streamBody, "providersim: e2e stream") || !strings.Contains(streamBody, "data: [DONE]") {
+		t.Fatalf("unexpected OpenAI stream body: %s", streamBody)
+	}
 	anthropic := waitForV2AnthropicMessages(t, client, server.URL)
 	if len(anthropic.Content) != 1 || anthropic.Content[0].Text != "providersim: e2e anthropic" {
 		t.Fatalf("unexpected Anthropic response: %#v", anthropic)
@@ -157,6 +161,41 @@ func waitForV2OpenAIChat(t *testing.T, client *http.Client, baseURL string) comp
 	}
 	t.Fatalf("chat completion did not succeed: %v", lastErr)
 	return compat.OpenAIChatResponse{}
+}
+
+func waitForV2OpenAIChatStream(t *testing.T, client *http.Client, baseURL string) string {
+	t.Helper()
+	body := []byte(`{"model":"providersim-default","stream":true,"messages":[{"role":"user","content":"e2e stream"}]}`)
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("x-request-id", "req_e2e_v2_stream")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			return string(data)
+		}
+		lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("OpenAI stream did not succeed: %v", lastErr)
+	return ""
 }
 
 func waitForV2AnthropicMessages(t *testing.T, client *http.Client, baseURL string) compat.AnthropicMessagesResponse {
