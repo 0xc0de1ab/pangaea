@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0xc0de1ab/pangaea/internal/apiprovider"
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/nodeagent"
@@ -267,6 +268,96 @@ func TestE2E_V2NodeAgentProviderInventory(t *testing.T) {
 	}
 }
 
+func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		var request compat.OpenAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if request.Model != "deepseek-chat" || len(request.Messages) != 1 || request.Messages[0].Content != "api provider hello" {
+			t.Fatalf("unexpected upstream request: %#v", request)
+		}
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-api-provider",
+			Object: "chat.completion",
+			Model:  "deepseek-chat",
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "api-compatible: ok"},
+				FinishReason: "stop",
+			}},
+			Usage: &compat.OpenAIUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+		})
+	}))
+	defer upstream.Close()
+
+	tokenKey := []byte("test-v2-api-compatible-token-key")
+	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2APICompatiblePolicy))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	engine, err := v2router.NewEngine(policy, provider.NewRegistry(), quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	dataBroker, err := v2router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	engine.SetInvoker(dataBroker)
+	server := httptest.NewServer(v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, DataBroker: dataBroker}))
+	defer server.Close()
+
+	apiProvider, err := apiprovider.New(apiprovider.Options{
+		Registration: apiCompatibleE2ERegistration(time.Now()),
+		BaseURL:      upstream.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_test_e2e",
+	})
+	if err != nil {
+		t.Fatalf("new api provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("api provider registration: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
+			ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
+			HeartbeatInterval: 20 * time.Millisecond,
+			TokenKey:          tokenKey,
+			Provider:          apiProvider,
+		})
+	}()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("api-compatible shim exited with error: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("api-compatible shim did not stop")
+		}
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitForV2Provider(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	response := waitForV2OpenAIChatModel(t, client, server.URL, "deepseek-default", "api provider hello", "req_e2e_v2_api_provider")
+	if response.Choices[0].Message.Content != "api-compatible: ok" || response.Usage == nil || response.Usage.TotalTokens != 18 {
+		t.Fatalf("unexpected api-compatible response: %#v", response)
+	}
+	trace := waitForV2Trace(t, client, server.URL, "req_e2e_v2_api_provider")
+	if trace.Provider == nil || trace.Provider.ProviderInstanceID != registration.Identity.ProviderInstanceID {
+		t.Fatalf("unexpected api-compatible trace: %#v", trace)
+	}
+}
+
 func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -494,7 +585,18 @@ func getV2QuotaSnapshot(t *testing.T, client *http.Client, baseURL string, scope
 
 func waitForV2OpenAIChat(t *testing.T, client *http.Client, baseURL string) compat.OpenAIChatResponse {
 	t.Helper()
-	body := []byte(`{"model":"providersim-default","messages":[{"role":"user","content":"e2e hello"}]}`)
+	return waitForV2OpenAIChatModel(t, client, baseURL, "providersim-default", "e2e hello", "req_e2e_v2_data")
+}
+
+func waitForV2OpenAIChatModel(t *testing.T, client *http.Client, baseURL string, model string, content string, requestID string) compat.OpenAIChatResponse {
+	t.Helper()
+	body, err := json.Marshal(compat.OpenAIChatRequest{
+		Model:    model,
+		Messages: []compat.OpenAIChatMessage{{Role: "user", Content: content}},
+	})
+	if err != nil {
+		t.Fatalf("marshal OpenAI chat request: %v", err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -503,7 +605,7 @@ func waitForV2OpenAIChat(t *testing.T, client *http.Client, baseURL string) comp
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("content-type", "application/json")
-		req.Header.Set("x-request-id", "req_e2e_v2_data")
+		req.Header.Set("x-request-id", requestID)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -760,6 +862,33 @@ func routerV2E2ERegistration(now time.Time) provider.Registration {
 	}
 }
 
+func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
+	account := provider.Account{ID: "acct-deepseek", Display: "deepseek-api@example.test"}
+	return provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderID:         "deepseek-api",
+			ProviderInstanceID: "deepseek-api-0001",
+			NodeID:             "api-node",
+			HostName:           "api-host",
+			Service:            provider.ServiceDeepSeek,
+			Kind:               provider.KindAPICompatible,
+			Account:            account,
+		},
+		Capabilities: []provider.Capability{
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityUsageRead,
+		},
+		Models: []provider.Model{{
+			ID:           "deepseek-chat",
+			Aliases:      []string{"deepseek-default"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		}},
+		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
+		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},
+		RegisteredAt: now,
+	}
+}
+
 func httpURLToWS(raw string) string {
 	if strings.HasPrefix(raw, "https://") {
 		return "wss://" + strings.TrimPrefix(raw, "https://")
@@ -849,4 +978,26 @@ routes:
       auth_status: [healthy, refresh_soon]
       health_state: [ready]
       max_queue_depth: 4
+`
+
+const routerV2APICompatiblePolicy = `
+version: routing-policy/v1
+model_aliases:
+  deepseek-default:
+    canonical_model: deepseek-chat
+    required_capabilities:
+      - api.openai.chat
+routes:
+  - id: deepseek-openai
+    match:
+      models: [deepseek-default]
+      api_dialects: [openai]
+    candidates:
+      - provider: deepseek-api
+        account: deepseek-api@example.test
+        host_name: api-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
 `

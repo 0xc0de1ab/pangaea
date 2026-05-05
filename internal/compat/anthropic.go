@@ -82,6 +82,48 @@ func AnthropicMessagesRequestToCanonical(in AnthropicMessagesRequest) (Request, 
 	return out, nil
 }
 
+func AnthropicMessagesRequestFromCanonical(in Request) (AnthropicMessagesRequest, error) {
+	if err := in.Validate(); err != nil {
+		return AnthropicMessagesRequest{}, err
+	}
+	out := AnthropicMessagesRequest{
+		Model:       in.Model,
+		MaxTokens:   in.MaxOutputTokens,
+		Messages:    make([]AnthropicMessage, 0, len(in.Messages)),
+		Temperature: in.Temperature,
+		Stream:      in.Stream,
+	}
+	var systemParts []string
+	for _, message := range in.Messages {
+		if message.Role == MessageRoleSystem || message.Role == MessageRoleDeveloper {
+			text, err := contentText(message.Content)
+			if err != nil {
+				return AnthropicMessagesRequest{}, err
+			}
+			if text != "" {
+				systemParts = append(systemParts, text)
+			}
+			continue
+		}
+		converted, err := canonicalMessageToAnthropic(message)
+		if err != nil {
+			return AnthropicMessagesRequest{}, err
+		}
+		out.Messages = append(out.Messages, converted)
+	}
+	if len(systemParts) > 0 {
+		raw, err := json.Marshal(strings.Join(systemParts, "\n"))
+		if err != nil {
+			return AnthropicMessagesRequest{}, ErrInvalidRequest
+		}
+		out.System = raw
+	}
+	if len(out.Messages) == 0 {
+		return AnthropicMessagesRequest{}, ErrInvalidRequest
+	}
+	return out, nil
+}
+
 func AnthropicMessagesResponseFromCanonical(in Response) (AnthropicMessagesResponse, error) {
 	if err := in.Validate(); err != nil {
 		return AnthropicMessagesResponse{}, err
@@ -120,6 +162,36 @@ func AnthropicMessagesResponseFromCanonical(in Response) (AnthropicMessagesRespo
 			OutputTokens: in.Usage.OutputTokens,
 		},
 	}, nil
+}
+
+func AnthropicMessagesResponseToCanonical(in AnthropicMessagesResponse) (Response, error) {
+	raw, err := json.Marshal(in.Content)
+	if err != nil {
+		return Response{}, ErrInvalidResponse
+	}
+	messages, err := anthropicMessageToCanonical(AnthropicMessage{Role: in.Role, Content: raw})
+	if err != nil || len(messages) == 0 {
+		return Response{}, ErrInvalidResponse
+	}
+	message := messages[0]
+	message.Role = MessageRoleAssistant
+	total := in.Usage.InputTokens + in.Usage.OutputTokens
+	out := Response{
+		ID:      in.ID,
+		Dialect: APIDialectAnthropic,
+		Model:   in.Model,
+		Message: message,
+		Usage: Usage{
+			InputTokens:  in.Usage.InputTokens,
+			OutputTokens: in.Usage.OutputTokens,
+			TotalTokens:  total,
+		},
+		StopReason: anthropicStopToCanonical(in.StopReason),
+	}
+	if err := out.Validate(); err != nil {
+		return Response{}, err
+	}
+	return out, nil
 }
 
 func parseAnthropicSystem(raw json.RawMessage) (string, error) {
@@ -187,6 +259,58 @@ func anthropicMessageToCanonical(in AnthropicMessage) ([]Message, error) {
 	return out, nil
 }
 
+func canonicalMessageToAnthropic(in Message) (AnthropicMessage, error) {
+	if err := in.Validate(); err != nil {
+		return AnthropicMessage{}, err
+	}
+	blocks := make([]AnthropicContentBlock, 0, len(in.Content)+len(in.ToolCalls))
+	for _, part := range in.Content {
+		if part.Type != ContentPartText {
+			return AnthropicMessage{}, ErrInvalidRequest
+		}
+		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: part.Text})
+	}
+	for _, toolCall := range in.ToolCalls {
+		input := json.RawMessage(`{}`)
+		if strings.TrimSpace(toolCall.Arguments) != "" {
+			input = json.RawMessage(toolCall.Arguments)
+		}
+		blocks = append(blocks, AnthropicContentBlock{
+			Type:  "tool_use",
+			ID:    toolCall.ID,
+			Name:  toolCall.Name,
+			Input: input,
+		})
+	}
+	role := "user"
+	switch in.Role {
+	case MessageRoleAssistant:
+		role = "assistant"
+	case MessageRoleTool:
+		role = "user"
+		text, err := contentText(in.Content)
+		if err != nil {
+			return AnthropicMessage{}, err
+		}
+		rawText, err := json.Marshal(text)
+		if err != nil {
+			return AnthropicMessage{}, ErrInvalidRequest
+		}
+		blocks = []AnthropicContentBlock{{
+			Type:      "tool_result",
+			ToolUseID: in.ToolCallID,
+			Content:   rawText,
+		}}
+	default:
+		role = "user"
+	}
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		return AnthropicMessage{}, ErrInvalidRequest
+	}
+	return AnthropicMessage{Role: role, Content: raw}, nil
+}
+
 func parseAnthropicContentBlocks(raw json.RawMessage) ([]AnthropicContentBlock, error) {
 	var blocks []AnthropicContentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
@@ -244,5 +368,18 @@ func canonicalStopToAnthropic(stop string) string {
 		return "stop_sequence"
 	default:
 		return "end_turn"
+	}
+}
+
+func anthropicStopToCanonical(stop string) string {
+	switch stop {
+	case "max_tokens":
+		return "max_tokens"
+	case "tool_use":
+		return "tool_calls"
+	case "stop_sequence":
+		return "stop_sequence"
+	default:
+		return "stop"
 	}
 }

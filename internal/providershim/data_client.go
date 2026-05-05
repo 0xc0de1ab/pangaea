@@ -24,12 +24,12 @@ type SimulatorShimOptions struct {
 }
 
 type DataClientOptions struct {
-	DataURL   string
-	TokenKey  []byte
-	Simulator simulatorInvoker
+	DataURL  string
+	TokenKey []byte
+	Provider providerInvoker
 }
 
-type simulatorInvoker interface {
+type providerInvoker interface {
 	Registration() (provider.Registration, error)
 	Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error)
 }
@@ -63,9 +63,9 @@ func RunSimulatorShim(ctx context.Context, opts SimulatorShimOptions) error {
 	})
 	eg.Go(func() error {
 		return RunSimulatorDataClient(ctx, DataClientOptions{
-			DataURL:   dataURL,
-			TokenKey:  opts.TokenKey,
-			Simulator: opts.Simulator,
+			DataURL:  dataURL,
+			TokenKey: opts.TokenKey,
+			Provider: opts.Simulator,
 		})
 	})
 	return eg.Wait()
@@ -75,14 +75,14 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 	if opts.DataURL == "" {
 		return fmt.Errorf("%w: data url is required", ErrShimConfig)
 	}
-	if opts.Simulator == nil {
-		return fmt.Errorf("%w: simulator is required", ErrShimConfig)
+	if opts.Provider == nil {
+		return fmt.Errorf("%w: provider is required", ErrShimConfig)
 	}
 	signer, err := tunnel.NewTokenSigner(opts.TokenKey)
 	if err != nil {
 		return err
 	}
-	registration, err := opts.Simulator.Registration()
+	registration, err := opts.Provider.Registration()
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 			}
 			return err
 		}
-		response := handleDataRequest(ctx, signer, registration, opts.Simulator, request)
+		response := handleDataRequest(ctx, signer, registration, opts.Provider, request)
 		if err := conn.WriteJSON(response); err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -149,7 +149,7 @@ func DeriveDataURL(controlURL string, providerInstanceID string) (string, error)
 	return u.String(), nil
 }
 
-func handleDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registration provider.Registration, simulator simulatorInvoker, request tunnel.DataRequest) tunnel.DataResponse {
+func handleDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registration provider.Registration, invoker providerInvoker, request tunnel.DataRequest) tunnel.DataResponse {
 	response := tunnel.DataResponse{RequestID: request.RequestID, StreamID: request.Descriptor.StreamID}
 	if err := request.Descriptor.Validate(); err != nil {
 		response.Error = err.Error()
@@ -164,7 +164,7 @@ func handleDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registra
 		response.Error = fmt.Sprintf("%s: token request_id %q does not match frame request_id %q", ErrShimConfig, claims.RequestID, request.RequestID)
 		return response
 	}
-	compatResponse, err := simulator.Invoke(ctx, registration, request.Request)
+	compatResponse, err := invoker.Invoke(ctx, registration, request.Request)
 	if err != nil {
 		response.Error = err.Error()
 		return response

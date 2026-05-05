@@ -73,6 +73,27 @@ func OpenAIChatRequestToCanonical(in OpenAIChatRequest) (Request, error) {
 	return out, nil
 }
 
+func OpenAIChatRequestFromCanonical(in Request) (OpenAIChatRequest, error) {
+	if err := in.Validate(); err != nil {
+		return OpenAIChatRequest{}, err
+	}
+	out := OpenAIChatRequest{
+		Model:               in.Model,
+		Messages:            make([]OpenAIChatMessage, 0, len(in.Messages)),
+		Temperature:         in.Temperature,
+		MaxCompletionTokens: in.MaxOutputTokens,
+		Stream:              in.Stream,
+	}
+	for _, message := range in.Messages {
+		converted, err := canonicalMessageToOpenAI(message)
+		if err != nil {
+			return OpenAIChatRequest{}, err
+		}
+		out.Messages = append(out.Messages, converted)
+	}
+	return out, nil
+}
+
 func OpenAIChatResponseFromCanonical(in Response) (OpenAIChatResponse, error) {
 	if err := in.Validate(); err != nil {
 		return OpenAIChatResponse{}, err
@@ -103,6 +124,43 @@ func OpenAIChatResponseFromCanonical(in Response) (OpenAIChatResponse, error) {
 			CompletionTokens: in.Usage.OutputTokens,
 			TotalTokens:      total,
 		}
+	}
+	return out, nil
+}
+
+func OpenAIChatResponseToCanonical(in OpenAIChatResponse) (Response, error) {
+	if len(in.Choices) == 0 {
+		return Response{}, ErrInvalidResponse
+	}
+	choice := in.Choices[0]
+	message := openAIMessageToCanonical(choice.Message)
+	if message.Role == "" {
+		message.Role = MessageRoleAssistant
+	}
+	if message.Role != MessageRoleAssistant {
+		return Response{}, ErrInvalidResponse
+	}
+	usage := Usage{}
+	if in.Usage != nil {
+		usage = Usage{
+			InputTokens:  in.Usage.PromptTokens,
+			OutputTokens: in.Usage.CompletionTokens,
+			TotalTokens:  in.Usage.TotalTokens,
+		}
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+		}
+	}
+	out := Response{
+		ID:         in.ID,
+		Dialect:    APIDialectOpenAI,
+		Model:      in.Model,
+		Message:    message,
+		StopReason: choice.FinishReason,
+		Usage:      usage,
+	}
+	if err := out.Validate(); err != nil {
+		return Response{}, err
 	}
 	return out, nil
 }

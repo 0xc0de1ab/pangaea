@@ -1,0 +1,169 @@
+package apiprovider
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/provider"
+)
+
+func TestProviderInvokeOpenAICompatibleUpstream(t *testing.T) {
+	var sawAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("authorization") == "Bearer sk_test" {
+			sawAuth = true
+		}
+		var request compat.OpenAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Model != "gpt-upstream" || len(request.Messages) != 1 || request.Messages[0].Content != "hello" {
+			t.Fatalf("unexpected upstream request: %#v", request)
+		}
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-test",
+			Object: "chat.completion",
+			Model:  "gpt-upstream",
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "world"},
+				FinishReason: "stop",
+			}},
+			Usage: &compat.OpenAIUsage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "sk_test")
+	response, err := client.Invoke(context.Background(), mustRegistration(t, client), compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-upstream",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if !sawAuth {
+		t.Fatalf("expected authorization header")
+	}
+	if response.Message.Content[0].Text != "world" || response.Usage.TotalTokens != 7 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestProviderInvokeAnthropicCompatibleUpstream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request compat.AnthropicMessagesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Model != "claude-upstream" || len(request.Messages) != 1 || !strings.Contains(string(request.Messages[0].Content), "hello") {
+			t.Fatalf("unexpected upstream request: %#v", request)
+		}
+		_ = json.NewEncoder(w).Encode(compat.AnthropicMessagesResponse{
+			ID:         "msg-test",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-upstream",
+			StopReason: "end_turn",
+			Content:    []compat.AnthropicContentBlock{{Type: "text", Text: "anthropic world"}},
+			Usage:      compat.AnthropicUsage{InputTokens: 5, OutputTokens: 6},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectAnthropic, "")
+	response, err := client.Invoke(context.Background(), mustRegistration(t, client), compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "claude-upstream",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if response.Dialect != compat.APIDialectOpenAI || response.Message.Content[0].Text != "anthropic world" || response.Usage.TotalTokens != 11 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	_, err := client.Invoke(context.Background(), mustRegistration(t, client), compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-upstream",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("expected upstream error, got %v", err)
+	}
+}
+
+func newTestProvider(t *testing.T, baseURL string, dialect compat.APIDialect, apiKey string) *Provider {
+	t.Helper()
+	client, err := New(Options{
+		Registration: testRegistration(),
+		BaseURL:      baseURL,
+		Dialect:      dialect,
+		APIKey:       apiKey,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	return client
+}
+
+func mustRegistration(t *testing.T, client *Provider) provider.Registration {
+	t.Helper()
+	registration, err := client.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	return registration
+}
+
+func testRegistration() provider.Registration {
+	account := provider.Account{ID: "acct-api", Display: "api@example.test"}
+	now := time.Now().UTC()
+	return provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderID:         "api-compatible-test",
+			ProviderInstanceID: "api-compatible-test-0001",
+			NodeID:             "node-api",
+			HostName:           "api-host",
+			Service:            provider.ServiceDeepSeek,
+			Kind:               provider.KindAPICompatible,
+			Account:            account,
+		},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityUsageRead},
+		Models:       []provider.Model{{ID: "gpt-upstream", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}}},
+		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
+		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},
+		RegisteredAt: now,
+	}
+}

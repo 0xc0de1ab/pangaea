@@ -120,6 +120,45 @@ func GeminiGenerateContentRequestToCanonical(in GeminiGenerateContentRequest, mo
 	return out, nil
 }
 
+func GeminiGenerateContentRequestFromCanonical(in Request) (GeminiGenerateContentRequest, error) {
+	if err := in.Validate(); err != nil {
+		return GeminiGenerateContentRequest{}, err
+	}
+	out := GeminiGenerateContentRequest{
+		Contents: make([]GeminiContent, 0, len(in.Messages)),
+	}
+	if in.Temperature != nil || in.MaxOutputTokens > 0 {
+		out.GenerationConfig = &GeminiGenerationConfig{
+			Temperature:     in.Temperature,
+			MaxOutputTokens: in.MaxOutputTokens,
+		}
+	}
+	var systemParts []GeminiPart
+	for _, message := range in.Messages {
+		if message.Role == MessageRoleSystem || message.Role == MessageRoleDeveloper {
+			for _, part := range message.Content {
+				if part.Type != ContentPartText {
+					return GeminiGenerateContentRequest{}, ErrInvalidRequest
+				}
+				systemParts = append(systemParts, GeminiPart{Text: part.Text})
+			}
+			continue
+		}
+		converted, err := canonicalMessageToGemini(message)
+		if err != nil {
+			return GeminiGenerateContentRequest{}, err
+		}
+		out.Contents = append(out.Contents, converted)
+	}
+	if len(systemParts) > 0 {
+		out.SystemInstruction = &GeminiContent{Parts: systemParts}
+	}
+	if len(out.Contents) == 0 {
+		return GeminiGenerateContentRequest{}, ErrInvalidRequest
+	}
+	return out, nil
+}
+
 func GeminiGenerateContentResponseFromCanonical(in Response) (GeminiGenerateContentResponse, error) {
 	if err := in.Validate(); err != nil {
 		return GeminiGenerateContentResponse{}, err
@@ -171,6 +210,41 @@ func GeminiGenerateContentResponseFromCanonical(in Response) (GeminiGenerateCont
 	return out, nil
 }
 
+func GeminiGenerateContentResponseToCanonical(in GeminiGenerateContentResponse) (Response, error) {
+	if len(in.Candidates) == 0 {
+		return Response{}, ErrInvalidResponse
+	}
+	candidate := in.Candidates[0]
+	messages, err := geminiContentToCanonical(candidate.Content)
+	if err != nil || len(messages) == 0 {
+		return Response{}, ErrInvalidResponse
+	}
+	message := messages[0]
+	message.Role = MessageRoleAssistant
+	usage := Usage{}
+	if in.UsageMetadata != nil {
+		usage = Usage{
+			InputTokens:  in.UsageMetadata.PromptTokenCount,
+			OutputTokens: in.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:  in.UsageMetadata.TotalTokenCount,
+		}
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+		}
+	}
+	out := Response{
+		Dialect:    APIDialectGemini,
+		Model:      in.ModelVersion,
+		Message:    message,
+		StopReason: geminiStopToCanonical(candidate.FinishReason),
+		Usage:      usage,
+	}
+	if err := out.Validate(); err != nil {
+		return Response{}, err
+	}
+	return out, nil
+}
+
 func geminiContentToCanonical(in GeminiContent) ([]Message, error) {
 	role := geminiRoleToCanonical(in.Role)
 	message := Message{Role: role}
@@ -216,6 +290,49 @@ func geminiContentToCanonical(in GeminiContent) ([]Message, error) {
 	return out, nil
 }
 
+func canonicalMessageToGemini(in Message) (GeminiContent, error) {
+	if err := in.Validate(); err != nil {
+		return GeminiContent{}, err
+	}
+	out := GeminiContent{Role: canonicalRoleToGemini(in.Role)}
+	for _, part := range in.Content {
+		if part.Type != ContentPartText {
+			return GeminiContent{}, ErrInvalidRequest
+		}
+		out.Parts = append(out.Parts, GeminiPart{Text: part.Text})
+	}
+	for _, toolCall := range in.ToolCalls {
+		var args map[string]any
+		if strings.TrimSpace(toolCall.Arguments) != "" {
+			if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+				return GeminiContent{}, ErrInvalidRequest
+			}
+		}
+		out.Parts = append(out.Parts, GeminiPart{FunctionCall: &GeminiFunctionCall{
+			Name: toolCall.Name,
+			Args: args,
+			ID:   toolCall.ID,
+		}})
+	}
+	if in.Role == MessageRoleTool {
+		text, err := contentText(in.Content)
+		if err != nil {
+			return GeminiContent{}, err
+		}
+		var response map[string]any
+		if strings.TrimSpace(text) != "" {
+			if err := json.Unmarshal([]byte(text), &response); err != nil {
+				response = map[string]any{"content": text}
+			}
+		}
+		out.Parts = []GeminiPart{{FunctionResponse: &GeminiFunctionResponse{
+			ID:       in.ToolCallID,
+			Response: response,
+		}}}
+	}
+	return out, nil
+}
+
 func textFromGeminiParts(parts []GeminiPart) (string, error) {
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -240,6 +357,15 @@ func geminiRoleToCanonical(role string) MessageRole {
 	}
 }
 
+func canonicalRoleToGemini(role MessageRole) string {
+	switch role {
+	case MessageRoleAssistant:
+		return "model"
+	default:
+		return "user"
+	}
+}
+
 func canonicalStopToGemini(stop string) string {
 	switch stop {
 	case "max_tokens", "length":
@@ -248,5 +374,16 @@ func canonicalStopToGemini(stop string) string {
 		return "SAFETY"
 	default:
 		return "STOP"
+	}
+}
+
+func geminiStopToCanonical(stop string) string {
+	switch strings.ToUpper(stop) {
+	case "MAX_TOKENS":
+		return "max_tokens"
+	case "SAFETY":
+		return "safety"
+	default:
+		return "stop"
 	}
 }
