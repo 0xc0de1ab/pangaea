@@ -12,6 +12,7 @@ import (
 
 	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
+	containerruntime "github.com/0xc0de1ab/pangaea/internal/runtime"
 	"github.com/gorilla/websocket"
 )
 
@@ -29,6 +30,8 @@ type ControlClientOptions struct {
 	ProviderSpecs     []ProviderSpec
 	HeartbeatInterval time.Duration
 	Resources         control.ResourceUsage
+	ContainerRuntime  containerruntime.Runtime
+	ReconcileInterval time.Duration
 }
 
 func RunControlClient(ctx context.Context, opts ControlClientOptions) error {
@@ -59,12 +62,23 @@ func RunControlClient(ctx context.Context, opts ControlClientOptions) error {
 	if err := writeHeartbeat(conn, opts); err != nil {
 		return err
 	}
-	if err := writeInventory(conn, opts); err != nil {
+	containerReports, err := reconcileProviderContainers(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if err := writeInventory(conn, opts, containerReports); err != nil {
 		return err
 	}
 
 	ticker := time.NewTicker(opts.HeartbeatInterval)
 	defer ticker.Stop()
+	var reconcileTicker *time.Ticker
+	var reconcileC <-chan time.Time
+	if opts.ContainerRuntime != nil && len(opts.ProviderSpecs) > 0 {
+		reconcileTicker = time.NewTicker(opts.ReconcileInterval)
+		defer reconcileTicker.Stop()
+		reconcileC = reconcileTicker.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -73,7 +87,16 @@ func RunControlClient(ctx context.Context, opts ControlClientOptions) error {
 			if err := writeHeartbeat(conn, opts); err != nil {
 				return err
 			}
-			if err := writeInventory(conn, opts); err != nil {
+			if err := writeInventory(conn, opts, containerReports); err != nil {
+				return err
+			}
+		case <-reconcileC:
+			reports, err := reconcileProviderContainers(ctx, opts)
+			if err != nil {
+				return err
+			}
+			containerReports = reports
+			if err := writeInventory(conn, opts, containerReports); err != nil {
 				return err
 			}
 		}
@@ -112,6 +135,9 @@ func normalizeOptions(opts ControlClientOptions) (ControlClientOptions, error) {
 	if opts.HeartbeatInterval <= 0 {
 		opts.HeartbeatInterval = 30 * time.Second
 	}
+	if opts.ReconcileInterval <= 0 {
+		opts.ReconcileInterval = opts.HeartbeatInterval
+	}
 	return opts, nil
 }
 
@@ -129,7 +155,7 @@ func writeHeartbeat(conn *websocket.Conn, opts ControlClientOptions) error {
 	return readControlOK(conn)
 }
 
-func writeInventory(conn *websocket.Conn, opts ControlClientOptions) error {
+func writeInventory(conn *websocket.Conn, opts ControlClientOptions, reconciledContainers []control.ContainerReport) error {
 	if len(opts.ProviderSpecs) == 0 {
 		return nil
 	}
@@ -160,6 +186,9 @@ func writeInventory(conn *websocket.Conn, opts ControlClientOptions) error {
 			},
 		})
 	}
+	if len(reconciledContainers) > 0 {
+		containers = append([]control.ContainerReport(nil), reconciledContainers...)
+	}
 	if err := writeEnvelope(conn, control.MessageTypeProviderInventoryReport, "node_inventory_"+now.Format("20060102150405.000000000"), control.ProviderInventoryReport{
 		Mode:       "full",
 		NodeID:     opts.NodeID,
@@ -172,6 +201,21 @@ func writeInventory(conn *websocket.Conn, opts ControlClientOptions) error {
 		return err
 	}
 	return readControlOK(conn)
+}
+
+func reconcileProviderContainers(ctx context.Context, opts ControlClientOptions) ([]control.ContainerReport, error) {
+	if opts.ContainerRuntime == nil || len(opts.ProviderSpecs) == 0 {
+		return nil, nil
+	}
+	reports := make([]control.ContainerReport, 0, len(opts.ProviderSpecs))
+	for _, spec := range opts.ProviderSpecs {
+		result, err := ReconcileProviderContainer(ctx, opts.ContainerRuntime, spec, opts.NodeID, opts.HostName)
+		if err != nil {
+			return nil, err
+		}
+		reports = append(reports, result.Report)
+	}
+	return reports, nil
 }
 
 func writeEnvelope(conn *websocket.Conn, messageType control.MessageType, id string, payload any) error {

@@ -18,6 +18,10 @@ type ReconcileResult struct {
 	Report      control.ContainerReport `json:"report"`
 }
 
+type containerFinder interface {
+	FindByLabels(context.Context, map[string]string) (runtime.ContainerStatus, bool, error)
+}
+
 func ReconcileProviderContainer(ctx context.Context, rt runtime.Runtime, spec ProviderSpec, nodeID string, hostName string) (ReconcileResult, error) {
 	if rt == nil {
 		return ReconcileResult{}, fmt.Errorf("%w: runtime is required", ErrNodeAgentConfig)
@@ -25,6 +29,41 @@ func ReconcileProviderContainer(ctx context.Context, rt runtime.Runtime, spec Pr
 	containerSpec, err := ContainerSpecFromProviderSpec(spec, nodeID, hostName)
 	if err != nil {
 		return ReconcileResult{}, err
+	}
+	if finder, ok := rt.(containerFinder); ok {
+		status, found, err := finder.FindByLabels(ctx, containerSpec.Labels)
+		if err != nil {
+			return ReconcileResult{}, err
+		}
+		if found {
+			if containerSpec.AuthCopy != nil {
+				if err := rt.CopyTo(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
+					return ReconcileResult{}, err
+				}
+			}
+			state := status.State
+			if state != "running" {
+				if err := rt.Start(ctx, status.ID); err != nil {
+					return ReconcileResult{}, err
+				}
+				state = "running"
+			}
+			now := time.Now().UTC()
+			report := control.ContainerReport{
+				ContainerID:        status.ID.String(),
+				ProviderID:         containerSpec.ProviderID,
+				ProviderInstanceID: containerSpec.ProviderInstanceID,
+				Image:              status.Image.String(),
+				State:              state,
+				Health:             control.HealthReport{Status: "ready", CheckedAt: now},
+				Labels:             cloneRuntimeLabels(containerSpec.Labels),
+				StartedAt:          now,
+			}
+			if report.Image == "" {
+				report.Image = containerSpec.Image.String()
+			}
+			return ReconcileResult{ContainerID: status.ID, Spec: containerSpec, Report: report}, nil
+		}
 	}
 	if err := rt.Pull(ctx, containerSpec.Image); err != nil {
 		return ReconcileResult{}, err

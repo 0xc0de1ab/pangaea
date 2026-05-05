@@ -66,6 +66,16 @@ func (r *fakeContainerRuntime) Remove(context.Context, runtime.ContainerID, runt
 	return nil
 }
 
+type fakeExistingContainerRuntime struct {
+	fakeContainerRuntime
+	status runtime.ContainerStatus
+	found  bool
+}
+
+func (r *fakeExistingContainerRuntime) FindByLabels(context.Context, map[string]string) (runtime.ContainerStatus, bool, error) {
+	return r.status, r.found, nil
+}
+
 func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing.T) {
 	uid := 10001
 	gid := 10001
@@ -130,6 +140,37 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	}
 	if result.Report.ProviderInstanceID != "gemini-nullcode-a3" || result.Report.State != "running" || result.Report.Labels["pangaea.service"] != "gemini" {
 		t.Fatalf("unexpected reconcile report: %#v", result.Report)
+	}
+}
+
+func TestReconcileProviderContainerReusesExistingContainer(t *testing.T) {
+	rt := &fakeExistingContainerRuntime{
+		status: runtime.ContainerStatus{
+			ID:    "container-existing",
+			Image: "pangaea/provider-codex:test",
+			State: "exited",
+		},
+		found: true,
+	}
+	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ID:         "codex-samtest",
+		InstanceID: "codex-samtest-a1",
+		Kind:       provider.KindCLIContainer,
+		Image:      "pangaea/provider-codex:test",
+		Service:    provider.ServiceCodex,
+		Shim:       ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("reconcile existing provider container: %v", err)
+	}
+	if rt.pulled != "" || rt.created.Image != "" {
+		t.Fatalf("existing container should not be pulled or created: pulled=%q created=%#v", rt.pulled, rt.created)
+	}
+	if rt.started != "container-existing" {
+		t.Fatalf("expected existing container start, got %q", rt.started)
+	}
+	if result.ContainerID != "container-existing" || result.Report.State != "running" {
+		t.Fatalf("unexpected existing container result: %#v", result)
 	}
 }
 

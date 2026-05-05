@@ -116,6 +116,23 @@ func TestDockerRuntimeInfoStatsAndLogs(t *testing.T) {
 	}
 }
 
+func TestDockerRuntimeFindByLabels(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string]ExecResult{
+		"ps -a --format {{json .}} --filter label=pangaea.provider_instance_id=codex-samtest-a1": {
+			ExitCode: 0,
+			Stdout:   []byte(`{"ID":"container-1","Image":"pangaea/provider-codex:test","Names":"pangaea-codex","Status":"Up 2 minutes"}` + "\n"),
+		},
+	}}
+	rt := &DockerRuntime{Binary: "docker", Runner: runner}
+	status, found, err := rt.FindByLabels(context.Background(), map[string]string{"pangaea.provider_instance_id": "codex-samtest-a1"})
+	if err != nil {
+		t.Fatalf("find by labels: %v", err)
+	}
+	if !found || status.ID != "container-1" || status.State != "running" || status.Image != "pangaea/provider-codex:test" {
+		t.Fatalf("unexpected container status: found=%v status=%#v", found, status)
+	}
+}
+
 func TestDockerParseBytes(t *testing.T) {
 	for raw, want := range map[string]uint64{
 		"1KiB":  1024,

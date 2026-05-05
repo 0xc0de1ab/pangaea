@@ -92,6 +92,54 @@ func (d *DockerRuntime) Start(ctx context.Context, id ContainerID) error {
 	return err
 }
 
+func (d *DockerRuntime) FindByLabels(ctx context.Context, labels map[string]string) (ContainerStatus, bool, error) {
+	args := []string{"ps", "-a", "--format", "{{json .}}"}
+	filterCount := 0
+	for key, value := range labels {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		filter := "label=" + key
+		if value != "" {
+			filter += "=" + value
+		}
+		args = append(args, "--filter", filter)
+		filterCount++
+	}
+	if filterCount == 0 {
+		return ContainerStatus{}, false, nil
+	}
+	out, err := d.run(ctx, args, nil)
+	if err != nil {
+		return ContainerStatus{}, false, err
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(out.Stdout))
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var raw dockerPSContainer
+		if err := json.Unmarshal(line, &raw); err != nil {
+			return ContainerStatus{}, false, err
+		}
+		state := strings.ToLower(strings.TrimSpace(raw.State))
+		if state == "" {
+			state = dockerStateFromStatus(raw.Status)
+		}
+		return ContainerStatus{
+			ID:    ContainerID(raw.ID),
+			Image: ImageRef(raw.Image),
+			Name:  raw.Names,
+			State: state,
+		}, true, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return ContainerStatus{}, false, err
+	}
+	return ContainerStatus{}, false, nil
+}
+
 func (d *DockerRuntime) Stop(ctx context.Context, id ContainerID, timeout time.Duration) error {
 	args := []string{"stop"}
 	if timeout > 0 {
@@ -258,6 +306,30 @@ type dockerStats struct {
 	CPUPerc  string `json:"CPUPerc"`
 	MemUsage string `json:"MemUsage"`
 	PIDs     string `json:"PIDs"`
+}
+
+type dockerPSContainer struct {
+	ID     string `json:"ID"`
+	Image  string `json:"Image"`
+	Names  string `json:"Names"`
+	State  string `json:"State"`
+	Status string `json:"Status"`
+}
+
+func dockerStateFromStatus(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch {
+	case strings.HasPrefix(status, "up"):
+		return "running"
+	case strings.HasPrefix(status, "created"):
+		return "created"
+	case strings.HasPrefix(status, "exited"):
+		return "exited"
+	case strings.HasPrefix(status, "paused"):
+		return "paused"
+	default:
+		return status
+	}
 }
 
 func appendSecurityArgs(args []string, profile SecurityProfile) []string {

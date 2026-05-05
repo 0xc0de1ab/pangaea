@@ -20,13 +20,16 @@ func TestNodeAgentRunCommandExists(t *testing.T) {
 	if cmd.Use != "run" {
 		t.Fatalf("expected run command, got %q", cmd.Use)
 	}
-	for _, name := range []string{"config", "router-control", "node-id", "host-name", "heartbeat-interval", "runtime-kind", "runtime-version", "runtime-rootless"} {
+	for _, name := range []string{"config", "router-control", "node-id", "host-name", "heartbeat-interval", "runtime-kind", "runtime-version", "runtime-rootless", "reconcile-containers", "reconcile-interval", "docker-bin"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
 	}
 	if _, err := time.ParseDuration(cmd.Flags().Lookup("heartbeat-interval").DefValue); err != nil {
 		t.Fatalf("heartbeat interval default is not a duration: %v", err)
+	}
+	if _, err := time.ParseDuration(cmd.Flags().Lookup("reconcile-interval").DefValue); err != nil {
+		t.Fatalf("reconcile interval default is not a duration: %v", err)
 	}
 }
 

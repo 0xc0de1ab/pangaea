@@ -13,14 +13,17 @@ import (
 )
 
 type nodeAgentRunOptions struct {
-	ConfigPath        string
-	RouterControlURL  string
-	NodeID            string
-	HostName          string
-	HeartbeatInterval time.Duration
-	RuntimeKind       string
-	RuntimeVersion    string
-	RuntimeRootless   bool
+	ConfigPath          string
+	RouterControlURL    string
+	NodeID              string
+	HostName            string
+	HeartbeatInterval   time.Duration
+	RuntimeKind         string
+	RuntimeVersion      string
+	RuntimeRootless     bool
+	ReconcileContainers bool
+	ReconcileInterval   time.Duration
+	DockerBin           string
 }
 
 func newNodeAgentCmd() *cobra.Command {
@@ -55,6 +58,9 @@ func newNodeAgentRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.RuntimeKind, "runtime-kind", "", "container runtime kind")
 	cmd.Flags().StringVar(&opts.RuntimeVersion, "runtime-version", "", "container runtime version")
 	cmd.Flags().BoolVar(&opts.RuntimeRootless, "runtime-rootless", false, "report container runtime as rootless")
+	cmd.Flags().BoolVar(&opts.ReconcileContainers, "reconcile-containers", false, "periodically reconcile configured provider containers")
+	cmd.Flags().DurationVar(&opts.ReconcileInterval, "reconcile-interval", 5*time.Minute, "provider container reconcile interval")
+	cmd.Flags().StringVar(&opts.DockerBin, "docker-bin", "docker", "docker CLI binary when --reconcile-containers uses Docker")
 	return cmd
 }
 
@@ -89,6 +95,15 @@ func runNodeAgent(ctx context.Context, opts nodeAgentRunOptions) error {
 }
 
 func runNodeAgentControl(ctx context.Context, opts nodeAgentRunOptions, providers []nodeagent.ProviderSpec) error {
+	var rt containerruntime.Runtime
+	if opts.ReconcileContainers {
+		switch opts.RuntimeKind {
+		case "docker", "":
+			rt = containerruntime.NewDockerRuntime(opts.DockerBin)
+		default:
+			return fmt.Errorf("unsupported --runtime-kind %q", opts.RuntimeKind)
+		}
+	}
 	return nodeagent.RunControlClient(ctx, nodeagent.ControlClientOptions{
 		ControlURL:        opts.RouterControlURL,
 		NodeID:            opts.NodeID,
@@ -100,7 +115,9 @@ func runNodeAgentControl(ctx context.Context, opts nodeAgentRunOptions, provider
 			Version:  opts.RuntimeVersion,
 			Rootless: opts.RuntimeRootless,
 		},
-		ProviderSpecs: providers,
+		ProviderSpecs:     providers,
+		ContainerRuntime:  rt,
+		ReconcileInterval: opts.ReconcileInterval,
 	})
 }
 

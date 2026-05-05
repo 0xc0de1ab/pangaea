@@ -34,6 +34,14 @@ func (id ContainerID) String() string {
 	return string(id)
 }
 
+type ContainerStatus struct {
+	ID     ContainerID       `json:"id"`
+	Image  ImageRef          `json:"image,omitempty"`
+	Name   string            `json:"name,omitempty"`
+	State  string            `json:"state,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
 type ImageRef string
 
 func (ref ImageRef) String() string {

@@ -108,6 +108,54 @@ func TestRunControlClientSendsConfiguredProviderInventory(t *testing.T) {
 	t.Fatalf("node control client did not report configured provider inventory: providers=%#v containers=%#v", engine.Providers(), engine.Containers())
 }
 
+func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	rt := &fakeContainerRuntime{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunControlClient(ctx, ControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			NodeID:            "node-a1",
+			HostName:          "snowbox",
+			HeartbeatInterval: time.Second,
+			ReconcileInterval: time.Second,
+			ContainerRuntime:  rt,
+			ProviderSpecs: []ProviderSpec{{
+				ID:          "codex-samtest",
+				InstanceID:  "codex-samtest-0001",
+				Kind:        provider.KindCLIContainer,
+				Image:       "pangaea/provider-codex:test",
+				AccountHint: "samtest4u@gmail.com",
+				Service:     provider.ServiceCodex,
+				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+			}},
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		containers := engine.Containers()
+		if len(containers) == 1 && containers[0].State == "running" && rt.started == "container-1" {
+			cancel()
+			if err := <-errCh; err != nil {
+				t.Fatalf("control client returned error: %v", err)
+			}
+			if rt.pulled != "pangaea/provider-codex:test" || rt.created.ProviderInstanceID != "codex-samtest-0001" {
+				t.Fatalf("runtime did not reconcile provider: pulled=%q created=%#v", rt.pulled, rt.created)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("node control client did not report reconciled container inventory: %#v", engine.Containers())
+}
+
 func TestRunControlClientRequiresControlURL(t *testing.T) {
 	err := RunControlClient(context.Background(), ControlClientOptions{NodeID: "node-a1", HostName: "host-a1"})
 	if err == nil {
