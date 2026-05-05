@@ -80,3 +80,54 @@ func TestNodeAgentBootstrapAuthCommandExists(t *testing.T) {
 		}
 	}
 }
+
+func TestRunNodeAgentReconcileProviderDryRun(t *testing.T) {
+	dir := t.TempDir()
+	hostPath := filepath.Join(dir, "host", "auth.json")
+	configPath := filepath.Join(dir, "node-agent.yaml")
+	if err := os.MkdirAll(filepath.Dir(hostPath), 0o700); err != nil {
+		t.Fatalf("mkdir host: %v", err)
+	}
+	if err := os.WriteFile(hostPath, []byte(`{"account":"samtest4u@gmail.com"}`), 0o600); err != nil {
+		t.Fatalf("write host auth: %v", err)
+	}
+	config := `version: node-agent/v1
+node:
+  id: node-a1
+  host_name: snowbox
+providers:
+  - id: codex-samtest
+    kind: cli-container
+    image: pangaea/provider-codex:test
+    service: codex
+    auth:
+      mode: file
+      bootstrap: copy
+      host_path: ` + hostPath + `
+      container_path: /var/lib/pangaea/auth/codex/auth.json
+    shim:
+      capabilities: [api.openai.chat]
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := runNodeAgentReconcileProvider(context.Background(), nodeAgentReconcileProviderOptions{
+		ConfigPath: configPath,
+		ProviderID: "codex-samtest",
+		DryRun:     true,
+	}); err != nil {
+		t.Fatalf("reconcile provider dry-run: %v", err)
+	}
+}
+
+func TestNodeAgentReconcileProviderCommandExists(t *testing.T) {
+	cmd := newNodeAgentReconcileProviderCmd()
+	if cmd.Use != "reconcile-provider" {
+		t.Fatalf("expected reconcile-provider command, got %q", cmd.Use)
+	}
+	for _, name := range []string{"config", "provider", "node-id", "host-name", "runtime-kind", "docker-bin", "dry-run"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Fatalf("expected %s flag", name)
+		}
+	}
+}

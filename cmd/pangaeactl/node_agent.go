@@ -8,6 +8,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/common"
 	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/nodeagent"
+	containerruntime "github.com/0xc0de1ab/pangaea/internal/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +32,7 @@ func newNodeAgentCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newNodeAgentRunCmd())
 	cmd.AddCommand(newNodeAgentBootstrapAuthCmd())
+	cmd.AddCommand(newNodeAgentReconcileProviderCmd())
 	return cmd
 }
 
@@ -139,5 +141,74 @@ func runNodeAgentBootstrapAuth(ctx context.Context, opts nodeAgentBootstrapAuthO
 		return fmt.Errorf("provider %q not found", opts.ProviderID)
 	}
 	_, err = nodeagent.BootstrapAuthCopy(ctx, spec.Auth)
+	return err
+}
+
+type nodeAgentReconcileProviderOptions struct {
+	ConfigPath  string
+	ProviderID  string
+	NodeID      string
+	HostName    string
+	RuntimeKind string
+	DockerBin   string
+	DryRun      bool
+}
+
+func newNodeAgentReconcileProviderCmd() *cobra.Command {
+	opts := nodeAgentReconcileProviderOptions{}
+	cmd := &cobra.Command{
+		Use:           "reconcile-provider",
+		Short:         "create or start one configured provider container",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runNodeAgentReconcileProvider(cmd.Context(), opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.ConfigPath, "config", "", "node-agent provider spec YAML path")
+	cmd.Flags().StringVar(&opts.ProviderID, "provider", "", "provider id to reconcile")
+	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "override node id")
+	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "override host name")
+	cmd.Flags().StringVar(&opts.RuntimeKind, "runtime-kind", "docker", "container runtime kind")
+	cmd.Flags().StringVar(&opts.DockerBin, "docker-bin", "docker", "docker CLI binary")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "validate and build container spec without touching runtime")
+	return cmd
+}
+
+func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileProviderOptions) error {
+	if opts.ConfigPath == "" {
+		return fmt.Errorf("--config is required")
+	}
+	if opts.ProviderID == "" {
+		return fmt.Errorf("--provider is required")
+	}
+	cfg, err := nodeagent.LoadConfigFile(opts.ConfigPath)
+	if err != nil {
+		return err
+	}
+	spec, ok := cfg.ProviderByID(opts.ProviderID)
+	if !ok {
+		return fmt.Errorf("provider %q not found", opts.ProviderID)
+	}
+	nodeID := opts.NodeID
+	if nodeID == "" {
+		nodeID = cfg.Node.ID
+	}
+	hostName := opts.HostName
+	if hostName == "" {
+		hostName = cfg.Node.HostName
+	}
+	if opts.DryRun {
+		_, err := nodeagent.ContainerSpecFromProviderSpec(spec, nodeID, hostName)
+		return err
+	}
+	var rt containerruntime.Runtime
+	switch opts.RuntimeKind {
+	case "docker", "":
+		rt = containerruntime.NewDockerRuntime(opts.DockerBin)
+	default:
+		return fmt.Errorf("unsupported --runtime-kind %q", opts.RuntimeKind)
+	}
+	_, err = nodeagent.ReconcileProviderContainer(ctx, rt, spec, nodeID, hostName)
 	return err
 }
