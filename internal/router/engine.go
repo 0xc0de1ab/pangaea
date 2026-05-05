@@ -186,6 +186,9 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 	if routeExecution.Decision.CanonicalModel != "" {
 		request.Model = routeExecution.Decision.CanonicalModel
 	}
+	if request.ID == "" {
+		request.ID = execution.RequestID
+	}
 	response, err := e.invoker.Invoke(ctx, *routeExecution.Decision.SelectedProvider, request)
 	if err != nil {
 		_, _ = e.Release(execution.RequestID)

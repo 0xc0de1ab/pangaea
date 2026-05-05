@@ -16,12 +16,13 @@ import (
 )
 
 type routerServeOptions struct {
-	Listen    string
-	Policy    string
-	Simulator bool
-	APIKey    string
-	TenantID  string
-	UserID    string
+	Listen         string
+	Policy         string
+	Simulator      bool
+	APIKey         string
+	TenantID       string
+	UserID         string
+	StreamTokenKey string
 }
 
 func newRouterCmd() *cobra.Command {
@@ -55,6 +56,7 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "optional public API bearer key")
 	cmd.Flags().StringVar(&opts.TenantID, "tenant-id", "dev", "tenant id assigned to --api-key")
 	cmd.Flags().StringVar(&opts.UserID, "user-id", "dev", "user id assigned to --api-key")
+	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
 	return cmd
 }
 
@@ -63,9 +65,16 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	if err != nil {
 		return err
 	}
+	dataBroker, err := v2router.NewDataBroker([]byte(opts.StreamTokenKey))
+	if err != nil {
+		return err
+	}
+	if !opts.Simulator {
+		engine.SetInvoker(dataBroker)
+	}
 	srv := &http.Server{
 		Addr:              opts.Listen,
-		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts)}),
+		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts), DataBroker: dataBroker}),
 		ReadHeaderTimeout: common.ReadTimeout,
 	}
 	errCh := make(chan error, 1)
@@ -170,3 +179,5 @@ routes:
       health_state: [ready]
       max_queue_depth: 4
 `
+
+const defaultStreamTokenKey = "pangaea-dev-stream-token-key"

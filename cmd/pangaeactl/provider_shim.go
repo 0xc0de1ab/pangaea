@@ -13,8 +13,10 @@ import (
 
 type providerShimRunOptions struct {
 	RouterControlURL  string
+	RouterDataURL     string
 	Simulator         bool
 	HeartbeatInterval time.Duration
+	StreamTokenKey    string
 }
 
 func newProviderShimCmd() *cobra.Command {
@@ -40,8 +42,10 @@ func newProviderShimRunCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.RouterControlURL, "router-control", "", "router control WebSocket URL")
+	cmd.Flags().StringVar(&opts.RouterDataURL, "router-data", "", "router data WebSocket URL; defaults to --router-control with /data/ws and provider_instance_id")
 	cmd.Flags().BoolVar(&opts.Simulator, "simulator", false, "run the built-in simulator shim")
 	cmd.Flags().DurationVar(&opts.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "control heartbeat interval")
+	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
 	return cmd
 }
 
@@ -56,9 +60,11 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 	if err != nil {
 		return err
 	}
-	return providershim.RunSimulatorControlClient(ctx, providershim.ControlClientOptions{
+	return providershim.RunSimulatorShim(ctx, providershim.SimulatorShimOptions{
 		ControlURL:        opts.RouterControlURL,
+		DataURL:           opts.RouterDataURL,
 		HeartbeatInterval: opts.HeartbeatInterval,
+		TokenKey:          []byte(opts.StreamTokenKey),
 		Simulator:         sim,
 	})
 }

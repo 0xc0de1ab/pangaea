@@ -11,8 +11,9 @@ import (
 )
 
 type HTTPOptions struct {
-	Engine  *Engine
-	APIKeys *security.APIKeyStore
+	Engine     *Engine
+	APIKeys    *security.APIKeyStore
+	DataBroker *DataBroker
 }
 
 type openAIModelList struct {
@@ -120,6 +121,13 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		c.JSON(http.StatusOK, gin.H{"providers": engine.Providers()})
 	})
 	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine))
+	r.GET("/router/v1/data/ws", func(c *gin.Context) {
+		if opts.DataBroker == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": ErrDataBrokerNotReady.Error()})
+			return
+		}
+		opts.DataBroker.HandleDataWS(c)
+	})
 	r.POST("/router/v1/routes/dry-run", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
 		if !ok {
