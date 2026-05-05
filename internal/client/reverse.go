@@ -50,6 +50,9 @@ func RunReverse(ctx context.Context, cfg *config.ClientConfig, opts Options, log
 	}
 
 	eg, egCtx := errgroup.WithContext(ctx)
+	if maintainer := newCLIUpgradeMaintainer(cfg.Maintenance.CLIUpgrade, agents, log); maintainer != nil {
+		eg.Go(func() error { return maintainer.run(egCtx) })
+	}
 	for _, ra := range byProfile {
 		ra := ra
 		eg.Go(func() error { return ra.agent.startStatePumps(egCtx) })

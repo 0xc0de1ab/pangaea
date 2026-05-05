@@ -211,7 +211,7 @@ Format별 strategy:
 Validation은 snapshot을 전파할 가치가 있는지 판단한다.
 
 - Claude: `expiresAt` 기반. `live_check=true`면 `GET /api/oauth/profile`을 한 번 수행한다.
-- Codex: access token JWT `exp`와 `last_refresh` 기반. `last_refresh`가 8일보다 오래되면 stale로 본다.
+- Codex: access token JWT `exp` 기반. 만료 5분 이내는 Codex가 refresh할 상태로 보고 전파 가치가 낮은 것으로 본다. `id_token` 만료와 `last_refresh` age는 validity를 떨어뜨리지 않는다.
 - Gemini: `expiry_date` 기반. 만료 5분 이내는 전파 가치가 낮은 것으로 본다.
 
 Usage probe는 notifier가 메시지를 보낼 때 수행한다.
@@ -226,15 +226,16 @@ Usage probe는 notifier가 메시지를 보낼 때 수행한다.
 
 조건:
 
-- provider command가 `PATH`에서 발견되어야 한다.
+- provider command가 `PATH`에서 발견되거나, nvm-managed 환경에서는
+  `bash -lic` fallback으로 발견되어야 한다.
 - 동일 fingerprint/reason에 대해서는 cooldown이 적용된다.
 - 명령 실행 후 파일 fingerprint가 바뀌면 기존 watcher 경로로 재보고된다.
 
 현재 nudge 대상:
 
 - Claude: `claude auth login` 또는 oneshot prompt
-- Codex: `codex exec` oneshot prompt
-- Gemini: `gemini -p` oneshot prompt
+- Codex: `codex exec` oneshot prompt, direct 실행 후 `bash -lic` fallback
+- Gemini: `gemini -p` oneshot prompt, direct 실행 후 `bash -lic` fallback
 
 ## Notifications
 

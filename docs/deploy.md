@@ -403,10 +403,21 @@ reconnect:
   initial_delay: "5s"
   jitter: "1s"
   max_delay: "60s"
+maintenance:
+  cli_upgrade:
+    enabled: true
+    initial_delay: "10m"
+    interval: "24h"
 log:
   level: "info"
   format: "json"
 ```
+
+`maintenance.cli_upgrade` is optional. When enabled, the client periodically
+checks whether the configured provider CLIs are installed as global npm
+packages and runs `npm install -g ...@latest` through `bash -lic` for those
+packages only. This supports nvm-managed shells without touching brew,
+standalone, or otherwise non-npm CLI installs.
 
 Start the client:
 

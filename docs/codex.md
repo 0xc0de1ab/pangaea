@@ -43,7 +43,7 @@ Implementation details:
 - UTF-8 BOM is accepted.
 - API-key-only state is not considered shareable.
 - `access_token` JWT `exp` is parsed as the primary expiry signal.
-- `id_token` is parsed for ChatGPT identity claims.
+- `id_token` is parsed for ChatGPT identity claims only; its expiry does not determine auth validity.
 - Fingerprint is `sha256(raw file bytes)`.
 - Snapshot identity is the first 16 hex chars of `sha256(access_token)`.
 
@@ -98,11 +98,13 @@ Meaning:
 Validation is local-only:
 
 - unreadable `access_token` JWT `exp` => `scope_warn`
-- expired `exp` => `expired`
-- `last_refresh` older than 8 days => `expired`
+- expired `exp`, or `exp` within Codex's 5-minute refresh safety window => `expired`
 - otherwise => `ok`
 
-The 8-day rule mirrors Codex's proactive refresh interval. A token can still be JWT-valid but too stale to be worth propagating.
+`last_refresh` is kept for operator display and as a comparison tie-breaker,
+but it does not make an otherwise fresh access token invalid. This matches
+Codex's runtime behavior: access_token freshness drives request auth, while
+refresh_token allows Codex to obtain a new token set when refresh is needed.
 
 ## How Usage Is Queried
 
@@ -218,6 +220,6 @@ It never includes:
 
 - API-key-only Codex login is intentionally excluded from synchronization.
 - Usage probing requires `chatgpt_account_id` or `tokens.account_id`.
-- A JWT can still be valid while being considered stale due to `last_refresh > 8 days`.
+- `last_refresh` is informational for validity; a fresh access token remains viable even when `last_refresh` is old.
 - Codex account partitioning is generally strong because the file is self-contained.
-- The client daemon may run `codex exec` as a refresh nudge when credentials are expired or near expiry, but only when `codex` is discoverable in `PATH`. It does not implement Codex OAuth refresh itself.
+- The client daemon may run `codex exec` as a refresh nudge when credentials are expired or near expiry. It tries direct `codex` first, then a `bash -lic` fallback for nvm-managed environments. It does not implement Codex OAuth refresh itself.

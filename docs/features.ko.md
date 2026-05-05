@@ -41,6 +41,7 @@
 - usage/validity 메타데이터를 포함한 event-driven propagation notification
 - `/claude`, `/codex`, `/gemini`, `/status`, `/help` Telegram bot command polling
 - 인증 정보가 만료됐거나 만료 임박이고 provider CLI가 `PATH`에서 발견될 때 Claude, Codex, Gemini 공식 CLI를 통한 refresh nudge
+- nvm 환경을 지원하도록 `bash -lic`로 실행되는, npm 설치 Claude/Codex/Gemini CLI의 주기적 upgrade
 - 주요 sync/auth 시나리오를 다루는 unit/e2e 테스트
 - test, coverage, multi-target build를 수행하는 GitHub Actions CI
 
@@ -120,6 +121,7 @@
 - format-aware account resolution
 - 보조 메타 파일 변경 시 watcher 기반 재보고
 - 만료 임박 시 공식 provider CLI를 통한 refresh nudge. `pangaeactl` 자체가 provider OAuth refresh를 구현하지는 않음
+- global npm 설치에 한정한 공식 CLI 주기적 upgrade. npm이 아닌 설치는 감지 후 건드리지 않음
 - 서버가 먼저 접속하는 reverse-client listener 옵션
 
 ## CLI 기능

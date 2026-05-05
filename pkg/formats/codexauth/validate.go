@@ -7,18 +7,15 @@ import (
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
-// proactiveRefreshInterval mirrors codex's TOKEN_REFRESH_INTERVAL constant
-// (codex-rs/login/src/auth/manager.rs): if last_refresh is older than this,
-// codex itself proactively refreshes regardless of JWT exp. We treat the same
-// threshold as "not fresh enough to share" — pushing this token to a peer
-// would have it perform the same proactive refresh on its own next start.
-const proactiveRefreshInterval = 8 * 24 * time.Hour
+// expirySafetySkew mirrors Codex's auth refresh skew: once an access token is
+// within this window, Codex refreshes it before making chat requests. Treat it
+// as expired for mediation so peers receive a token that is immediately usable.
+const expirySafetySkew = 5 * time.Minute
 
 // Validate runs local checks. There is no live check: codex's only validity
-// signal is the access-token JWT's exp claim plus the 8-day proactive-refresh
-// window. We replicate the same logic here, returning StatusExpired in both
-// cases (the wire protocol has no separate "stale" status, and from the peer
-// node's perspective both outcomes mean "do not adopt as truth").
+// signal is the access-token JWT's exp claim. id_token expiry is deliberately
+// ignored here: Codex uses id_token for identity/account metadata, while chat
+// requests and refresh decisions are governed by access_token + refresh_token.
 func (f Format) Validate(_ context.Context, snap formats.Snapshot, opts formats.ValidateOpts) (formats.ValidationResult, error) {
 	now := time.Now
 	if opts.Clock != nil {
@@ -50,17 +47,10 @@ func (f Format) Validate(_ context.Context, snap formats.Snapshot, opts formats.
 			CheckedAt: checkedAt,
 		}, nil
 	}
-	if !checkedAt.Before(cs.jwtExp) {
+	if !checkedAt.Add(expirySafetySkew).Before(cs.jwtExp) {
 		return formats.ValidationResult{
 			Status:    formats.StatusExpired,
-			Detail:    "access_token JWT exp has passed",
-			CheckedAt: checkedAt,
-		}, nil
-	}
-	if !cs.lastRefresh.IsZero() && checkedAt.Sub(cs.lastRefresh) > proactiveRefreshInterval {
-		return formats.ValidationResult{
-			Status:    formats.StatusExpired,
-			Detail:    "last_refresh older than codex proactive-refresh interval (8d)",
+			Detail:    "access_token JWT exp has passed or is within refresh safety window",
 			CheckedAt: checkedAt,
 		}, nil
 	}

@@ -39,6 +39,7 @@ As of 2026-04-29, the core product work is largely implemented, but not every su
 - Event-driven propagation notifications enriched with usage/validity metadata
 - Telegram bot command polling for `/claude`, `/codex`, `/gemini`, `/status`, and `/help`
 - Official-CLI refresh nudges for Claude, Codex, and Gemini when credentials are expired or near expiry and the provider CLI is available in `PATH`
+- Periodic npm-based official CLI upgrades for npm-installed Claude, Codex, and Gemini CLIs, executed through `bash -lic` for nvm-managed environments
 - Unit tests and end-to-end tests for major synchronization and auth scenarios
 - GitHub Actions CI with test, coverage, and multi-target build jobs
 
@@ -118,6 +119,7 @@ See also:
 - Format-aware account resolution
 - Watcher-driven re-reporting when auxiliary metadata files change
 - Near-expiry refresh nudges through the official provider CLI only; `pangaeactl` does not implement provider OAuth refresh itself
+- Periodic official CLI upgrades for global npm installs only; non-npm installs are detected and left untouched
 - Optional reverse-client listener for server-initiated tunnel topologies
 
 ## CLI Features

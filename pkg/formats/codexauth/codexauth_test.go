@@ -214,7 +214,20 @@ func TestValidate_ExpiredByJWT(t *testing.T) {
 	}
 }
 
-func TestValidate_ExpiredByLastRefreshAge(t *testing.T) {
+func TestValidate_ExpiredInsideRefreshSafetySkew(t *testing.T) {
+	exp := time.Now().Add(2 * time.Minute).Unix()
+	raw := authJSON(t, exp, "", "E")
+	snap, err := (Format{}).Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _ := (Format{}).Validate(context.Background(), snap, formats.ValidateOpts{})
+	if res.Status != formats.StatusExpired {
+		t.Fatalf("Status = %q, want expired (access exp inside safety skew)", res.Status)
+	}
+}
+
+func TestValidate_OldLastRefreshDoesNotExpireFreshAccessToken(t *testing.T) {
 	exp := time.Now().Add(time.Hour).Unix()
 	old := time.Now().Add(-9 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	raw := authJSON(t, exp, old, "E")
@@ -223,8 +236,43 @@ func TestValidate_ExpiredByLastRefreshAge(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, _ := (Format{}).Validate(context.Background(), snap, formats.ValidateOpts{})
-	if res.Status != formats.StatusExpired {
-		t.Fatalf("Status = %q, want expired (last_refresh > 8d)", res.Status)
+	if res.Status != formats.StatusOK {
+		t.Fatalf("Status = %q, want ok (fresh access_token wins over old last_refresh)", res.Status)
+	}
+}
+
+func TestValidate_ExpiredIDTokenDoesNotExpireFreshAccessToken(t *testing.T) {
+	now := time.Now()
+	access := makeJWT(t, map[string]any{
+		"sub": "user-abc",
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	id := makeJWT(t, map[string]any{
+		"email": "expired-id@example.com",
+		"exp":   now.Add(-24 * time.Hour).Unix(),
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_user_id":    "user-abc",
+			"chatgpt_account_id": "acct-abc",
+		},
+	})
+	raw, _ := json.Marshal(map[string]any{
+		"auth_mode": "Chatgpt",
+		"tokens": map[string]any{
+			"id_token":      id,
+			"access_token":  access,
+			"refresh_token": "rt",
+		},
+	})
+	snap, err := (Format{}).Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.ExpiresAt(); got.Unix() != now.Add(time.Hour).Unix() {
+		t.Fatalf("ExpiresAt = %v, want access token exp", got)
+	}
+	res, _ := (Format{}).Validate(context.Background(), snap, formats.ValidateOpts{})
+	if res.Status != formats.StatusOK {
+		t.Fatalf("Status = %q, want ok", res.Status)
 	}
 }
 

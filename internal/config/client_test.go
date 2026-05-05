@@ -97,6 +97,47 @@ pki:
 	if c.Reconnect.MaxDelay != common.ReconnectMax {
 		t.Fatalf("max_delay default = %v", c.Reconnect.MaxDelay)
 	}
+	if !c.Maintenance.CLIUpgrade.Enabled {
+		t.Fatalf("cli upgrade should be enabled by default")
+	}
+	if c.Maintenance.CLIUpgrade.InitialDelay != 10*time.Minute {
+		t.Fatalf("cli upgrade initial_delay default = %v", c.Maintenance.CLIUpgrade.InitialDelay)
+	}
+	if c.Maintenance.CLIUpgrade.Interval != 24*time.Hour {
+		t.Fatalf("cli upgrade interval default = %v", c.Maintenance.CLIUpgrade.Interval)
+	}
+}
+
+func TestLoadClient_MaintenanceCLIUpgrade(t *testing.T) {
+	body := `
+server: "wss://x:1"
+node_id: n
+profiles:
+  - name: p
+    dir: "/tmp/x"
+pki:
+  ca_cert: a
+  client_cert: b
+  client_key: c
+maintenance:
+  cli_upgrade:
+    enabled: false
+    initial_delay: "1m"
+    interval: "12h"
+`
+	c, err := LoadClient(writeClient(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Maintenance.CLIUpgrade.Enabled {
+		t.Fatalf("cli upgrade enabled = true, want false")
+	}
+	if c.Maintenance.CLIUpgrade.InitialDelay != time.Minute {
+		t.Fatalf("cli upgrade initial_delay = %v", c.Maintenance.CLIUpgrade.InitialDelay)
+	}
+	if c.Maintenance.CLIUpgrade.Interval != 12*time.Hour {
+		t.Fatalf("cli upgrade interval = %v", c.Maintenance.CLIUpgrade.Interval)
+	}
 }
 
 func TestLoadClient_BadScheme(t *testing.T) {

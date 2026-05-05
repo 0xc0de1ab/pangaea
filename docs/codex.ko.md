@@ -98,11 +98,13 @@ Codex는 Claude와 달리 별도 account metadata 파일이 필요 없다.
 validation은 로컬 판정만 한다.
 
 - `access_token` JWT `exp`를 읽지 못하면 `scope_warn`
-- `exp`가 지났으면 `expired`
-- `last_refresh`가 8일보다 오래됐으면 `expired`
+- `exp`가 지났거나 Codex의 5분 refresh safety window 안이면 `expired`
 - 나머지는 `ok`
 
-8일 규칙은 Codex의 proactive refresh interval을 반영한 것이다.
+`last_refresh`는 운영자 표시와 비교 tie-break에만 사용하며, 아직 신선한
+access token을 invalid로 만들지 않는다. 이는 Codex 런타임 동작과 맞춘
+것이다. 요청 인증은 access_token freshness가 결정하고, refresh가 필요할
+때 Codex가 refresh_token으로 새 token set을 얻는다.
 
 ## usage 요청 방식
 
@@ -220,6 +222,10 @@ redacted summary에 포함될 수 있는 값:
 
 - API-key-only Codex login은 동기화 대상에서 제외된다.
 - usage probe는 `chatgpt_account_id` 또는 `tokens.account_id`가 있어야 한다.
-- JWT가 아직 살아 있어도 `last_refresh`가 8일을 넘으면 stale로 간주한다.
+- `last_refresh`는 validity에는 정보성 값이다. access token이 신선하면
+  `last_refresh`가 오래됐어도 viable하다.
 - Codex는 파일 하나에 토큰과 계정 메타가 함께 있어서 account partition 신뢰도가 높다.
-- client daemon은 인증 정보가 만료됐거나 만료 임박이면 `codex exec`를 refresh nudge로 실행할 수 있다. 이 동작은 `codex`가 `PATH`에서 발견되는 경우로 한정되며, Codex OAuth refresh를 직접 구현하지는 않는다.
+- client daemon은 인증 정보가 만료됐거나 만료 임박이면 `codex exec`를
+  refresh nudge로 실행할 수 있다. direct `codex` 실행을 먼저 시도하고,
+  nvm-managed 환경을 위해 `bash -lic` fallback도 시도한다. Codex OAuth
+  refresh를 직접 구현하지는 않는다.

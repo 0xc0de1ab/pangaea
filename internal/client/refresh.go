@@ -17,7 +17,7 @@ import (
 
 const (
 	refreshInitialDelay   = 2 * time.Minute
-	refreshCheckInterval  = 15 * time.Minute
+	refreshCheckInterval  = 1 * time.Minute
 	refreshNearExpiry     = 30 * time.Minute
 	refreshCooldown       = 2 * time.Hour
 	refreshCommandTimeout = 90 * time.Second
@@ -120,6 +120,18 @@ func (a *agent) maybeRefresh(ctx context.Context) {
 		out, err := a.runCommand(attemptCtx, cmd)
 		cancel()
 		if err != nil {
+			changed, newFP := a.waitForRefreshMutation(ctx, state.fingerprint)
+			if changed {
+				a.log.Info("refresh nudge updated credentials",
+					slog.String(logging.FieldEvent, "refresh.nudge.updated"),
+					slog.String("provider", a.format.Name()),
+					slog.String("command", cmd.Description),
+					slog.String("old_fingerprint", state.fingerprint),
+					slog.String("new_fingerprint", newFP),
+					slog.String(logging.FieldReason, refreshErrText(err, out)),
+				)
+				return
+			}
 			a.log.Warn("refresh nudge failed",
 				slog.String(logging.FieldEvent, "refresh.nudge.failed"),
 				slog.String("provider", a.format.Name()),
@@ -278,43 +290,70 @@ func (a *agent) geminiRefreshCommands() []refreshCommand {
 	if !ok {
 		return nil
 	}
+	args := []string{
+		"-p", "Reply with OK only.",
+		"--skip-trust",
+		"--approval-mode", "plan",
+		"--output-format", "json",
+		"--model", "gemini-2.5-flash",
+	}
+	env := []string{
+		"HOME=" + homeParent,
+		"GEMINI_CLI_TRUST_WORKSPACE=true",
+		"TERM=xterm-256color",
+	}
 	return []refreshCommand{
 		{
-			Name: "gemini",
-			Args: []string{
-				"-p", "Reply with OK only.",
-				"--skip-trust",
-				"--approval-mode", "plan",
-				"--output-format", "json",
-				"--model", "gemini-2.5-flash",
-			},
-			Env: []string{
-				"HOME=" + homeParent,
-				"GEMINI_CLI_TRUST_WORKSPACE=true",
-			},
+			Name:        "gemini",
+			Args:        args,
+			Env:         env,
 			Dir:         os.TempDir(),
 			Description: "gemini oneshot prompt",
+		},
+		{
+			Name: "bash",
+			Args: append([]string{
+				"-lic",
+				`exec gemini "$@"`,
+				"gemini-refresh",
+			}, args...),
+			Env:         env,
+			Dir:         os.TempDir(),
+			Description: "gemini oneshot prompt via login shell",
 		},
 	}
 }
 
 func (a *agent) codexRefreshCommands() []refreshCommand {
+	args := []string{
+		"exec",
+		"--skip-git-repo-check",
+		"--sandbox", "read-only",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--color", "never",
+		"-C", os.TempDir(),
+		"Reply with OK only. Do not run any tools or shell commands.",
+	}
+	env := []string{"CODEX_HOME=" + a.dir}
 	return []refreshCommand{
 		{
-			Name: "codex",
-			Args: []string{
-				"exec",
-				"Reply with OK only. Do not run any tools or shell commands.",
-				"--skip-git-repo-check",
-				"--sandbox", "read-only",
-				"--ephemeral",
-				"--ignore-user-config",
-				"--color", "never",
-				"-C", os.TempDir(),
-			},
-			Env:         []string{"CODEX_HOME=" + a.dir},
+			Name:        "codex",
+			Args:        args,
+			Env:         env,
 			Dir:         os.TempDir(),
 			Description: "codex exec oneshot",
+		},
+		{
+			Name: "bash",
+			Args: append([]string{
+				"-lic",
+				`exec codex "$@"`,
+				"codex-refresh",
+			}, args...),
+			Env:         env,
+			Dir:         os.TempDir(),
+			Description: "codex exec oneshot via login shell",
 		},
 	}
 }

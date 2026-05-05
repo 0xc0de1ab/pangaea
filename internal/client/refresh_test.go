@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,12 @@ func TestShouldRefreshNudge(t *testing.T) {
 			name: "near expiry nudges proactively",
 			snap: testSnapshot{expiresAt: now.Add(20 * time.Minute), fingerprint: "b"},
 			res:  formats.ValidationResult{Status: formats.StatusOK},
+			want: true,
+		},
+		{
+			name: "five minute refresh window nudges",
+			snap: testSnapshot{expiresAt: now.Add(5 * time.Minute), fingerprint: "b2"},
+			res:  formats.ValidationResult{Status: formats.StatusExpired, Detail: "within refresh safety window"},
 			want: true,
 		},
 		{
@@ -134,12 +141,24 @@ func TestGeminiRefreshCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refreshCommands() error = %v", err)
 	}
-	if len(cmds) != 1 {
-		t.Fatalf("len(cmds) = %d, want 1", len(cmds))
+	if len(cmds) != 2 {
+		t.Fatalf("len(cmds) = %d, want 2", len(cmds))
 	}
 	env := strings.Join(cmds[0].Env, "\n")
 	if !strings.Contains(env, "HOME=/tmp/home") {
 		t.Fatalf("HOME override missing: %v", cmds[0].Env)
+	}
+	if cmds[0].Name != "gemini" {
+		t.Fatalf("primary command name = %q, want gemini", cmds[0].Name)
+	}
+	if cmds[1].Name != "bash" {
+		t.Fatalf("fallback command name = %q, want bash", cmds[1].Name)
+	}
+	if !slices.Contains(cmds[1].Args, "-lic") {
+		t.Fatalf("fallback command should use an interactive login shell: %v", cmds[1].Args)
+	}
+	if !strings.Contains(strings.Join(cmds[1].Args, "\n"), `exec gemini "$@"`) {
+		t.Fatalf("fallback command should exec gemini through shell: %v", cmds[1].Args)
 	}
 
 	ag.dir = "/tmp/not-dot-gemini"
@@ -161,14 +180,23 @@ func TestCodexRefreshCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refreshCommands() error = %v", err)
 	}
-	if len(cmds) != 1 {
-		t.Fatalf("len(cmds) = %d, want 1", len(cmds))
+	if len(cmds) != 2 {
+		t.Fatalf("len(cmds) = %d, want 2", len(cmds))
 	}
 	if cmds[0].Name != "codex" {
 		t.Fatalf("command name = %q, want codex", cmds[0].Name)
 	}
 	if !strings.Contains(strings.Join(cmds[0].Env, "\n"), "CODEX_HOME=/tmp/custom-codex") {
 		t.Fatalf("CODEX_HOME missing from env: %v", cmds[0].Env)
+	}
+	if cmds[1].Name != "bash" {
+		t.Fatalf("fallback command name = %q, want bash", cmds[1].Name)
+	}
+	if !slices.Contains(cmds[1].Args, "-lic") {
+		t.Fatalf("fallback command should use an interactive login shell: %v", cmds[1].Args)
+	}
+	if !strings.Contains(strings.Join(cmds[1].Args, "\n"), `exec codex "$@"`) {
+		t.Fatalf("fallback command should exec codex through shell: %v", cmds[1].Args)
 	}
 }
 

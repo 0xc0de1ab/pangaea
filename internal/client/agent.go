@@ -83,6 +83,9 @@ func Run(ctx context.Context, cfg *config.ClientConfig, opts Options, log *slog.
 	}
 
 	eg, egCtx := errgroup.WithContext(ctx)
+	if maintainer := newCLIUpgradeMaintainer(cfg.Maintenance.CLIUpgrade, agents, log); maintainer != nil {
+		eg.Go(func() error { return maintainer.run(egCtx) })
+	}
 	for _, ag := range agents {
 		ag := ag
 		eg.Go(func() error { return ag.run(egCtx) })

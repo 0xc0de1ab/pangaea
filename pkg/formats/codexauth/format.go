@@ -4,13 +4,12 @@
 // This package is a *read-only interpreter* of the file. It NEVER refreshes
 // tokens, NEVER writes the auth file, and NEVER POSTs to OpenAI. There is no
 // live-check probe — codex does not expose a non-mutating endpoint we can
-// reuse, and a freshness decision is purely local (JWT exp + last_refresh).
+// reuse, and a freshness decision is purely local (access-token JWT exp).
 //
 // Source survey of github.com/openai/codex (Rust rewrite at codex-rs/login):
 //   - File schema:        codex-rs/login/src/auth/storage.rs (struct AuthDotJson, TokenData)
-//   - Freshness rule:     codex-rs/login/src/auth/manager.rs (is_stale_for_proactive_refresh)
+//   - Freshness rule:     Codex chat auth refresh path (access-token exp + safety skew)
 //   - JWT exp parsing:    codex-rs/login/src/token_data.rs (parse_jwt_expiration)
-//   - Refresh interval:   const TOKEN_REFRESH_INTERVAL = 8 days
 package codexauth
 
 import (

@@ -403,10 +403,21 @@ reconnect:
   initial_delay: "5s"
   jitter: "1s"
   max_delay: "60s"
+maintenance:
+  cli_upgrade:
+    enabled: true
+    initial_delay: "10m"
+    interval: "24h"
 log:
   level: "info"
   format: "json"
 ```
+
+`maintenance.cli_upgrade`는 선택 항목이다. 켜져 있으면 client가 설정된
+provider CLI가 global npm package로 설치되어 있는지 주기적으로 확인하고,
+해당 package에 대해서만 `bash -lic`를 통해 `npm install -g ...@latest`를
+실행한다. nvm 기반 shell은 지원하지만 brew, standalone 등 npm이 아닌 설치는
+건드리지 않는다.
 
 실행:
 

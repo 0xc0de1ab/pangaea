@@ -23,15 +23,16 @@ import (
 // the server. self-client callers fill the list from the resolved server
 // profile. One client process opens one WebSocket session per binding.
 type ClientConfig struct {
-	Server    string           `yaml:"server"`
-	AuthMode  AuthMode         `yaml:"auth_mode"`
-	JWT       JWTClientConfig  `yaml:"jwt"`
-	Reverse   ReverseConfig    `yaml:"reverse"`
-	NodeID    string           `yaml:"node_id"`
-	Profiles  []ProfileBinding `yaml:"profiles"`
-	PKI       ClientPKIPaths   `yaml:"pki"`
-	Reconnect ReconnectConfig  `yaml:"reconnect"`
-	Log       LogConfig        `yaml:"log"`
+	Server      string            `yaml:"server"`
+	AuthMode    AuthMode          `yaml:"auth_mode"`
+	JWT         JWTClientConfig   `yaml:"jwt"`
+	Reverse     ReverseConfig     `yaml:"reverse"`
+	NodeID      string            `yaml:"node_id"`
+	Profiles    []ProfileBinding  `yaml:"profiles"`
+	PKI         ClientPKIPaths    `yaml:"pki"`
+	Reconnect   ReconnectConfig   `yaml:"reconnect"`
+	Maintenance MaintenanceConfig `yaml:"maintenance"`
+	Log         LogConfig         `yaml:"log"`
 }
 
 // ProfileBinding describes one server profile the client wants to participate
@@ -94,16 +95,39 @@ type rawReconnectConfig struct {
 	MaxDelay     string `yaml:"max_delay"`
 }
 
+// MaintenanceConfig controls client-side background maintenance tasks.
+type MaintenanceConfig struct {
+	CLIUpgrade CLIUpgradeConfig `yaml:"cli_upgrade"`
+}
+
+// CLIUpgradeConfig controls periodic official CLI package upgrades.
+type CLIUpgradeConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	InitialDelay time.Duration `yaml:"-"`
+	Interval     time.Duration `yaml:"-"`
+}
+
+type rawMaintenanceConfig struct {
+	CLIUpgrade rawCLIUpgradeConfig `yaml:"cli_upgrade"`
+}
+
+type rawCLIUpgradeConfig struct {
+	Enabled      *bool  `yaml:"enabled"`
+	InitialDelay string `yaml:"initial_delay"`
+	Interval     string `yaml:"interval"`
+}
+
 type rawClientConfig struct {
-	Server    string             `yaml:"server"`
-	AuthMode  AuthMode           `yaml:"auth_mode"`
-	JWT       JWTClientConfig    `yaml:"jwt"`
-	Reverse   ReverseConfig      `yaml:"reverse"`
-	NodeID    string             `yaml:"node_id"`
-	Profiles  []ProfileBinding   `yaml:"profiles"`
-	PKI       ClientPKIPaths     `yaml:"pki"`
-	Reconnect rawReconnectConfig `yaml:"reconnect"`
-	Log       LogConfig          `yaml:"log"`
+	Server      string               `yaml:"server"`
+	AuthMode    AuthMode             `yaml:"auth_mode"`
+	JWT         JWTClientConfig      `yaml:"jwt"`
+	Reverse     ReverseConfig        `yaml:"reverse"`
+	NodeID      string               `yaml:"node_id"`
+	Profiles    []ProfileBinding     `yaml:"profiles"`
+	PKI         ClientPKIPaths       `yaml:"pki"`
+	Reconnect   rawReconnectConfig   `yaml:"reconnect"`
+	Maintenance rawMaintenanceConfig `yaml:"maintenance"`
+	Log         LogConfig            `yaml:"log"`
 }
 
 const wssScheme = "wss://"
@@ -143,6 +167,11 @@ func LoadClient(path string) (*ClientConfig, error) {
 		return nil, err
 	}
 	c.Reconnect = rec
+	maintenance, err := convertMaintenance(rc.Maintenance)
+	if err != nil {
+		return nil, err
+	}
+	c.Maintenance = maintenance
 
 	if err := validateClient(c); err != nil {
 		return nil, err
@@ -181,6 +210,40 @@ func convertReconnect(rc rawReconnectConfig) (ReconnectConfig, error) {
 	}
 	if out.MaxDelay == 0 {
 		out.MaxDelay = common.ReconnectMax
+	}
+	return out, nil
+}
+
+func convertMaintenance(rc rawMaintenanceConfig) (MaintenanceConfig, error) {
+	cli, err := convertCLIUpgrade(rc.CLIUpgrade)
+	if err != nil {
+		return MaintenanceConfig{}, err
+	}
+	return MaintenanceConfig{CLIUpgrade: cli}, nil
+}
+
+func convertCLIUpgrade(rc rawCLIUpgradeConfig) (CLIUpgradeConfig, error) {
+	out := CLIUpgradeConfig{
+		Enabled:      true,
+		InitialDelay: 10 * time.Minute,
+		Interval:     24 * time.Hour,
+	}
+	if rc.Enabled != nil {
+		out.Enabled = *rc.Enabled
+	}
+	parsed, err := parseDurOrZero(rc.InitialDelay, "maintenance.cli_upgrade.initial_delay")
+	if err != nil {
+		return out, err
+	}
+	if parsed > 0 {
+		out.InitialDelay = parsed
+	}
+	parsed, err = parseDurOrZero(rc.Interval, "maintenance.cli_upgrade.interval")
+	if err != nil {
+		return out, err
+	}
+	if parsed > 0 {
+		out.Interval = parsed
 	}
 	return out, nil
 }
