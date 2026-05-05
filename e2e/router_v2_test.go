@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providershim"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
@@ -75,6 +76,13 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	if node.HostName != "providersim-host" {
 		t.Fatalf("unexpected node snapshot: %#v", node)
 	}
+	sim.SetAuthStatus(provider.AuthRefreshSoon)
+	waitForV2ProviderAuth(t, client, server.URL, registration.Identity.ProviderInstanceID, provider.AuthRefreshSoon)
+	refresh := requestV2AuthRefresh(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	if !refresh.OK || refresh.Auth.Status != provider.AuthHealthy {
+		t.Fatalf("unexpected auth refresh result: %#v", refresh)
+	}
+	waitForV2ProviderAuth(t, client, server.URL, registration.Identity.ProviderInstanceID, provider.AuthHealthy)
 	setV2QuotaLimit(t, client, server.URL, quota.Scope{APIKeyID: "req_e2e_v2_data", Model: "providersim-default"}, quota.Limit{MaxTokens: 1000, MaxRequests: 10})
 	response := waitForV2OpenAIChat(t, client, server.URL)
 	if len(response.Choices) != 1 || response.Choices[0].Message.Content != "providersim: e2e hello" {
@@ -209,6 +217,73 @@ func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, provid
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("provider %q did not register", providerInstanceID)
+}
+
+func waitForV2ProviderAuth(t *testing.T, client *http.Client, baseURL string, providerInstanceID string, status provider.AuthStatus) provider.Registration {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL + "/router/v1/providers")
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		var out struct {
+			Providers []provider.Registration `json:"providers"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode providers response: %v body=%s", err, string(data))
+		}
+		for _, registration := range out.Providers {
+			if registration.Identity.ProviderInstanceID == providerInstanceID && registration.Auth.Status == status {
+				return registration
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("provider %q auth status did not become %q: %v", providerInstanceID, status, lastErr)
+	return provider.Registration{}
+}
+
+func requestV2AuthRefresh(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) control.AuthRefreshResult {
+	t.Helper()
+	body := bytes.NewBufferString(`{"refresh_id":"refresh_e2e","reason":"e2e","timeout_seconds":2}`)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/router/v1/providers/"+providerInstanceID+"/auth/refresh", body)
+	if err != nil {
+		t.Fatalf("new auth refresh request: %v", err)
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("auth refresh request: %v", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read auth refresh response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("auth refresh status=%d body=%s", resp.StatusCode, string(data))
+	}
+	var result control.AuthRefreshResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("decode auth refresh response: %v body=%s", err, string(data))
+	}
+	return result
 }
 
 func waitForV2Node(t *testing.T, client *http.Client, baseURL string, nodeID string) v2router.NodeSnapshot {
@@ -548,6 +623,7 @@ func routerV2E2ERegistration(now time.Time) provider.Registration {
 			provider.CapabilityGeminiGenerateContent,
 			provider.CapabilityStreamSSE,
 			provider.CapabilityUsageRead,
+			provider.CapabilityAuthRefreshOneshot,
 		},
 		Models: []provider.Model{
 			{ID: "gpt-5-sim", Aliases: []string{"providersim-default"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
