@@ -1,12 +1,16 @@
 package providershim
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
 	"github.com/0xc0de1ab/pangaea/internal/router"
@@ -163,8 +167,67 @@ inventorySeen:
 	t.Fatalf("provider auth heartbeat did not update registry")
 }
 
+func TestRunSimulatorControlClientHandlesAuthRefreshRequest(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	sim.SetAuthStatus(provider.AuthRefreshSoon)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunSimulatorControlClient(ctx, ControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: 10 * time.Millisecond,
+			Simulator:         sim,
+		})
+	}()
+
+	waitForProvider(t, engine, "providersim-openai-0001")
+	body := bytes.NewBufferString(`{"refresh_id":"refresh_test","reason":"manual","timeout_seconds":2}`)
+	resp, err := http.Post(server.URL+"/router/v1/providers/providersim-openai-0001/auth/refresh", "application/json", body)
+	if err != nil {
+		t.Fatalf("post refresh: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result control.AuthRefreshResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !result.OK || result.Auth.Status != provider.AuthHealthy {
+		t.Fatalf("unexpected refresh result: %#v", result)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("control client returned error: %v", err)
+	}
+}
+
 func controlURL(serverURL string) string {
 	return "ws" + strings.TrimPrefix(serverURL, "http") + "/router/v1/control/ws"
+}
+
+func waitForProvider(t *testing.T, engine *router.Engine, providerInstanceID string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, registration := range engine.Providers() {
+			if registration.Identity.ProviderInstanceID == providerInstanceID {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("provider %s was not registered", providerInstanceID)
 }
 
 func testRouterEngine(t *testing.T) *router.Engine {

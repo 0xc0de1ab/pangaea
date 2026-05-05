@@ -615,6 +615,7 @@ func defaultRegistration(mode Mode, now time.Time) provider.Registration {
 			provider.CapabilityOpenAIChat,
 			provider.CapabilityStreamSSE,
 			provider.CapabilityUsageRead,
+			provider.CapabilityAuthRefreshOneshot,
 		},
 		Models: []provider.Model{{
 			ID: "gpt-5-sim",

@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
 	"github.com/gorilla/websocket"
 )
@@ -37,24 +39,23 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 		return err
 	}
 	defer conn.Close()
+	client := newControlClientConn(conn)
+	defer client.close()
 
 	registration, err := opts.Simulator.Registration()
 	if err != nil {
 		return err
 	}
-	if err := writeEnvelope(conn, control.MessageTypeProviderRegister, "provider_register", registration); err != nil {
+	if err := client.sendAndWaitAck(ctx, control.MessageTypeProviderRegister, "provider_register", registration); err != nil {
 		return err
 	}
-	if err := readControlOK(conn); err != nil {
+	if err := writeSimulatorInventoryReport(ctx, client, opts.Simulator, "provider_inventory_initial"); err != nil {
 		return err
 	}
-	if err := writeSimulatorInventoryReport(conn, opts.Simulator, "provider_inventory_initial"); err != nil {
+	if err := writeSimulatorAuthReport(ctx, client, opts.Simulator, "provider_auth_initial"); err != nil {
 		return err
 	}
-	if err := writeSimulatorAuthReport(conn, opts.Simulator, "provider_auth_initial"); err != nil {
-		return err
-	}
-	if err := writeSimulatorUsageReport(conn, opts.Simulator, "provider_usage_initial"); err != nil {
+	if err := writeSimulatorUsageReport(ctx, client, opts.Simulator, "provider_usage_initial"); err != nil {
 		return err
 	}
 
@@ -64,22 +65,37 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 		select {
 		case <-ctx.Done():
 			return nil
+		case err := <-client.errCh:
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		case env := <-client.incoming:
+			if err := handleSimulatorControlRequest(ctx, client, opts.Simulator, env); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
 		case <-ticker.C:
 			heartbeat := opts.Simulator.Heartbeat()
 			auth := opts.Simulator.Auth()
-			if err := writeEnvelope(conn, control.MessageTypeProviderHeartbeat, "provider_heartbeat_"+time.Now().UTC().Format("20060102150405.000000000"), control.ProviderHeartbeat{
+			if err := client.sendAndWaitAck(ctx, control.MessageTypeProviderHeartbeat, "provider_heartbeat_"+time.Now().UTC().Format("20060102150405.000000000"), control.ProviderHeartbeat{
 				ProviderInstanceID: heartbeat.Identity.ProviderInstanceID,
 				Health:             heartbeat.Health,
 				Auth:               auth.Auth,
 				Limits:             heartbeat.Limits,
 				ReportedAt:         heartbeat.ReportedAt,
 			}); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
 				return err
 			}
-			if err := readControlOK(conn); err != nil {
-				return err
-			}
-			if err := writeSimulatorUsageReport(conn, opts.Simulator, "provider_usage_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
+			if err := writeSimulatorUsageReport(ctx, client, opts.Simulator, "provider_usage_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
 				return err
 			}
 		}
@@ -95,79 +111,163 @@ func RegisterSimulatorOnce(ctx context.Context, controlURL string, sim *provider
 		return err
 	}
 	defer conn.Close()
+	client := newControlClientConn(conn)
+	defer client.close()
 
 	registration, err := sim.Registration()
 	if err != nil {
 		return err
 	}
-	if err := writeEnvelope(conn, control.MessageTypeProviderRegister, "provider_register", registration); err != nil {
-		return err
-	}
-	return readControlOK(conn)
+	return client.sendAndWaitAck(ctx, control.MessageTypeProviderRegister, "provider_register", registration)
 }
 
-func writeEnvelope(conn *websocket.Conn, messageType control.MessageType, id string, payload any) error {
+type controlClientConn struct {
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	pendingMu sync.Mutex
+	pending   map[string]chan controlAckResult
+	incoming  chan control.Envelope
+	errCh     chan error
+}
+
+type controlAckResult struct {
+	env control.Envelope
+	err error
+}
+
+func newControlClientConn(conn *websocket.Conn) *controlClientConn {
+	client := &controlClientConn{
+		conn:     conn,
+		pending:  make(map[string]chan controlAckResult),
+		incoming: make(chan control.Envelope, 16),
+		errCh:    make(chan error, 1),
+	}
+	go client.readLoop()
+	return client
+}
+
+func (c *controlClientConn) close() {
+	if c == nil || c.conn == nil {
+		return
+	}
+	_ = c.conn.Close()
+}
+
+func (c *controlClientConn) sendAndWaitAck(ctx context.Context, messageType control.MessageType, id string, payload any) error {
+	if c == nil || c.conn == nil {
+		return fmt.Errorf("%w: control connection is nil", ErrShimConfig)
+	}
+	ackCh := make(chan controlAckResult, 1)
+	c.pendingMu.Lock()
+	c.pending[id] = ackCh
+	c.pendingMu.Unlock()
+	defer c.removePending(id)
+
 	data, err := control.Marshal(messageType, id, time.Now().UTC(), payload)
 	if err != nil {
 		return err
 	}
-	return conn.WriteMessage(websocket.TextMessage, data)
-}
-
-func writeSimulatorInventoryReport(conn *websocket.Conn, sim *providersim.Simulator, id string) error {
-	registration, err := sim.Registration()
+	c.writeMu.Lock()
+	err = c.conn.WriteMessage(websocket.TextMessage, data)
+	c.writeMu.Unlock()
 	if err != nil {
 		return err
 	}
-	inventory := sim.Inventory()
-	if err := writeEnvelope(conn, control.MessageTypeProviderInventoryReport, id, control.ProviderInventoryReport{
-		Mode:       "full",
-		NodeID:     registration.Identity.NodeID,
-		HostName:   registration.Identity.HostName,
-		Providers:  []control.ProviderRegisterPayload{registration},
-		ReportedAt: inventory.ReportedAt,
-	}); err != nil {
-		return err
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case result := <-ackCh:
+		if result.err != nil {
+			return result.err
+		}
+		return decodeAckEnvelope(result.env)
 	}
-	return readControlOK(conn)
 }
 
-func writeSimulatorAuthReport(conn *websocket.Conn, sim *providersim.Simulator, id string) error {
-	auth := sim.Auth()
-	if err := writeEnvelope(conn, control.MessageTypeProviderAuthReport, id, control.ProviderAuthReport{
-		ProviderInstanceID: auth.Identity.ProviderInstanceID,
-		Auth:               auth.Auth,
-		ReportedAt:         auth.ReportedAt,
-	}); err != nil {
-		return err
+func (c *controlClientConn) readLoop() {
+	for {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
+			c.fail(err)
+			return
+		}
+		env, err := control.Unmarshal(data)
+		if err != nil {
+			c.fail(err)
+			return
+		}
+		if c.deliverAck(env) {
+			continue
+		}
+		select {
+		case c.incoming <- env:
+		default:
+			c.fail(fmt.Errorf("%w: incoming control queue full", ErrShimConfig))
+			return
+		}
 	}
-	return readControlOK(conn)
 }
 
-func writeSimulatorUsageReport(conn *websocket.Conn, sim *providersim.Simulator, id string) error {
-	usage, err := sim.Usage()
-	if err != nil {
-		return nil
+func (c *controlClientConn) deliverAck(env control.Envelope) bool {
+	var replyTo string
+	switch env.Type {
+	case control.MessageTypeAck:
+		payload, err := control.Decode[control.Ack](env, control.MessageTypeAck)
+		if err != nil {
+			c.fail(err)
+			return true
+		}
+		replyTo = payload.ReplyTo
+	case control.MessageTypeControlError:
+		payload, err := control.Decode[control.ControlError](env, control.MessageTypeControlError)
+		if err != nil {
+			c.fail(err)
+			return true
+		}
+		replyTo = payload.ReplyTo
+	default:
+		return false
 	}
-	if err := writeEnvelope(conn, control.MessageTypeProviderUsageReport, id, control.ProviderUsageReport{
-		ProviderInstanceID: usage.Identity.ProviderInstanceID,
-		Usage:              usage.Usage,
-		ReportedAt:         usage.ReportedAt,
-	}); err != nil {
-		return err
+	if replyTo == "" {
+		return false
 	}
-	return readControlOK(conn)
+	c.pendingMu.Lock()
+	ch := c.pending[replyTo]
+	c.pendingMu.Unlock()
+	if ch == nil {
+		return true
+	}
+	select {
+	case ch <- controlAckResult{env: env}:
+	default:
+	}
+	return true
 }
 
-func readControlOK(conn *websocket.Conn) error {
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		return err
+func (c *controlClientConn) fail(err error) {
+	c.pendingMu.Lock()
+	for id, ch := range c.pending {
+		select {
+		case ch <- controlAckResult{err: err}:
+		default:
+		}
+		delete(c.pending, id)
 	}
-	env, err := control.Unmarshal(data)
-	if err != nil {
-		return err
+	c.pendingMu.Unlock()
+	select {
+	case c.errCh <- err:
+	default:
 	}
+}
+
+func (c *controlClientConn) removePending(id string) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	delete(c.pending, id)
+}
+
+func decodeAckEnvelope(env control.Envelope) error {
 	if env.Type == control.MessageTypeControlError {
 		payload, err := control.Decode[control.ControlError](env, control.MessageTypeControlError)
 		if err != nil {
@@ -186,4 +286,80 @@ func readControlOK(conn *websocket.Conn) error {
 		return fmt.Errorf("%w: %s", ErrShimConfig, payload.Message)
 	}
 	return nil
+}
+
+func writeSimulatorInventoryReport(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, id string) error {
+	registration, err := sim.Registration()
+	if err != nil {
+		return err
+	}
+	inventory := sim.Inventory()
+	return client.sendAndWaitAck(ctx, control.MessageTypeProviderInventoryReport, id, control.ProviderInventoryReport{
+		Mode:       "full",
+		NodeID:     registration.Identity.NodeID,
+		HostName:   registration.Identity.HostName,
+		Providers:  []control.ProviderRegisterPayload{registration},
+		ReportedAt: inventory.ReportedAt,
+	})
+}
+
+func writeSimulatorAuthReport(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, id string) error {
+	auth := sim.Auth()
+	return client.sendAndWaitAck(ctx, control.MessageTypeProviderAuthReport, id, control.ProviderAuthReport{
+		ProviderInstanceID: auth.Identity.ProviderInstanceID,
+		Auth:               auth.Auth,
+		ReportedAt:         auth.ReportedAt,
+	})
+}
+
+func writeSimulatorUsageReport(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, id string) error {
+	usage, err := sim.Usage()
+	if err != nil {
+		return nil
+	}
+	return client.sendAndWaitAck(ctx, control.MessageTypeProviderUsageReport, id, control.ProviderUsageReport{
+		ProviderInstanceID: usage.Identity.ProviderInstanceID,
+		Usage:              usage.Usage,
+		ReportedAt:         usage.ReportedAt,
+	})
+}
+
+func handleSimulatorControlRequest(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, env control.Envelope) error {
+	switch env.Type {
+	case control.MessageTypeAuthRefreshRequest:
+		request, err := control.Decode[control.AuthRefreshRequest](env, control.MessageTypeAuthRefreshRequest)
+		if err != nil {
+			return err
+		}
+		return handleSimulatorAuthRefreshRequest(ctx, client, sim, request)
+	default:
+		return fmt.Errorf("%w: unsupported control request type %q", ErrShimConfig, env.Type)
+	}
+}
+
+func handleSimulatorAuthRefreshRequest(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, request control.AuthRefreshRequest) error {
+	registration, err := sim.Registration()
+	if err != nil {
+		return err
+	}
+	result := control.AuthRefreshResult{
+		RefreshID:          request.RefreshID,
+		ProviderInstanceID: request.ProviderInstanceID,
+		ReportedAt:         time.Now().UTC(),
+	}
+	if request.ProviderInstanceID != registration.Identity.ProviderInstanceID {
+		result.OK = false
+		result.Error = &control.ErrorPayload{Code: "provider_mismatch", Message: "refresh request provider_instance_id does not match this shim"}
+		return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
+	}
+
+	sim.SetAuthStatus(provider.AuthHealthy)
+	auth := sim.Auth()
+	result.Auth = auth.Auth
+	result.ReportedAt = auth.ReportedAt
+	result.OK = result.Auth.Status == provider.AuthHealthy
+	if !result.OK {
+		result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: "simulator auth refresh did not produce healthy auth"}
+	}
+	return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
 }
