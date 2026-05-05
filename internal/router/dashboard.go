@@ -536,8 +536,12 @@ const routerDashboardHTML = `<!doctype html>
         { label: "User", render: (r) => esc(r.user_id) },
         { label: "Status", render: (r) => statusPill(r.disabled ? "disabled" : (r.expires_at && new Date(r.expires_at) <= new Date() ? "expired" : "active")) },
         { label: "Expires", render: (r) => esc(fmtTime(r.expires_at)) },
-        { label: "Last Used", render: (r) => esc(fmtTime(r.last_used_at)) }
+        { label: "Last Used", render: (r) => esc(fmtTime(r.last_used_at)) },
+        { label: "Action", render: (r) => '<button type="button" data-api-key-delete="' + esc(r.id) + '">Delete</button>' }
       ], "No API keys configured");
+      for (const button of $("api-keys").querySelectorAll("[data-api-key-delete]")) {
+        button.addEventListener("click", deleteAPIKey);
+      }
     }
     async function createAPIKey(event) {
       event.preventDefault();
@@ -576,6 +580,25 @@ const routerDashboardHTML = `<!doctype html>
       }
       html += '</div>';
       $("api-key-result").innerHTML = html;
+    }
+    async function deleteAPIKey(event) {
+      const id = event.currentTarget.getAttribute("data-api-key-delete") || "";
+      if (!id || !window.confirm("Delete API key " + id + "?")) return;
+      try {
+        const res = await fetch(endpoints.apiKeys + "/" + encodeURIComponent(id), {
+          method: "DELETE",
+          headers: authHeaders()
+        });
+        if (res.status === 204) {
+          renderAPIKeyResult({ api_key: { id }, error: "deleted" }, res.status);
+          await refresh();
+          return;
+        }
+        const payload = await res.json().catch(() => ({}));
+        renderAPIKeyResult(payload, res.status);
+      } catch (err) {
+        renderAPIKeyResult({ error: err.message }, 0);
+      }
     }
     function renderQuotas(rows) {
       $("quotas").innerHTML = table(rows, [
