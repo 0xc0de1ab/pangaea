@@ -159,6 +159,10 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
+		if anthropicRequest.Stream {
+			writeAnthropicMessagesStream(c, response)
+			return
+		}
 		anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -667,6 +671,64 @@ func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
 	flushSSE(c)
 }
 
+func writeAnthropicMessagesStream(c *gin.Context, response compat.Response) {
+	anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache")
+	c.Header("connection", "keep-alive")
+	c.Status(http.StatusOK)
+
+	startMessage := anthropicResponse
+	startMessage.Content = []compat.AnthropicContentBlock{}
+	startMessage.StopReason = ""
+	startMessage.StopSequence = nil
+	startMessage.Usage.OutputTokens = 0
+	writeSSEEvent(c, "message_start", gin.H{
+		"type":    "message_start",
+		"message": startMessage,
+	})
+	for index, block := range anthropicResponse.Content {
+		startBlock := block
+		if startBlock.Type == "text" {
+			startBlock.Text = ""
+		}
+		writeSSEEvent(c, "content_block_start", gin.H{
+			"type":          "content_block_start",
+			"index":         index,
+			"content_block": startBlock,
+		})
+		if block.Type == "text" && block.Text != "" {
+			writeSSEEvent(c, "content_block_delta", gin.H{
+				"type":  "content_block_delta",
+				"index": index,
+				"delta": gin.H{
+					"type": "text_delta",
+					"text": block.Text,
+				},
+			})
+		}
+		writeSSEEvent(c, "content_block_stop", gin.H{
+			"type":  "content_block_stop",
+			"index": index,
+		})
+	}
+	writeSSEEvent(c, "message_delta", gin.H{
+		"type": "message_delta",
+		"delta": gin.H{
+			"stop_reason":   anthropicResponse.StopReason,
+			"stop_sequence": anthropicResponse.StopSequence,
+		},
+		"usage": gin.H{
+			"output_tokens": anthropicResponse.Usage.OutputTokens,
+		},
+	})
+	writeSSEEvent(c, "message_stop", gin.H{"type": "message_stop"})
+}
+
 func writeControlCommandError(c *gin.Context, err error) {
 	status := http.StatusConflict
 	switch {
@@ -680,6 +742,13 @@ func writeControlCommandError(c *gin.Context, err error) {
 		status = http.StatusBadRequest
 	}
 	c.JSON(status, gin.H{"error": err.Error()})
+}
+
+func writeSSEEvent(c *gin.Context, event string, payload any) {
+	_, _ = c.Writer.Write([]byte("event: "))
+	_, _ = c.Writer.Write([]byte(event))
+	_, _ = c.Writer.Write([]byte("\n"))
+	writeSSEData(c, payload)
 }
 
 func writeSSEData(c *gin.Context, payload any) {

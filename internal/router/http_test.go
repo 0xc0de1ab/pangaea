@@ -480,6 +480,43 @@ func TestHTTPAnthropicMessagesWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPAnthropicMessagesStreamsSSEWithSimulator(t *testing.T) {
+	engine, sim := testDialectEngine(t, compat.APIDialectAnthropic, provider.CapabilityAnthropicMessages, provider.ServiceAnthropic, "claude-sim", "claude-native")
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(`{
+		"model":"claude-sim",
+		"max_tokens":64,
+		"stream":true,
+		"messages":[{"role":"user","content":"hello anthropic stream"}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_anthropic_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("content-type"); got != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %q", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"event: message_start",
+		"event: content_block_delta",
+		`"type":"text_delta"`,
+		"providersim: hello anthropic stream",
+		"event: message_delta",
+		"event: message_stop",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected Anthropic stream body to contain %q, got %s", want, body)
+		}
+	}
+}
+
 func TestHTTPGeminiGenerateContentWithSimulator(t *testing.T) {
 	engine, sim := testDialectEngine(t, compat.APIDialectGemini, provider.CapabilityGeminiGenerateContent, provider.ServiceGemini, "gemini-sim", "gemini-native")
 	engine.SetInvoker(sim)
@@ -723,7 +760,7 @@ func testDialectEngine(t *testing.T, dialect compat.APIDialect, capability provi
 	reg := registration("providersim-"+string(dialect)+"-0001", "providersim-"+string(dialect), string(dialect)+"@example.test", 10, 0)
 	reg.Identity.Service = service
 	reg.Identity.Kind = provider.KindAPICompatible
-	reg.Capabilities = []provider.Capability{capability, provider.CapabilityUsageRead}
+	reg.Capabilities = []provider.Capability{capability, provider.CapabilityStreamSSE, provider.CapabilityUsageRead}
 	reg.Models = []provider.Model{{
 		ID:           canonicalModel,
 		Aliases:      []string{publicModel},
