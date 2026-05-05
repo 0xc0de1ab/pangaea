@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type Options struct {
 	BaseURL      string
 	Dialect      compat.APIDialect
 	APIKey       string
+	APIKeyFile   string
 	Headers      map[string]string
 	HTTPClient   *http.Client
 }
@@ -34,6 +36,7 @@ type Provider struct {
 	baseURL      *url.URL
 	dialect      compat.APIDialect
 	apiKey       string
+	apiKeyFile   string
 	headers      map[string]string
 	client       *http.Client
 	usageMu      sync.Mutex
@@ -65,7 +68,8 @@ func New(opts Options) (*Provider, error) {
 		registration: opts.Registration,
 		baseURL:      baseURL,
 		dialect:      opts.Dialect,
-		apiKey:       opts.APIKey,
+		apiKey:       strings.TrimSpace(opts.APIKey),
+		apiKeyFile:   strings.TrimSpace(opts.APIKeyFile),
 		headers:      cloneHeaders(opts.Headers),
 		client:       client,
 		usage: provider.UsageReport{
@@ -192,14 +196,18 @@ func (p *Provider) doJSON(ctx context.Context, method string, path string, body 
 	if err != nil {
 		return err
 	}
+	apiKey, err := p.apiKeyForRequest()
+	if err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, method, p.endpoint(path), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("accept", "application/json")
-	if p.apiKey != "" {
-		req.Header.Set("authorization", "Bearer "+p.apiKey)
+	if apiKey != "" {
+		req.Header.Set("authorization", "Bearer "+apiKey)
 	}
 	for key, value := range p.headers {
 		req.Header.Set(key, value)
@@ -223,6 +231,17 @@ func (p *Provider) doJSON(ctx context.Context, method string, path string, body 
 		return err
 	}
 	return nil
+}
+
+func (p *Provider) apiKeyForRequest() (string, error) {
+	if p.apiKeyFile == "" {
+		return p.apiKey, nil
+	}
+	data, err := os.ReadFile(p.apiKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("%w: read api key file: %v", ErrAPIProviderConfig, err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func (p *Provider) endpoint(path string) string {

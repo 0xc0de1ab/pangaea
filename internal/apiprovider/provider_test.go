@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +133,52 @@ func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	}
 }
 
+func TestProviderReloadsAPIKeyFilePerRequest(t *testing.T) {
+	authHeaders := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeaders = append(authHeaders, r.Header.Get("authorization"))
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-test",
+			Object: "chat.completion",
+			Model:  "gpt-upstream",
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "ok"},
+				FinishReason: "stop",
+			}},
+			Usage: &compat.OpenAIUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		})
+	}))
+	defer server.Close()
+
+	keyPath := filepath.Join(t.TempDir(), "api.key")
+	if err := os.WriteFile(keyPath, []byte("sk_first\n"), 0o600); err != nil {
+		t.Fatalf("write first key: %v", err)
+	}
+	client, err := New(Options{
+		Registration: testRegistration(),
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_static",
+		APIKeyFile:   keyPath,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if _, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello")); err != nil {
+		t.Fatalf("first invoke: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("sk_second\n"), 0o600); err != nil {
+		t.Fatalf("write second key: %v", err)
+	}
+	if _, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("again")); err != nil {
+		t.Fatalf("second invoke: %v", err)
+	}
+	if len(authHeaders) != 2 || authHeaders[0] != "Bearer sk_first" || authHeaders[1] != "Bearer sk_second" {
+		t.Fatalf("api key file was not reloaded per request: %#v", authHeaders)
+	}
+}
+
 func newTestProvider(t *testing.T, baseURL string, dialect compat.APIDialect, apiKey string) *Provider {
 	t.Helper()
 	client, err := New(Options{
@@ -143,6 +191,17 @@ func newTestProvider(t *testing.T, baseURL string, dialect compat.APIDialect, ap
 		t.Fatalf("new provider: %v", err)
 	}
 	return client
+}
+
+func testOpenAIRequest(text string) compat.Request {
+	return compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-upstream",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: text}},
+		}},
+	}
 }
 
 func mustRegistration(t *testing.T, client *Provider) provider.Registration {

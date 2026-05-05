@@ -30,6 +30,7 @@ type providerShimRunOptions struct {
 	UpstreamBaseURL    string
 	UpstreamDialect    string
 	UpstreamAPIKey     string
+	UpstreamAPIKeyFile string
 	Model              string
 	ModelAlias         string
 }
@@ -71,6 +72,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.UpstreamBaseURL, "upstream-base-url", "", "upstream compatible API base URL for --api-compatible")
 	cmd.Flags().StringVar(&opts.UpstreamDialect, "upstream-dialect", "openai", "upstream API dialect for --api-compatible (openai|anthropic|gemini)")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKey, "upstream-api-key", "", "upstream API key for --api-compatible")
+	cmd.Flags().StringVar(&opts.UpstreamAPIKeyFile, "upstream-api-key-file", "", "path to an upstream API key file; re-read before each upstream request")
 	cmd.Flags().StringVar(&opts.Model, "model", "", "canonical upstream model id for --api-compatible")
 	cmd.Flags().StringVar(&opts.ModelAlias, "model-alias", "", "optional public model alias for --api-compatible")
 	return cmd
@@ -173,9 +175,10 @@ func buildAPICompatibleProvider(opts providerShimRunOptions) (*apiprovider.Provi
 			Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},
 			RegisteredAt: now,
 		},
-		BaseURL: opts.UpstreamBaseURL,
-		Dialect: dialect,
-		APIKey:  opts.UpstreamAPIKey,
+		BaseURL:    opts.UpstreamBaseURL,
+		Dialect:    dialect,
+		APIKey:     opts.UpstreamAPIKey,
+		APIKeyFile: opts.UpstreamAPIKeyFile,
 	})
 }
 
