@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
@@ -24,6 +25,43 @@ func TestEngineDryRunUsesRegistry(t *testing.T) {
 	}
 	if decision.Selected == "" {
 		t.Fatalf("expected selected provider")
+	}
+}
+
+func TestEngineDryRunFiltersUnavailableDataSessions(t *testing.T) {
+	registry := provider.NewRegistry()
+	missing := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
+	available := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	if err := registry.Upsert(missing); err != nil {
+		t.Fatalf("upsert missing: %v", err)
+	}
+	if err := registry.Upsert(available); err != nil {
+		t.Fatalf("upsert available: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(availabilityInvoker{
+		available: map[string]bool{available.Identity.ProviderInstanceID: true},
+	})
+
+	decision := engine.DryRun(RouteRequest{
+		Model:      "gpt-5-codex",
+		APIDialect: compat.APIDialectOpenAI,
+		Stream:     true,
+	})
+	if !decision.Allowed || decision.Selected != available.Identity.ProviderInstanceID {
+		t.Fatalf("expected available data session selected, got %#v", decision)
+	}
+	foundMissingRejection := false
+	for _, rejection := range decision.Rejections {
+		if rejection.ProviderInstanceID == missing.Identity.ProviderInstanceID && strings.Contains(rejection.Reason, "data session disconnected") {
+			foundMissingRejection = true
+		}
+	}
+	if !foundMissingRejection {
+		t.Fatalf("expected missing data session rejection, got %#v", decision.Rejections)
 	}
 }
 
@@ -434,4 +472,16 @@ func (f missingDataSessionFallbackInvoker) Invoke(ctx context.Context, registrat
 		return compat.Response{}, ErrNoDataSession
 	}
 	return fallbackInvoker{}.Invoke(ctx, registration, request)
+}
+
+type availabilityInvoker struct {
+	available map[string]bool
+}
+
+func (i availabilityInvoker) ProviderAvailable(providerInstanceID string) bool {
+	return i.available[providerInstanceID]
+}
+
+func (i availabilityInvoker) Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error) {
+	return compat.Response{}, errors.New("invoke should not be called")
 }

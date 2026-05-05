@@ -209,7 +209,7 @@ func TestE2E_V2RouterDataPlaneFallbackWhenSelectedSessionMissing(t *testing.T) {
 	if trace.Provider == nil || trace.Provider.ProviderInstanceID != available.Identity.ProviderInstanceID {
 		t.Fatalf("trace did not record fallback provider: %#v", trace)
 	}
-	if len(trace.Decision.Rejections) == 0 || !strings.Contains(trace.Decision.Rejections[len(trace.Decision.Rejections)-1].Reason, "router data session not found") {
+	if len(trace.Decision.Rejections) == 0 || !strings.Contains(trace.Decision.Rejections[len(trace.Decision.Rejections)-1].Reason, "data session disconnected") {
 		t.Fatalf("trace did not record missing data session rejection: %#v", trace.Decision.Rejections)
 	}
 }

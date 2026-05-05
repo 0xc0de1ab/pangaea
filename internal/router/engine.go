@@ -21,6 +21,7 @@ type Engine struct {
 	registry           *provider.Registry
 	ledger             *quota.Ledger
 	invoker            Invoker
+	availability       ProviderAvailability
 	usageMu            sync.RWMutex
 	usages             map[string]ProviderUsageSnapshot
 	traceMu            sync.RWMutex
@@ -58,6 +59,10 @@ type StreamInvoker interface {
 	InvokeStream(context.Context, provider.Registration, compat.Request, func(compat.Event) error) (compat.Response, error)
 }
 
+type ProviderAvailability interface {
+	ProviderAvailable(providerInstanceID string) bool
+}
+
 type ModelInfo struct {
 	ID             string                `json:"id"`
 	CanonicalModel string                `json:"canonical_model,omitempty"`
@@ -93,13 +98,18 @@ func (e *Engine) SetInvoker(invoker Invoker) {
 		return
 	}
 	e.invoker = invoker
+	if availability, ok := invoker.(ProviderAvailability); ok {
+		e.availability = availability
+		return
+	}
+	e.availability = nil
 }
 
 func (e *Engine) DryRun(request RouteRequest) RouteDecision {
 	if e == nil || e.registry == nil {
 		return RouteDecision{Reason: ErrRouterNotReady.Error()}
 	}
-	return e.policy.Evaluate(request, e.registry.List())
+	return e.policy.Evaluate(request, e.routingRegistrations())
 }
 
 func (e *Engine) Models() []ModelInfo {
@@ -123,6 +133,23 @@ func (e *Engine) Providers() []provider.Registration {
 		return nil
 	}
 	return e.registry.List()
+}
+
+func (e *Engine) routingRegistrations() []provider.Registration {
+	registrations := e.registry.List()
+	if e.availability == nil {
+		return registrations
+	}
+	out := make([]provider.Registration, len(registrations))
+	for i, registration := range registrations {
+		if !e.availability.ProviderAvailable(registration.Identity.ProviderInstanceID) {
+			registration.Health.Status = provider.HealthDown
+			registration.Health.Reason = "data session disconnected"
+			registration.Health.CheckedAt = time.Now().UTC()
+		}
+		out[i] = registration
+	}
+	return out
 }
 
 func (e *Engine) UpsertProvider(registration provider.Registration) error {

@@ -262,7 +262,11 @@ func evaluateRegistration(candidate Candidate, constraints Constraints, required
 		return 0, "auth status not allowed: " + string(registration.Auth.Status)
 	}
 	if len(constraints.HealthState) > 0 && !hasHealthStatus(constraints.HealthState, registration.Health.Status) {
-		return 0, "health state not allowed: " + string(registration.Health.Status)
+		reason := "health state not allowed: " + string(registration.Health.Status)
+		if strings.TrimSpace(registration.Health.Reason) != "" {
+			reason += " (" + strings.TrimSpace(registration.Health.Reason) + ")"
+		}
+		return 0, reason
 	}
 	if len(constraints.ProviderKind) > 0 && !hasKind(constraints.ProviderKind, registration.Identity.Kind) {
 		return 0, "provider kind not allowed: " + string(registration.Identity.Kind)

@@ -192,6 +192,13 @@ func (b *DataBroker) session(providerInstanceID string) *dataSession {
 	return b.sessions[providerInstanceID]
 }
 
+func (b *DataBroker) ProviderAvailable(providerInstanceID string) bool {
+	if b == nil {
+		return false
+	}
+	return b.session(providerInstanceID) != nil
+}
+
 func (b *DataBroker) Sessions() []DataSessionSnapshot {
 	if b == nil {
 		return nil

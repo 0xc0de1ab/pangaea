@@ -51,6 +51,37 @@ func TestHTTPDataSessionsListsConnectedProvider(t *testing.T) {
 	}
 }
 
+func TestDataBrokerProviderAvailableTracksDataSession(t *testing.T) {
+	broker, err := NewDataBroker([]byte("test-data-availability-key"))
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{DataBroker: broker}))
+	defer server.Close()
+
+	if broker.ProviderAvailable("provider-a1") {
+		t.Fatalf("provider should not be available before data session connects")
+	}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/data/ws?provider_instance_id=provider-a1", nil)
+	if err != nil {
+		t.Fatalf("dial data ws: %v", err)
+	}
+	if !broker.ProviderAvailable("provider-a1") {
+		t.Fatalf("provider should be available after data session connects")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close data ws: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !broker.ProviderAvailable("provider-a1") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("provider should become unavailable after data session disconnects")
+}
+
 func TestHTTPDataSessionsIncludesProviderMetadata(t *testing.T) {
 	engine, _ := testEngine(t)
 	broker, err := NewDataBroker([]byte("test-data-session-metadata-key"))
