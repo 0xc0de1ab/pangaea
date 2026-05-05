@@ -153,6 +153,48 @@ func TestEngineInvokeReservesAndCommits(t *testing.T) {
 	}
 }
 
+func TestEngineInvokeRecordsRequestTrace(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.SetInvoker(fakeInvoker{})
+
+	_, _, err := engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_trace_1",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5.3-codex-spark",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	trace, ok := engine.RequestTrace("req_trace_1")
+	if !ok {
+		t.Fatalf("expected trace")
+	}
+	if trace.Status != "completed" || trace.Provider == nil || trace.Provider.ProviderInstanceID != "codex-samtest-a1" {
+		t.Fatalf("unexpected trace: %#v", trace)
+	}
+	if trace.Reservation.Status != quota.ReservationCommitted {
+		t.Fatalf("expected committed trace reservation, got %#v", trace.Reservation)
+	}
+	if trace.ActualUsage.Tokens != 3 || trace.EstimatedUsage.Tokens != 10 {
+		t.Fatalf("unexpected trace usage: %#v", trace)
+	}
+	traces := engine.RequestTraces(1)
+	if len(traces) != 1 || traces[0].RequestID != "req_trace_1" {
+		t.Fatalf("unexpected traces list: %#v", traces)
+	}
+}
+
 func testEngine(t *testing.T) (*Engine, *quota.Ledger) {
 	t.Helper()
 	registry := provider.NewRegistry()

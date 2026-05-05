@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,6 +175,34 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"usage": engine.ProviderUsages()})
+	})
+	r.GET("/router/v1/traces", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		limit := 0
+		if raw := c.Query("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a non-negative integer"})
+				return
+			}
+			limit = parsed
+		}
+		c.JSON(http.StatusOK, gin.H{"traces": engine.RequestTraces(limit)})
+	})
+	r.GET("/router/v1/traces/:request_id", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		trace, found := engine.RequestTrace(c.Param("request_id"))
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "trace not found"})
+			return
+		}
+		c.JSON(http.StatusOK, trace)
 	})
 	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine))
 	r.GET("/router/v1/data/ws", func(c *gin.Context) {

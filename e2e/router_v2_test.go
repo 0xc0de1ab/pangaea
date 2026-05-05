@@ -81,6 +81,10 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	if response.Usage == nil || response.Usage.TotalTokens == 0 {
 		t.Fatalf("expected usage in response, got %#v", response.Usage)
 	}
+	trace := waitForV2Trace(t, client, server.URL, "req_e2e_v2_data")
+	if trace.Status != "completed" || trace.Provider == nil || trace.Provider.HostName != "providersim-host" {
+		t.Fatalf("unexpected request trace: %#v", trace)
+	}
 	streamBody := waitForV2OpenAIChatStream(t, client, server.URL)
 	if !strings.Contains(streamBody, "providersim: e2e stream") || !strings.Contains(streamBody, "data: [DONE]") {
 		t.Fatalf("unexpected OpenAI stream body: %s", streamBody)
@@ -314,6 +318,38 @@ func waitForV2ProviderUsage(t *testing.T, client *http.Client, baseURL string, p
 	}
 	t.Fatalf("provider usage did not update: %v", lastErr)
 	return v2router.ProviderUsageSnapshot{}
+}
+
+func waitForV2Trace(t *testing.T, client *http.Client, baseURL string, requestID string) v2router.RequestTrace {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL + "/router/v1/traces/" + requestID)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			var trace v2router.RequestTrace
+			if err := json.Unmarshal(data, &trace); err != nil {
+				t.Fatalf("decode trace response: %v body=%s", err, string(data))
+			}
+			return trace
+		}
+		lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("request trace did not update: %v", lastErr)
+	return v2router.RequestTrace{}
 }
 
 func routerV2E2ERegistration(now time.Time) provider.Registration {

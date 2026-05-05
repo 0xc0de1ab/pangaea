@@ -22,6 +22,9 @@ type Engine struct {
 	invoker  Invoker
 	usageMu  sync.RWMutex
 	usages   map[string]ProviderUsageSnapshot
+	traceMu  sync.RWMutex
+	traces   map[string]RequestTrace
+	traceIDs []string
 }
 
 type RouteExecutionRequest struct {
@@ -56,7 +59,13 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 	if ledger == nil {
 		ledger = quota.NewLedger()
 	}
-	return &Engine{policy: policy, registry: registry, ledger: ledger, usages: make(map[string]ProviderUsageSnapshot)}, nil
+	return &Engine{
+		policy:   policy,
+		registry: registry,
+		ledger:   ledger,
+		usages:   make(map[string]ProviderUsageSnapshot),
+		traces:   make(map[string]RequestTrace),
+	}, nil
 }
 
 func (e *Engine) SetInvoker(invoker Invoker) {
@@ -261,14 +270,23 @@ func (e *Engine) Release(requestID string) (quota.Reservation, error) {
 
 func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, request compat.Request) (compat.Response, RouteExecution, error) {
 	if e == nil || e.invoker == nil {
-		return compat.Response{}, RouteExecution{}, fmt.Errorf("%w: provider invoker is nil", ErrRouterNotReady)
+		err := fmt.Errorf("%w: provider invoker is nil", ErrRouterNotReady)
+		if e != nil {
+			e.recordRequestTrace(newRequestTrace(execution, RouteExecution{}, quota.Usage{}, "failed", err, time.Now().UTC(), time.Now().UTC()))
+		}
+		return compat.Response{}, RouteExecution{}, err
 	}
+	startedAt := time.Now().UTC()
 	routeExecution, err := e.ReserveRoute(execution)
 	if err != nil {
+		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", err, startedAt, time.Now().UTC()))
 		return compat.Response{}, routeExecution, err
 	}
 	if routeExecution.Decision.SelectedProvider == nil {
-		_, _ = e.Release(execution.RequestID)
+		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+			routeExecution.Reservation = released
+		}
+		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", ErrNoProvider, startedAt, time.Now().UTC()))
 		return compat.Response{}, routeExecution, ErrNoProvider
 	}
 	if routeExecution.Decision.CanonicalModel != "" {
@@ -279,14 +297,23 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 	}
 	response, err := e.invoker.Invoke(ctx, *routeExecution.Decision.SelectedProvider, request)
 	if err != nil {
-		_, _ = e.Release(execution.RequestID)
+		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+			routeExecution.Reservation = released
+		}
+		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "provider_error", err, startedAt, time.Now().UTC()))
 		return compat.Response{}, routeExecution, err
 	}
-	if _, err := e.Commit(execution.RequestID, quota.Usage{
+	actualUsage := quota.Usage{
 		Tokens:   response.Usage.TotalTokens,
 		Requests: 1,
-	}); err != nil {
+	}
+	committed, err := e.Commit(execution.RequestID, actualUsage)
+	if err != nil {
+		e.recordRequestTrace(newRequestTrace(execution, routeExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
 		return compat.Response{}, routeExecution, err
 	}
+	traceExecution := routeExecution
+	traceExecution.Reservation = committed
+	e.recordRequestTrace(newRequestTrace(execution, traceExecution, actualUsage, "completed", nil, startedAt, time.Now().UTC()))
 	return response, routeExecution, nil
 }

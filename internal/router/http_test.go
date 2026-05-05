@@ -166,6 +166,63 @@ func TestHTTPOpenAIChatCompletionsWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPTraceAfterOpenAIChatCompletion(t *testing.T) {
+	engine, _ := testEngine(t)
+	sim, err := providersim.New(providersim.Options{
+		Registration: registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0),
+	})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model":"gpt-5-codex",
+		"messages":[{"role":"user","content":"hello trace"}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_http_trace_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/traces/req_http_trace_1", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 trace, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var trace RequestTrace
+	if err := json.Unmarshal(rec.Body.Bytes(), &trace); err != nil {
+		t.Fatalf("decode trace: %v", err)
+	}
+	if trace.Status != "completed" || trace.Provider == nil || trace.Provider.HostName != "snowbox" {
+		t.Fatalf("unexpected trace: %#v", trace)
+	}
+	if trace.ActualUsage.Tokens == 0 || trace.EstimatedUsage.Tokens == 0 {
+		t.Fatalf("expected trace usage, got %#v", trace)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/traces?limit=1", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 traces, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Traces []RequestTrace `json:"traces"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode traces: %v", err)
+	}
+	if len(out.Traces) != 1 || out.Traces[0].RequestID != "req_http_trace_1" {
+		t.Fatalf("unexpected trace list: %#v", out)
+	}
+}
+
 func TestHTTPOpenAIChatCompletionsStreamsSSEWithSimulator(t *testing.T) {
 	engine, _ := testEngine(t)
 	sim, err := providersim.New(providersim.Options{
