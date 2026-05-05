@@ -147,11 +147,16 @@ func (e *Engine) removeControlSession(session *controlSession) {
 		return
 	}
 	e.controlMu.Lock()
-	defer e.controlMu.Unlock()
+	disconnectedProviders := []string{}
 	for providerInstanceID, current := range e.controlSessions {
 		if current == session {
 			delete(e.controlSessions, providerInstanceID)
+			disconnectedProviders = append(disconnectedProviders, providerInstanceID)
 		}
+	}
+	e.controlMu.Unlock()
+	for _, providerInstanceID := range disconnectedProviders {
+		e.markProviderControlDisconnected(providerInstanceID)
 	}
 }
 
@@ -239,6 +244,20 @@ func (e *Engine) markProviderDrainState(providerInstanceID string, drain bool, r
 	registration.Health.Reason = reason
 	registration.Health.CheckedAt = time.Now().UTC()
 	return e.registry.Upsert(registration)
+}
+
+func (e *Engine) markProviderControlDisconnected(providerInstanceID string) {
+	if e == nil || e.registry == nil {
+		return
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return
+	}
+	registration.Health.Status = provider.HealthDown
+	registration.Health.Reason = "control session disconnected"
+	registration.Health.CheckedAt = time.Now().UTC()
+	_ = e.registry.Upsert(registration)
 }
 
 func newControlRequestID(prefix string, providerInstanceID string) string {

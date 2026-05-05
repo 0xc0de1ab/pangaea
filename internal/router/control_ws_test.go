@@ -34,6 +34,35 @@ func TestControlWSProviderRegisterUpdatesRegistry(t *testing.T) {
 	}
 }
 
+func TestControlWSSessionDisconnectMarksProviderDown(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close control ws: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, registration := range engine.Providers() {
+			if registration.Identity.ProviderInstanceID != "codex-control-a1" {
+				continue
+			}
+			if registration.Health.Status == provider.HealthDown {
+				if registration.Health.Reason != "control session disconnected" {
+					t.Fatalf("unexpected disconnected health reason: %#v", registration.Health)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("provider was not marked down after control session disconnect: %#v", engine.Providers())
+}
+
 func TestControlWSProviderHeartbeatUpdatesHealth(t *testing.T) {
 	engine, _ := testEngine(t)
 	conn := dialControlWS(t, engine)
