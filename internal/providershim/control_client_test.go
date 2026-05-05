@@ -16,6 +16,18 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/router"
 )
 
+type staticHealthReporterFunc func() (provider.Health, error)
+
+func (f staticHealthReporterFunc) Health() (provider.Health, error) {
+	return f()
+}
+
+type staticAuthReporterFunc func() (provider.AuthState, error)
+
+func (f staticAuthReporterFunc) Auth() (provider.AuthState, error) {
+	return f()
+}
+
 func TestRegisterSimulatorOnceRegistersProvider(t *testing.T) {
 	engine := testRouterEngine(t)
 	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
@@ -77,6 +89,66 @@ func TestRunSimulatorControlClientSendsHeartbeat(t *testing.T) {
 	}
 	cancel()
 	t.Fatalf("provider heartbeat did not update registry")
+}
+
+func TestRunStaticControlClientHeartbeatUsesDynamicReporters(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	registration, err := sim.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	healthReporter := staticHealthReporterFunc(func() (provider.Health, error) {
+		return provider.Health{
+			Status:    provider.HealthDegraded,
+			Reason:    "dynamic test health",
+			CheckedAt: time.Now().UTC(),
+		}, nil
+	})
+	authReporter := staticAuthReporterFunc(func() (provider.AuthState, error) {
+		auth := registration.Auth
+		auth.Status = provider.AuthUnavailable
+		auth.LastRefreshErr = "dynamic test auth"
+		return auth, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunStaticControlClient(ctx, StaticControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: 10 * time.Millisecond,
+			Registration:      registration,
+			HealthReporter:    healthReporter,
+			AuthReporter:      authReporter,
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, got := range engine.Providers() {
+			if got.Identity.ProviderInstanceID == registration.Identity.ProviderInstanceID &&
+				got.Health.Status == provider.HealthDegraded &&
+				got.Health.Reason == "dynamic test health" &&
+				got.Auth.Status == provider.AuthUnavailable &&
+				got.Auth.LastRefreshErr == "dynamic test auth" {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("static control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("dynamic reporter values did not update provider heartbeat")
 }
 
 func TestRunSimulatorControlClientSendsUsage(t *testing.T) {

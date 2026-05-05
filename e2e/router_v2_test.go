@@ -440,7 +440,7 @@ func TestE2E_V2APICompatibleProviderShimPropagatesUpstreamRateLimit(t *testing.T
 	go func() {
 		done <- providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
 			ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
-			HeartbeatInterval: time.Second,
+			HeartbeatInterval: 20 * time.Millisecond,
 			TokenKey:          tokenKey,
 			Provider:          apiProvider,
 		})
@@ -499,6 +499,7 @@ func TestE2E_V2APICompatibleProviderShimPropagatesUpstreamRateLimit(t *testing.T
 	if out.Code != "upstream_error" || out.UpstreamCode != "rate_limit_exceeded" || out.UpstreamStatus != http.StatusTooManyRequests || out.RetryAfter != "11" {
 		t.Fatalf("unexpected rate-limit payload: %#v body=%s", out, string(data))
 	}
+	time.Sleep(80 * time.Millisecond)
 	degraded := waitForV2ProviderHealth(t, client, server.URL, registration.Identity.ProviderInstanceID, provider.HealthDegraded)
 	if degraded.Health.Reason != "upstream rate limited" {
 		t.Fatalf("unexpected degraded provider health: %#v", degraded.Health)

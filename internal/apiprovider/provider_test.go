@@ -552,6 +552,67 @@ func TestProviderRejectsIncompleteAPIKeyAuthConfig(t *testing.T) {
 	}
 }
 
+func TestProviderTracksUpstreamRateLimitHealth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("retry-after", "12")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota exhausted","code":"rate_limit_exceeded"}}`))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	_, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello"))
+	if err == nil {
+		t.Fatalf("expected upstream rate limit error")
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusTooManyRequests || upstream.RetryAfter != "12" {
+		t.Fatalf("unexpected upstream error: %v", err)
+	}
+	health, err := client.Health()
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if health.Status != provider.HealthDegraded || health.Reason != "upstream rate limited" {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Status != provider.AuthHealthy {
+		t.Fatalf("rate limit should not mark auth unavailable: %#v", auth)
+	}
+}
+
+func TestProviderTracksUpstreamAuthFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key","code":"invalid_api_key"}}`))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	_, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello"))
+	if err == nil {
+		t.Fatalf("expected upstream auth error")
+	}
+	health, err := client.Health()
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if health.Status != provider.HealthDown || health.Reason != "upstream auth failed" {
+		t.Fatalf("unexpected health: %#v", health)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Status != provider.AuthUnavailable || !strings.Contains(auth.LastRefreshErr, "invalid_api_key") {
+		t.Fatalf("unexpected auth: %#v", auth)
+	}
+}
+
 func newTestProvider(t *testing.T, baseURL string, dialect compat.APIDialect, apiKey string) *Provider {
 	t.Helper()
 	client, err := New(Options{

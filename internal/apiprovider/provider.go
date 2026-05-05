@@ -48,6 +48,10 @@ type Provider struct {
 	client           *http.Client
 	usageMu          sync.Mutex
 	usage            provider.UsageReport
+	healthMu         sync.Mutex
+	health           provider.Health
+	authMu           sync.Mutex
+	auth             provider.AuthState
 }
 
 func New(opts Options) (*Provider, error) {
@@ -90,6 +94,8 @@ func New(opts Options) (*Provider, error) {
 			ObservedAt: time.Now().UTC(),
 			Source:     "api-compatible",
 		},
+		health: initialHealth(opts.Registration.Health),
+		auth:   opts.Registration.Auth,
 	}, nil
 }
 
@@ -113,15 +119,15 @@ func (p *Provider) Invoke(ctx context.Context, registration provider.Registratio
 	switch p.dialect {
 	case compat.APIDialectOpenAI:
 		response, err := p.invokeOpenAI(ctx, request)
-		p.recordUsage(response.Usage, err)
+		p.recordInvocationResult(response.Usage, err)
 		return response, err
 	case compat.APIDialectAnthropic:
 		response, err := p.invokeAnthropic(ctx, request)
-		p.recordUsage(response.Usage, err)
+		p.recordInvocationResult(response.Usage, err)
 		return response, err
 	case compat.APIDialectGemini:
 		response, err := p.invokeGemini(ctx, request)
-		p.recordUsage(response.Usage, err)
+		p.recordInvocationResult(response.Usage, err)
 		return response, err
 	default:
 		return compat.Response{}, fmt.Errorf("%w: unsupported dialect %q", ErrAPIProviderConfig, p.dialect)
@@ -144,15 +150,15 @@ func (p *Provider) InvokeStream(ctx context.Context, registration provider.Regis
 	switch p.dialect {
 	case compat.APIDialectOpenAI:
 		response, err := p.invokeOpenAIStream(ctx, request, emit)
-		p.recordUsage(response.Usage, err)
+		p.recordInvocationResult(response.Usage, err)
 		return response, err
 	case compat.APIDialectAnthropic:
 		response, err := p.invokeAnthropicStream(ctx, request, emit)
-		p.recordUsage(response.Usage, err)
+		p.recordInvocationResult(response.Usage, err)
 		return response, err
 	case compat.APIDialectGemini:
 		response, err := p.invokeGeminiStream(ctx, request, emit)
-		p.recordUsage(response.Usage, err)
+		p.recordInvocationResult(response.Usage, err)
 		return response, err
 	default:
 		return compat.Response{}, fmt.Errorf("%w: unsupported dialect %q", ErrAPIProviderConfig, p.dialect)
@@ -173,6 +179,35 @@ func (p *Provider) Usage() (provider.UsageReport, error) {
 		usage.Source = "api-compatible"
 	}
 	return usage, nil
+}
+
+func (p *Provider) Health() (provider.Health, error) {
+	if p == nil {
+		return provider.Health{}, ErrAPIProviderConfig
+	}
+	p.healthMu.Lock()
+	defer p.healthMu.Unlock()
+	health := p.health
+	if health.Status == "" {
+		health.Status = provider.HealthReady
+	}
+	if health.CheckedAt.IsZero() {
+		health.CheckedAt = time.Now().UTC()
+	}
+	return health, nil
+}
+
+func (p *Provider) Auth() (provider.AuthState, error) {
+	if p == nil {
+		return provider.AuthState{}, ErrAPIProviderConfig
+	}
+	p.authMu.Lock()
+	defer p.authMu.Unlock()
+	auth := p.auth
+	if auth.Status == "" {
+		auth.Status = provider.AuthHealthy
+	}
+	return auth, nil
 }
 
 func (p *Provider) invokeOpenAI(ctx context.Context, request compat.Request) (compat.Response, error) {
@@ -890,6 +925,22 @@ func cloneHeaders(in map[string]string) map[string]string {
 	return out
 }
 
+func initialHealth(health provider.Health) provider.Health {
+	if health.Status == "" {
+		health.Status = provider.HealthReady
+	}
+	if health.CheckedAt.IsZero() {
+		health.CheckedAt = time.Now().UTC()
+	}
+	return health
+}
+
+func (p *Provider) recordInvocationResult(usage compat.Usage, invokeErr error) {
+	p.recordUsage(usage, invokeErr)
+	p.recordHealth(invokeErr)
+	p.recordAuth(invokeErr)
+}
+
 func (p *Provider) recordUsage(usage compat.Usage, invokeErr error) {
 	if p == nil || invokeErr != nil {
 		return
@@ -908,6 +959,70 @@ func (p *Provider) recordUsage(usage compat.Usage, invokeErr error) {
 	}
 	p.usage.TotalTokens += total
 	p.usage.ObservedAt = time.Now().UTC()
+}
+
+func (p *Provider) recordHealth(invokeErr error) {
+	if p == nil {
+		return
+	}
+	now := time.Now().UTC()
+	health := provider.Health{Status: provider.HealthReady, CheckedAt: now}
+	if invokeErr != nil {
+		if errors.Is(invokeErr, context.Canceled) || errors.Is(invokeErr, context.DeadlineExceeded) {
+			return
+		}
+		var upstream *provider.UpstreamError
+		if errors.As(invokeErr, &upstream) {
+			switch upstream.StatusCode {
+			case http.StatusUnauthorized, http.StatusForbidden:
+				health.Status = provider.HealthDown
+				health.Reason = "upstream auth failed"
+			case http.StatusTooManyRequests:
+				health.Status = provider.HealthDegraded
+				health.Reason = "upstream rate limited"
+			default:
+				health.Status = provider.HealthDegraded
+				health.Reason = "upstream request failed"
+			}
+		} else {
+			health.Status = provider.HealthDegraded
+			health.Reason = "provider invoke failed"
+		}
+	}
+	p.healthMu.Lock()
+	defer p.healthMu.Unlock()
+	p.health = health
+}
+
+func (p *Provider) recordAuth(invokeErr error) {
+	if p == nil || p.registration.Identity.Kind != provider.KindAPICompatible {
+		return
+	}
+	if invokeErr == nil {
+		p.authMu.Lock()
+		defer p.authMu.Unlock()
+		auth := p.auth
+		auth.Status = provider.AuthHealthy
+		auth.LastRefreshErr = ""
+		p.auth = auth
+		return
+	}
+	if errors.Is(invokeErr, context.Canceled) || errors.Is(invokeErr, context.DeadlineExceeded) {
+		return
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(invokeErr, &upstream) {
+		return
+	}
+	if upstream.StatusCode != http.StatusUnauthorized && upstream.StatusCode != http.StatusForbidden {
+		return
+	}
+	p.authMu.Lock()
+	defer p.authMu.Unlock()
+	auth := p.auth
+	auth.Status = provider.AuthUnavailable
+	auth.LastRefreshErr = upstream.Error()
+	p.auth = auth
 }
 
 func emitEventsFromResponse(response compat.Response, emit func(compat.Event) error) error {

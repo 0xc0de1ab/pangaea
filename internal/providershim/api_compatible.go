@@ -44,12 +44,24 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 	}
 
 	eg, ctx := errgroup.WithContext(ctx)
+	var dynamicHealth healthReporter
+	if reporter, ok := any(opts.Provider).(healthReporter); ok {
+		dynamicHealth = reporter
+	}
+	var dynamicAuth authReporter
+	if registration.Identity.Kind == provider.KindAPICompatible {
+		if reporter, ok := any(opts.Provider).(authReporter); ok {
+			dynamicAuth = reporter
+		}
+	}
 	eg.Go(func() error {
 		return RunStaticControlClient(ctx, StaticControlClientOptions{
 			ControlURL:           opts.ControlURL,
 			HeartbeatInterval:    opts.HeartbeatInterval,
 			Registration:         registration,
 			UsageReporter:        opts.Provider,
+			HealthReporter:       dynamicHealth,
+			AuthReporter:         dynamicAuth,
 			AuthRefresher:        opts.AuthRefresher,
 			AutoRefreshThreshold: opts.AutoRefreshThreshold,
 			AutoRefreshCooldown:  opts.AutoRefreshCooldown,
@@ -70,6 +82,8 @@ type StaticControlClientOptions struct {
 	HeartbeatInterval    time.Duration
 	Registration         provider.Registration
 	UsageReporter        usageReporter
+	HealthReporter       healthReporter
+	AuthReporter         authReporter
 	AuthRefresher        AuthRefresher
 	AutoRefreshThreshold time.Duration
 	AutoRefreshCooldown  time.Duration
@@ -77,6 +91,14 @@ type StaticControlClientOptions struct {
 
 type usageReporter interface {
 	Usage() (provider.UsageReport, error)
+}
+
+type healthReporter interface {
+	Health() (provider.Health, error)
+}
+
+type authReporter interface {
+	Auth() (provider.AuthState, error)
 }
 
 func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions) error {
@@ -131,7 +153,7 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 				return err
 			}
 		case <-ticker.C:
-			if err := writeStaticHeartbeat(ctx, client, state, "provider_heartbeat_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
+			if err := writeStaticHeartbeat(ctx, client, state, opts.HealthReporter, opts.AuthReporter, "provider_heartbeat_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
@@ -192,6 +214,32 @@ func (s *staticControlState) setAuth(auth provider.AuthState) provider.Registrat
 	return s.registration
 }
 
+func (s *staticControlState) setHealthFromReporter(health provider.Health) provider.Registration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if health.Status == "" {
+		return s.registration
+	}
+	if s.registration.Health.Status == provider.HealthDraining {
+		return s.registration
+	}
+	s.registration.Health = health
+	return s.registration
+}
+
+func (s *staticControlState) setAuthFromReporter(auth provider.AuthState) provider.Registration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if auth.Status == "" {
+		return s.registration
+	}
+	if s.registration.Auth.Status == provider.AuthRefreshing {
+		return s.registration
+	}
+	s.registration.Auth = auth
+	return s.registration
+}
+
 func (s *staticControlState) claimAutoRefresh(now time.Time, cooldown time.Duration) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -223,7 +271,17 @@ func writeStaticAuthReport(ctx context.Context, client *controlClientConn, state
 	})
 }
 
-func writeStaticHeartbeat(ctx context.Context, client *controlClientConn, state *staticControlState, id string) error {
+func writeStaticHeartbeat(ctx context.Context, client *controlClientConn, state *staticControlState, healthReporter healthReporter, authReporter authReporter, id string) error {
+	if healthReporter != nil {
+		if health, err := healthReporter.Health(); err == nil {
+			state.setHealthFromReporter(health)
+		}
+	}
+	if authReporter != nil {
+		if auth, err := authReporter.Auth(); err == nil {
+			state.setAuthFromReporter(auth)
+		}
+	}
 	registration := state.registrationSnapshot()
 	return client.sendAndWaitAck(ctx, control.MessageTypeProviderHeartbeat, id, control.ProviderHeartbeat{
 		ProviderInstanceID: registration.Identity.ProviderInstanceID,
