@@ -420,6 +420,114 @@ func TestEngineInvokeMarksMissingDataSessionProviderDown(t *testing.T) {
 	}
 }
 
+func TestEngineInvokeMarksUpstreamAuthFailureUnavailable(t *testing.T) {
+	registry := provider.NewRegistry()
+	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
+	second := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	if err := registry.Upsert(first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	if err := registry.Upsert(second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(upstreamErrorFallbackInvoker{
+		failProviderInstanceID: first.Identity.ProviderInstanceID,
+		err: &provider.UpstreamError{
+			StatusCode: 401,
+			Code:       "invalid_api_key",
+			Message:    "upstream rejected provider auth",
+		},
+	})
+
+	_, execution, err := engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_upstream_auth_1",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5.3-codex-spark",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if execution.Decision.Selected != second.Identity.ProviderInstanceID {
+		t.Fatalf("expected fallback provider selected, got %#v", execution.Decision)
+	}
+	updated, ok := registry.Get(first.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("missing first provider")
+	}
+	if updated.Auth.Status != provider.AuthUnavailable || !strings.Contains(updated.Auth.LastRefreshErr, "invalid_api_key") {
+		t.Fatalf("upstream auth failure did not update provider auth: %#v", updated.Auth)
+	}
+	if updated.Health.Status != provider.HealthDown || updated.Health.Reason != "upstream auth failed" {
+		t.Fatalf("upstream auth failure did not update provider health: %#v", updated.Health)
+	}
+}
+
+func TestEngineInvokeMarksUpstreamRateLimitDegraded(t *testing.T) {
+	registry := provider.NewRegistry()
+	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
+	second := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	if err := registry.Upsert(first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	if err := registry.Upsert(second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(upstreamErrorFallbackInvoker{
+		failProviderInstanceID: first.Identity.ProviderInstanceID,
+		err: &provider.UpstreamError{
+			StatusCode: 429,
+			Code:       "rate_limit_exceeded",
+			Message:    "upstream rate limited",
+		},
+	})
+
+	_, _, err = engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_upstream_rate_1",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5.3-codex-spark",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	updated, ok := registry.Get(first.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("missing first provider")
+	}
+	if updated.Health.Status != provider.HealthDegraded || updated.Health.Reason != "upstream rate limited" {
+		t.Fatalf("upstream rate limit did not degrade provider health: %#v", updated.Health)
+	}
+}
+
 func testEngine(t *testing.T) (*Engine, *quota.Ledger) {
 	t.Helper()
 	registry := provider.NewRegistry()
@@ -511,6 +619,18 @@ type missingDataSessionFallbackInvoker struct {
 func (f missingDataSessionFallbackInvoker) Invoke(ctx context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
 	if registration.Identity.ProviderInstanceID == f.failProviderInstanceID {
 		return compat.Response{}, ErrNoDataSession
+	}
+	return fallbackInvoker{}.Invoke(ctx, registration, request)
+}
+
+type upstreamErrorFallbackInvoker struct {
+	failProviderInstanceID string
+	err                    error
+}
+
+func (f upstreamErrorFallbackInvoker) Invoke(ctx context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
+	if registration.Identity.ProviderInstanceID == f.failProviderInstanceID {
+		return compat.Response{}, f.err
 	}
 	return fallbackInvoker{}.Invoke(ctx, registration, request)
 }

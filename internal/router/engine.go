@@ -573,15 +573,35 @@ func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID strin
 	if e == nil || e.registry == nil || err == nil {
 		return
 	}
-	if !errors.Is(err, ErrNoDataSession) {
-		return
-	}
 	registration, ok := e.registry.Get(providerInstanceID)
 	if !ok {
 		return
 	}
-	registration.Health.Status = provider.HealthDown
-	registration.Health.Reason = "data session disconnected"
-	registration.Health.CheckedAt = time.Now().UTC()
+	if errors.Is(err, ErrNoDataSession) {
+		registration.Health.Status = provider.HealthDown
+		registration.Health.Reason = "data session disconnected"
+		registration.Health.CheckedAt = time.Now().UTC()
+		_ = e.registry.Upsert(registration)
+		return
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) {
+		return
+	}
+	now := time.Now().UTC()
+	switch upstream.StatusCode {
+	case 401, 403:
+		registration.Auth.Status = provider.AuthUnavailable
+		registration.Auth.LastRefreshErr = upstream.Error()
+		registration.Health.Status = provider.HealthDown
+		registration.Health.Reason = "upstream auth failed"
+	case 429:
+		registration.Health.Status = provider.HealthDegraded
+		registration.Health.Reason = "upstream rate limited"
+	default:
+		registration.Health.Status = provider.HealthDegraded
+		registration.Health.Reason = "upstream request failed"
+	}
+	registration.Health.CheckedAt = now
 	_ = e.registry.Upsert(registration)
 }
