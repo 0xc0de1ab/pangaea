@@ -169,3 +169,37 @@ func TestHTTPProviderDrainRoutesCommandToControlSession(t *testing.T) {
 	}
 	t.Fatalf("registered provider missing")
 }
+
+func TestHTTPControlSessionsListsBoundProviderSession(t *testing.T) {
+	engine, _ := testEngine(t)
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/control/ws", nil)
+	if err != nil {
+		t.Fatalf("dial control ws: %v", err)
+	}
+	defer conn.Close()
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+
+	resp, err := http.Get(server.URL + "/router/v1/control/sessions")
+	if err != nil {
+		t.Fatalf("get control sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out struct {
+		Sessions []ControlSessionSnapshot `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	if len(out.Sessions) != 1 || out.Sessions[0].ProviderInstanceID != "codex-control-a1" || out.Sessions[0].HostName != "snowbox" {
+		t.Fatalf("unexpected control sessions: %#v", out.Sessions)
+	}
+}

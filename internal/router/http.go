@@ -255,6 +255,13 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		c.JSON(http.StatusOK, gin.H{"containers": engine.Containers()})
 	})
+	r.GET("/router/v1/control/sessions", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"sessions": engine.ControlSessions()})
+	})
 	r.GET("/router/v1/usage/providers", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
 		if !ok {

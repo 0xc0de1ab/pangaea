@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,12 +17,23 @@ import (
 var ErrProviderControlSessionNotFound = errors.New("provider control session not found")
 
 type controlSession struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
+	conn        *websocket.Conn
+	connectedAt time.Time
+	writeMu     sync.Mutex
 }
 
 func newControlSession(conn *websocket.Conn) *controlSession {
-	return &controlSession{conn: conn}
+	return &controlSession{conn: conn, connectedAt: time.Now().UTC()}
+}
+
+type ControlSessionSnapshot struct {
+	ProviderInstanceID string           `json:"provider_instance_id"`
+	ProviderID         string           `json:"provider_id,omitempty"`
+	NodeID             string           `json:"node_id,omitempty"`
+	HostName           string           `json:"host_name,omitempty"`
+	Service            provider.Service `json:"service,omitempty"`
+	Account            provider.Account `json:"account,omitempty"`
+	ConnectedAt        time.Time        `json:"connected_at"`
 }
 
 func (s *controlSession) write(messageType control.MessageType, id string, payload any) error {
@@ -141,6 +153,43 @@ func (e *Engine) removeControlSession(session *controlSession) {
 			delete(e.controlSessions, providerInstanceID)
 		}
 	}
+}
+
+func (e *Engine) ControlSessions() []ControlSessionSnapshot {
+	if e == nil {
+		return nil
+	}
+	e.controlMu.RLock()
+	sessions := make(map[string]*controlSession, len(e.controlSessions))
+	for providerInstanceID, session := range e.controlSessions {
+		sessions[providerInstanceID] = session
+	}
+	e.controlMu.RUnlock()
+
+	out := make([]ControlSessionSnapshot, 0, len(sessions))
+	for providerInstanceID, session := range sessions {
+		snapshot := ControlSessionSnapshot{
+			ProviderInstanceID: providerInstanceID,
+			ConnectedAt:        session.connectedAt,
+		}
+		if e.registry != nil {
+			if registration, ok := e.registry.Get(providerInstanceID); ok {
+				snapshot.ProviderID = registration.Identity.ProviderID
+				snapshot.NodeID = registration.Identity.NodeID
+				snapshot.HostName = registration.Identity.HostName
+				snapshot.Service = registration.Identity.Service
+				snapshot.Account = registration.Identity.Account
+			}
+		}
+		out = append(out, snapshot)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].HostName != out[j].HostName {
+			return out[i].HostName < out[j].HostName
+		}
+		return out[i].ProviderInstanceID < out[j].ProviderInstanceID
+	})
+	return out
 }
 
 func (e *Engine) completeAuthRefreshResult(result control.AuthRefreshResult) {
