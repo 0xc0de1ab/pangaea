@@ -7,6 +7,8 @@ VERSION ?= $(shell ./scripts/version.sh "$(VERSION_BASE)")
 GO_PKG         ?= ./cmd/pangaeactl
 APP_NAME       ?= pangaeactl
 PROVIDER_CODEX_IMAGE ?= pangaea/provider-codex:dev
+PROVIDER_GEMINI_IMAGE ?= pangaea/provider-gemini:dev
+PROVIDER_CLAUDE_IMAGE ?= pangaea/provider-claude:dev
 OS_LIST        ?= linux darwin windows
 ARCH_LIST      ?= amd64 arm64
 BUILD_VARIANTS ?= debug release
@@ -56,7 +58,7 @@ token3 = $(word 3,$(subst -, ,$(1)))
 .PHONY: all clean help \
 	$(OS_LIST) $(ARCH_LIST) $(BUILD_VARIANTS) \
 	$(OS_ARCH_PAIRS) $(OS_VARIANT_PAIRS) $(ARCH_VARIANT_PAIRS) $(FULL_KEYS) \
-	test race integration lint fmt vet tidy demo docker-provider-codex
+	test race integration lint fmt vet tidy demo docker-provider-codex docker-provider-gemini docker-provider-claude docker-providers
 
 all: $(FULL_TARGETS)
 
@@ -120,6 +122,14 @@ demo:
 docker-provider-codex:
 	docker build -f providers/codex/Dockerfile -t $(PROVIDER_CODEX_IMAGE) --build-arg VERSION=$(VERSION) .
 
+docker-provider-gemini:
+	docker build -f providers/gemini/Dockerfile -t $(PROVIDER_GEMINI_IMAGE) --build-arg VERSION=$(VERSION) .
+
+docker-provider-claude:
+	docker build -f providers/claude/Dockerfile -t $(PROVIDER_CLAUDE_IMAGE) --build-arg VERSION=$(VERSION) .
+
+docker-providers: docker-provider-codex docker-provider-gemini docker-provider-claude
+
 help:
 	@echo "Build matrix:"
 	@echo "  make all                     build every $(OS_LIST) x $(ARCH_LIST) x $(BUILD_VARIANTS)"
@@ -136,7 +146,7 @@ help:
 	@echo "Version: $(VERSION)"
 	@echo
 	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  demo"
-	@echo "Provider images: docker-provider-codex"
+	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-provider-claude  docker-providers"
 
 %:
 	@echo "Unknown target '$@'"
