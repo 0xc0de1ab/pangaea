@@ -189,7 +189,7 @@ func TestRunSimulatorControlClientHandlesAuthRefreshRequest(t *testing.T) {
 	}()
 
 	waitForProvider(t, engine, "providersim-openai-0001")
-	body := bytes.NewBufferString(`{"refresh_id":"refresh_test","reason":"manual","timeout_seconds":2}`)
+	body := bytes.NewBufferString(`{"refresh_id":"refresh_test","reason":"manual","timeout_seconds":2,"confirm":true}`)
 	resp, err := http.Post(server.URL+"/router/v1/providers/providersim-openai-0001/auth/refresh", "application/json", body)
 	if err != nil {
 		t.Fatalf("post refresh: %v", err)
@@ -233,7 +233,7 @@ func TestRunSimulatorControlClientHandlesProviderDrain(t *testing.T) {
 	}()
 
 	waitForProvider(t, engine, "providersim-openai-0001")
-	body := bytes.NewBufferString(`{"drain":true,"reason":"maintenance","timeout_seconds":1}`)
+	body := bytes.NewBufferString(`{"drain":true,"reason":"maintenance","timeout_seconds":1,"confirm":true}`)
 	resp, err := http.Post(server.URL+"/router/v1/providers/providersim-openai-0001/drain", "application/json", body)
 	if err != nil {
 		t.Fatalf("post drain: %v", err)
@@ -296,7 +296,7 @@ func TestRunStaticControlClientHandlesAuthRefreshWithRefresher(t *testing.T) {
 	}()
 
 	waitForProvider(t, engine, registration.Identity.ProviderInstanceID)
-	body := bytes.NewBufferString(`{"refresh_id":"refresh_static","reason":"manual","timeout_seconds":2}`)
+	body := bytes.NewBufferString(`{"refresh_id":"refresh_static","reason":"manual","timeout_seconds":2,"confirm":true}`)
 	resp, err := http.Post(server.URL+"/router/v1/providers/"+registration.Identity.ProviderInstanceID+"/auth/refresh", "application/json", body)
 	if err != nil {
 		t.Fatalf("post refresh: %v", err)

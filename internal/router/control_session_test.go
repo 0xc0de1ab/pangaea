@@ -32,7 +32,7 @@ func TestHTTPAuthRefreshRoutesRequestToControlSession(t *testing.T) {
 	respCh := make(chan *http.Response, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		body := bytes.NewBufferString(`{"refresh_id":"refresh_test","reason":"manual","timeout_seconds":2}`)
+		body := bytes.NewBufferString(`{"refresh_id":"refresh_test","reason":"manual","timeout_seconds":2,"confirm":true}`)
 		resp, err := http.Post(server.URL+"/router/v1/providers/codex-control-a1/auth/refresh", "application/json", body)
 		if err != nil {
 			errCh <- err
@@ -99,7 +99,7 @@ func TestHTTPAuthRefreshRoutesRequestToControlSession(t *testing.T) {
 func TestHTTPAuthRefreshWithoutControlSessionReturnsConflict(t *testing.T) {
 	engine, _ := testEngine(t)
 	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
-	body := bytes.NewBufferString(`{"timeout_seconds":1}`)
+	body := bytes.NewBufferString(`{"reason":"manual","timeout_seconds":1,"confirm":true}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-samtest-a1/auth/refresh", body)
 	req.Header.Set("content-type", "application/json")
@@ -125,7 +125,7 @@ func TestHTTPProviderDrainRoutesCommandToControlSession(t *testing.T) {
 	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
 	readControlAck(t, conn, "msg_register")
 
-	body := bytes.NewBufferString(`{"drain":true,"reason":"maintenance","timeout_seconds":1}`)
+	body := bytes.NewBufferString(`{"drain":true,"reason":"maintenance","timeout_seconds":1,"confirm":true}`)
 	resp, err := http.Post(server.URL+"/router/v1/providers/codex-control-a1/drain", "application/json", body)
 	if err != nil {
 		t.Fatalf("post drain: %v", err)

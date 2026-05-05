@@ -98,6 +98,48 @@ func TestHTTPDryRunDenied(t *testing.T) {
 	}
 }
 
+func TestHTTPControlCommandsRequireConfirmationAndReason(t *testing.T) {
+	engine, _ := testEngine(t)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "refresh requires confirm",
+			path: "/router/v1/providers/codex-samtest-a1/auth/refresh",
+			body: `{"reason":"manual"}`,
+		},
+		{
+			name: "refresh requires reason",
+			path: "/router/v1/providers/codex-samtest-a1/auth/refresh",
+			body: `{"confirm":true}`,
+		},
+		{
+			name: "drain requires confirm",
+			path: "/router/v1/providers/codex-samtest-a1/drain",
+			body: `{"drain":true,"reason":"maintenance"}`,
+		},
+		{
+			name: "drain requires reason",
+			path: "/router/v1/providers/codex-samtest-a1/drain",
+			body: `{"drain":true,"confirm":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader([]byte(tt.body)))
+			req.Header.Set("content-type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestHTTPProviders(t *testing.T) {
 	engine, _ := testEngine(t)
 	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
@@ -623,7 +665,7 @@ func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
 		t.Fatalf("expected delete 204, got %d body=%s", deleteRec.Code, deleteRec.Body.String())
 	}
 
-	refreshReq := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-samtest-a1/auth/refresh", bytes.NewReader([]byte(`{"reason":"manual test","timeout_seconds":1}`)))
+	refreshReq := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-samtest-a1/auth/refresh", bytes.NewReader([]byte(`{"reason":"manual test","timeout_seconds":1,"confirm":true}`)))
 	refreshReq.Header.Set("content-type", "application/json")
 	refreshReq.Header.Set("x-pangaea-user-id", "admin_1")
 	refreshRec := httptest.NewRecorder()

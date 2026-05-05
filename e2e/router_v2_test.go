@@ -578,7 +578,7 @@ func waitForV2ProviderAuth(t *testing.T, client *http.Client, baseURL string, pr
 
 func requestV2AuthRefresh(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) control.AuthRefreshResult {
 	t.Helper()
-	body := bytes.NewBufferString(`{"refresh_id":"refresh_e2e","reason":"e2e","timeout_seconds":2}`)
+	body := bytes.NewBufferString(`{"refresh_id":"refresh_e2e","reason":"e2e","timeout_seconds":2,"confirm":true}`)
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/router/v1/providers/"+providerInstanceID+"/auth/refresh", body)
 	if err != nil {
 		t.Fatalf("new auth refresh request: %v", err)

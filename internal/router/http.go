@@ -192,6 +192,15 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 				return
 			}
 		}
+		request.Reason = strings.TrimSpace(request.Reason)
+		if !request.Confirm {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "confirm must be true"})
+			return
+		}
+		if request.Reason == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
+			return
+		}
 		timeout := 30 * time.Second
 		if request.TimeoutSeconds < 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "timeout_seconds must be non-negative"})
@@ -249,6 +258,15 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		var request providerDrainHTTPRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		request.Reason = strings.TrimSpace(request.Reason)
+		if !request.Confirm {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "confirm must be true"})
+			return
+		}
+		if request.Reason == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
 			return
 		}
 		timeout := 5 * time.Second
@@ -578,12 +596,14 @@ type authRefreshHTTPRequest struct {
 	RefreshID      string `json:"refresh_id,omitempty"`
 	Reason         string `json:"reason,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	Confirm        bool   `json:"confirm,omitempty"`
 }
 
 type providerDrainHTTPRequest struct {
 	Drain          bool   `json:"drain"`
 	Reason         string `json:"reason,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	Confirm        bool   `json:"confirm,omitempty"`
 }
 
 type openAIChatStreamChoice struct {
