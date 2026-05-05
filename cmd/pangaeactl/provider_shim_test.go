@@ -113,6 +113,14 @@ func TestBuildAPICompatibleProvider(t *testing.T) {
 	if len(registration.Models) != 1 || registration.Models[0].Aliases[0] != "deepseek-default" {
 		t.Fatalf("unexpected model registration: %#v", registration.Models)
 	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE, provider.CapabilityUsageRead, provider.CapabilityModelsRead} {
+		if !hasCapability(registration.Capabilities, capability) {
+			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+	if !hasCapability(registration.Models[0].Capabilities, provider.CapabilityStreamSSE) {
+		t.Fatalf("model capabilities %v missing %s", registration.Models[0].Capabilities, provider.CapabilityStreamSSE)
+	}
 }
 
 func TestBuildAPICompatibleProviderRequiresFields(t *testing.T) {
@@ -174,10 +182,13 @@ func TestBuildCLIContainerProviderUsesAuthFileAndRefreshCommand(t *testing.T) {
 	if registration.Auth.Account.ID != "test-account" || registration.Auth.Account.Display != "test@example.test" {
 		t.Fatalf("unexpected auth account: %#v", registration.Auth.Account)
 	}
-	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityUsageRead, provider.CapabilityModelsRead, provider.CapabilityAuthFile, provider.CapabilityAuthRefreshOneshot} {
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE, provider.CapabilityUsageRead, provider.CapabilityModelsRead, provider.CapabilityAuthFile, provider.CapabilityAuthRefreshOneshot} {
 		if !hasCapability(registration.Capabilities, capability) {
 			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
 		}
+	}
+	if !hasCapability(registration.Models[0].Capabilities, provider.CapabilityStreamSSE) {
+		t.Fatalf("model capabilities %v missing %s", registration.Models[0].Capabilities, provider.CapabilityStreamSSE)
 	}
 }
 

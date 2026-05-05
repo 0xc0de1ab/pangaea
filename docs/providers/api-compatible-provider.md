@@ -88,6 +88,14 @@ It may:
 - normalize streaming events
 - normalize errors and usage
 
+Current implementation note:
+
+- The shim advertises `stream.sse` because router can expose public SSE
+  responses.
+- Upstream requests are still made as non-streaming JSON requests; router wraps
+  the completed normalized response into OpenAI/Anthropic/Gemini SSE shape.
+- Native upstream SSE pass-through remains a later provider-data-plane feature.
+
 ## Models
 
 Model list may come from:

@@ -329,7 +329,8 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 	if opts.ModelAlias != "" {
 		aliases = []string{opts.ModelAlias}
 	}
-	capabilities := append([]provider.Capability{capability, provider.CapabilityUsageRead, provider.CapabilityModelsRead}, extraCapabilities...)
+	capabilities := append([]provider.Capability{capability, provider.CapabilityStreamSSE, provider.CapabilityUsageRead, provider.CapabilityModelsRead}, extraCapabilities...)
+	modelCapabilities := []provider.Capability{capability, provider.CapabilityStreamSSE}
 	return apiprovider.New(apiprovider.Options{
 		Registration: provider.Registration{
 			Identity: provider.ProviderIdentity{
@@ -345,7 +346,7 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 			Models: []provider.Model{{
 				ID:           opts.Model,
 				Aliases:      aliases,
-				Capabilities: []provider.Capability{capability},
+				Capabilities: dedupeCapabilities(modelCapabilities),
 			}},
 			Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
 			Auth:         auth,

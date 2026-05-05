@@ -113,6 +113,73 @@ func TestProviderInvokeAnthropicCompatibleUpstream(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeDisablesUpstreamStreamingForWrappedSSE(t *testing.T) {
+	streamFlags := make(map[string]bool)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			var request compat.OpenAIChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode openai request: %v", err)
+			}
+			streamFlags["openai"] = request.Stream
+			_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+				ID:     "chatcmpl-test",
+				Object: "chat.completion",
+				Model:  "gpt-upstream",
+				Choices: []compat.OpenAIChatChoice{{
+					Index:        0,
+					Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "ok"},
+					FinishReason: "stop",
+				}},
+				Usage: &compat.OpenAIUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			})
+		case "/v1/messages":
+			var request compat.AnthropicMessagesRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode anthropic request: %v", err)
+			}
+			streamFlags["anthropic"] = request.Stream
+			_ = json.NewEncoder(w).Encode(compat.AnthropicMessagesResponse{
+				ID:         "msg-test",
+				Type:       "message",
+				Role:       "assistant",
+				Model:      "claude-upstream",
+				StopReason: "end_turn",
+				Content:    []compat.AnthropicContentBlock{{Type: "text", Text: "ok"}},
+				Usage:      compat.AnthropicUsage{InputTokens: 1, OutputTokens: 1},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	openai := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	openaiRequest := testOpenAIRequest("hello")
+	openaiRequest.Stream = true
+	if _, err := openai.Invoke(context.Background(), mustRegistration(t, openai), openaiRequest); err != nil {
+		t.Fatalf("invoke openai: %v", err)
+	}
+
+	anthropic := newTestProvider(t, server.URL, compat.APIDialectAnthropic, "")
+	anthropicRequest := compat.Request{
+		Dialect: compat.APIDialectAnthropic,
+		Model:   "claude-upstream",
+		Stream:  true,
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}
+	if _, err := anthropic.Invoke(context.Background(), mustRegistration(t, anthropic), anthropicRequest); err != nil {
+		t.Fatalf("invoke anthropic: %v", err)
+	}
+	if streamFlags["openai"] || streamFlags["anthropic"] {
+		t.Fatalf("api-compatible provider should request JSON upstream responses for wrapped SSE: %#v", streamFlags)
+	}
+}
+
 func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)

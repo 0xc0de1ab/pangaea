@@ -135,6 +135,7 @@ func (p *Provider) invokeOpenAI(ctx context.Context, request compat.Request) (co
 	if err != nil {
 		return compat.Response{}, err
 	}
+	upstreamRequest.Stream = false
 	var upstreamResponse compat.OpenAIChatResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/chat/completions", upstreamRequest, &upstreamResponse); err != nil {
 		return compat.Response{}, err
@@ -155,6 +156,7 @@ func (p *Provider) invokeAnthropic(ctx context.Context, request compat.Request) 
 	if err != nil {
 		return compat.Response{}, err
 	}
+	upstreamRequest.Stream = false
 	var upstreamResponse compat.AnthropicMessagesResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/messages", upstreamRequest, &upstreamResponse); err != nil {
 		return compat.Response{}, err
