@@ -26,6 +26,8 @@ func handleControlWS(engine *Engine) gin.HandlerFunc {
 			return
 		}
 		defer conn.Close()
+		session := newControlSession(conn)
+		defer engine.removeControlSession(session)
 
 		for {
 			_, data, err := conn.ReadMessage()
@@ -34,14 +36,15 @@ func handleControlWS(engine *Engine) gin.HandlerFunc {
 			}
 			env, err := control.Unmarshal(data)
 			if err != nil {
-				_ = writeControlError(conn, "invalid_envelope", err)
+				_ = writeControlError(session, "invalid_envelope", err)
 				continue
 			}
 			if err := applyControlEnvelope(engine, env); err != nil {
-				_ = writeControlError(conn, "apply_failed", err)
+				_ = writeControlError(session, "apply_failed", err)
 				continue
 			}
-			_ = writeControlAck(conn, env.ID)
+			bindControlSessionForEnvelope(engine, session, env)
+			_ = writeControlAck(session, env.ID)
 		}
 	}
 }
@@ -109,7 +112,11 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		if !result.ReportedAt.IsZero() && auth.LastRefreshAt.IsZero() {
 			auth.LastRefreshAt = result.ReportedAt
 		}
-		return engine.UpdateProviderAuth(result.ProviderInstanceID, auth)
+		if err := engine.UpdateProviderAuth(result.ProviderInstanceID, auth); err != nil {
+			return err
+		}
+		engine.completeAuthRefreshResult(result)
+		return nil
 	case control.MessageTypeNodeHello:
 		hello, err := control.Decode[control.NodeHello](env, control.MessageTypeNodeHello)
 		if err != nil {
@@ -127,7 +134,37 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 	}
 }
 
-func writeControlAck(conn *websocket.Conn, replyTo string) error {
+func bindControlSessionForEnvelope(engine *Engine, session *controlSession, env control.Envelope) {
+	switch env.Type {
+	case control.MessageTypeProviderRegister:
+		registration, err := control.Decode[control.ProviderRegisterPayload](env, control.MessageTypeProviderRegister)
+		if err == nil {
+			engine.bindProviderControlSession(registration.Identity.ProviderInstanceID, session)
+		}
+	case control.MessageTypeProviderHeartbeat:
+		heartbeat, err := control.Decode[control.ProviderHeartbeat](env, control.MessageTypeProviderHeartbeat)
+		if err == nil {
+			engine.bindProviderControlSession(heartbeat.ProviderInstanceID, session)
+		}
+	case control.MessageTypeProviderAuthReport:
+		report, err := control.Decode[control.ProviderAuthReport](env, control.MessageTypeProviderAuthReport)
+		if err == nil {
+			engine.bindProviderControlSession(report.ProviderInstanceID, session)
+		}
+	case control.MessageTypeProviderUsageReport:
+		report, err := control.Decode[control.ProviderUsageReport](env, control.MessageTypeProviderUsageReport)
+		if err == nil {
+			engine.bindProviderControlSession(report.ProviderInstanceID, session)
+		}
+	case control.MessageTypeAuthRefreshResult:
+		result, err := control.Decode[control.AuthRefreshResult](env, control.MessageTypeAuthRefreshResult)
+		if err == nil {
+			engine.bindProviderControlSession(result.ProviderInstanceID, session)
+		}
+	}
+}
+
+func writeControlAck(session *controlSession, replyTo string) error {
 	env, err := control.NewEnvelope(control.MessageTypeAck, "ack_"+replyTo, time.Now().UTC(), control.Ack{
 		ReplyTo: replyTo,
 		OK:      true,
@@ -140,10 +177,12 @@ func writeControlAck(conn *websocket.Conn, replyTo string) error {
 	if err != nil {
 		return err
 	}
-	return conn.WriteMessage(websocket.TextMessage, data)
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	return session.conn.WriteMessage(websocket.TextMessage, data)
 }
 
-func writeControlError(conn *websocket.Conn, code string, err error) error {
+func writeControlError(session *controlSession, code string, err error) error {
 	if err == nil {
 		err = errors.New("unknown error")
 	}
@@ -159,5 +198,7 @@ func writeControlError(conn *websocket.Conn, code string, err error) error {
 	if envelopeErr != nil {
 		return envelopeErr
 	}
-	return conn.WriteMessage(websocket.TextMessage, data)
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	return session.conn.WriteMessage(websocket.TextMessage, data)
 }

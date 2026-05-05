@@ -1,13 +1,17 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/quota"
 	"github.com/0xc0de1ab/pangaea/internal/security"
 	"github.com/gin-gonic/gin"
@@ -172,6 +176,39 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"providers": engine.Providers()})
+	})
+	r.POST("/router/v1/providers/:provider_instance_id/auth/refresh", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request authRefreshHTTPRequest
+		if c.Request.Body != nil && c.Request.ContentLength != 0 {
+			if err := c.ShouldBindJSON(&request); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		timeout := 30 * time.Second
+		if request.TimeoutSeconds < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "timeout_seconds must be non-negative"})
+			return
+		}
+		if request.TimeoutSeconds > 0 {
+			timeout = time.Duration(request.TimeoutSeconds) * time.Second
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+		defer cancel()
+		result, err := engine.RequestAuthRefresh(ctx, control.AuthRefreshRequest{
+			RefreshID:          request.RefreshID,
+			ProviderInstanceID: c.Param("provider_instance_id"),
+			Reason:             request.Reason,
+		})
+		if err != nil {
+			writeAuthRefreshError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
 	})
 	r.GET("/router/v1/nodes", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -357,6 +394,12 @@ type apiKeyCreateResponse struct {
 	RawKey string                   `json:"raw_key,omitempty"`
 }
 
+type authRefreshHTTPRequest struct {
+	RefreshID      string `json:"refresh_id,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
 type openAIChatStreamChoice struct {
 	Index        int                   `json:"index"`
 	Delta        openAIChatStreamDelta `json:"delta"`
@@ -412,6 +455,21 @@ func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
 	})
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	flushSSE(c)
+}
+
+func writeAuthRefreshError(c *gin.Context, err error) {
+	status := http.StatusConflict
+	switch {
+	case errors.Is(err, provider.ErrProviderNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, ErrProviderControlSessionNotFound):
+		status = http.StatusConflict
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		status = http.StatusGatewayTimeout
+	case errors.Is(err, control.ErrInvalidPayload):
+		status = http.StatusBadRequest
+	}
+	c.JSON(status, gin.H{"error": err.Error()})
 }
 
 func writeSSEData(c *gin.Context, payload any) {

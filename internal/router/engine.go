@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/quota"
 )
@@ -16,18 +17,21 @@ import (
 var ErrRouterNotReady = errors.New("router not ready")
 
 type Engine struct {
-	policy     RoutingPolicy
-	registry   *provider.Registry
-	ledger     *quota.Ledger
-	invoker    Invoker
-	usageMu    sync.RWMutex
-	usages     map[string]ProviderUsageSnapshot
-	traceMu    sync.RWMutex
-	traces     map[string]RequestTrace
-	traceIDs   []string
-	nodeMu     sync.RWMutex
-	nodes      map[string]NodeSnapshot
-	containers map[string]ContainerSnapshot
+	policy             RoutingPolicy
+	registry           *provider.Registry
+	ledger             *quota.Ledger
+	invoker            Invoker
+	usageMu            sync.RWMutex
+	usages             map[string]ProviderUsageSnapshot
+	traceMu            sync.RWMutex
+	traces             map[string]RequestTrace
+	traceIDs           []string
+	nodeMu             sync.RWMutex
+	nodes              map[string]NodeSnapshot
+	containers         map[string]ContainerSnapshot
+	controlMu          sync.RWMutex
+	controlSessions    map[string]*controlSession
+	pendingAuthRefresh map[string]chan control.AuthRefreshResult
 }
 
 type RouteExecutionRequest struct {
@@ -63,13 +67,15 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 		ledger = quota.NewLedger()
 	}
 	return &Engine{
-		policy:     policy,
-		registry:   registry,
-		ledger:     ledger,
-		usages:     make(map[string]ProviderUsageSnapshot),
-		traces:     make(map[string]RequestTrace),
-		nodes:      make(map[string]NodeSnapshot),
-		containers: make(map[string]ContainerSnapshot),
+		policy:             policy,
+		registry:           registry,
+		ledger:             ledger,
+		usages:             make(map[string]ProviderUsageSnapshot),
+		traces:             make(map[string]RequestTrace),
+		nodes:              make(map[string]NodeSnapshot),
+		containers:         make(map[string]ContainerSnapshot),
+		controlSessions:    make(map[string]*controlSession),
+		pendingAuthRefresh: make(map[string]chan control.AuthRefreshResult),
 	}, nil
 }
 
