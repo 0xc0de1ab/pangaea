@@ -13,15 +13,20 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var ErrInvalidAPIKey = errors.New("invalid api key")
 
 type APIKeyPrincipal struct {
-	ID       string `json:"id"`
-	Prefix   string `json:"prefix"`
-	TenantID string `json:"tenant_id,omitempty"`
-	UserID   string `json:"user_id,omitempty"`
+	ID         string    `json:"id"`
+	Prefix     string    `json:"prefix"`
+	TenantID   string    `json:"tenant_id,omitempty"`
+	UserID     string    `json:"user_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	Disabled   bool      `json:"disabled,omitempty"`
+	LastUsedAt time.Time `json:"last_used_at,omitempty"`
 }
 
 type APIKeyStore struct {
@@ -35,6 +40,16 @@ type apiKeyRecord struct {
 	digest    [sha256.Size]byte
 }
 
+type APIKeyOptions struct {
+	ID        string
+	Raw       string
+	TenantID  string
+	UserID    string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	Disabled  bool
+}
+
 func NewAPIKeyStore(pepper []byte) *APIKeyStore {
 	if len(pepper) == 0 {
 		pepper = []byte("pangaea-dev-api-key-pepper")
@@ -46,15 +61,26 @@ func NewAPIKeyStore(pepper []byte) *APIKeyStore {
 }
 
 func (s *APIKeyStore) AddRawKey(id, raw, tenantID, userID string) (APIKeyPrincipal, error) {
-	raw = strings.TrimSpace(raw)
-	if s == nil || strings.TrimSpace(id) == "" || raw == "" {
+	return s.AddRawKeyWithOptions(APIKeyOptions{ID: id, Raw: raw, TenantID: tenantID, UserID: userID})
+}
+
+func (s *APIKeyStore) AddRawKeyWithOptions(opts APIKeyOptions) (APIKeyPrincipal, error) {
+	raw := strings.TrimSpace(opts.Raw)
+	if s == nil || strings.TrimSpace(opts.ID) == "" || raw == "" {
 		return APIKeyPrincipal{}, ErrInvalidAPIKey
 	}
+	createdAt := opts.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
 	principal := APIKeyPrincipal{
-		ID:       id,
-		Prefix:   keyPrefix(raw),
-		TenantID: tenantID,
-		UserID:   userID,
+		ID:        opts.ID,
+		Prefix:    keyPrefix(raw),
+		TenantID:  opts.TenantID,
+		UserID:    opts.UserID,
+		CreatedAt: createdAt.UTC(),
+		ExpiresAt: opts.ExpiresAt.UTC(),
+		Disabled:  opts.Disabled,
 	}
 	record := apiKeyRecord{
 		principal: principal,
@@ -62,11 +88,15 @@ func (s *APIKeyStore) AddRawKey(id, raw, tenantID, userID string) (APIKeyPrincip
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.keys[id] = record
+	s.keys[opts.ID] = record
 	return principal, nil
 }
 
 func (s *APIKeyStore) CreateKey(tenantID, userID string) (string, APIKeyPrincipal, error) {
+	return s.CreateKeyWithOptions(APIKeyOptions{TenantID: tenantID, UserID: userID})
+}
+
+func (s *APIKeyStore) CreateKeyWithOptions(opts APIKeyOptions) (string, APIKeyPrincipal, error) {
 	raw, err := GenerateRawAPIKey()
 	if err != nil {
 		return "", APIKeyPrincipal{}, err
@@ -75,7 +105,9 @@ func (s *APIKeyStore) CreateKey(tenantID, userID string) (string, APIKeyPrincipa
 	if err != nil {
 		return "", APIKeyPrincipal{}, err
 	}
-	principal, err := s.AddRawKey(id, raw, tenantID, userID)
+	opts.ID = id
+	opts.Raw = raw
+	principal, err := s.AddRawKeyWithOptions(opts)
 	if err != nil {
 		return "", APIKeyPrincipal{}, err
 	}
@@ -88,10 +120,19 @@ func (s *APIKeyStore) Authenticate(raw string) (APIKeyPrincipal, bool) {
 		return APIKeyPrincipal{}, false
 	}
 	digest := s.digest(raw)
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, record := range s.keys {
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, record := range s.keys {
 		if hmac.Equal(digest[:], record.digest[:]) {
+			if record.principal.Disabled {
+				return APIKeyPrincipal{}, false
+			}
+			if !record.principal.ExpiresAt.IsZero() && !now.Before(record.principal.ExpiresAt) {
+				return APIKeyPrincipal{}, false
+			}
+			record.principal.LastUsedAt = now
+			s.keys[id] = record
 			return record.principal, true
 		}
 	}

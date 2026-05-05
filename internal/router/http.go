@@ -440,7 +440,12 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		if request.RawKey == "" {
-			raw, principal, err := opts.APIKeys.CreateKey(request.TenantID, request.UserID)
+			raw, principal, err := opts.APIKeys.CreateKeyWithOptions(security.APIKeyOptions{
+				TenantID:  request.TenantID,
+				UserID:    request.UserID,
+				ExpiresAt: request.ExpiresAt,
+				Disabled:  request.Disabled,
+			})
 			if err != nil {
 				recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
 					Type:    AuditEventAPIKeyCreate,
@@ -452,9 +457,10 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 				return
 			}
 			recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
-				Type:    AuditEventAPIKeyCreate,
-				Target:  apiKeyAuditTarget(principal),
-				Outcome: AuditOutcomeSucceeded,
+				Type:     AuditEventAPIKeyCreate,
+				Target:   apiKeyAuditTarget(principal),
+				Outcome:  AuditOutcomeSucceeded,
+				Metadata: apiKeyAuditMetadata(principal),
 			})
 			c.JSON(http.StatusCreated, apiKeyCreateResponse{APIKey: principal, RawKey: raw})
 			return
@@ -463,7 +469,14 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "id is required when raw_key is provided"})
 			return
 		}
-		principal, err := opts.APIKeys.AddRawKey(request.ID, request.RawKey, request.TenantID, request.UserID)
+		principal, err := opts.APIKeys.AddRawKeyWithOptions(security.APIKeyOptions{
+			ID:        request.ID,
+			Raw:       request.RawKey,
+			TenantID:  request.TenantID,
+			UserID:    request.UserID,
+			ExpiresAt: request.ExpiresAt,
+			Disabled:  request.Disabled,
+		})
 		if err != nil {
 			recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
 				Type:    AuditEventAPIKeyCreate,
@@ -475,9 +488,10 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
-			Type:    AuditEventAPIKeyCreate,
-			Target:  apiKeyAuditTarget(principal),
-			Outcome: AuditOutcomeSucceeded,
+			Type:     AuditEventAPIKeyCreate,
+			Target:   apiKeyAuditTarget(principal),
+			Outcome:  AuditOutcomeSucceeded,
+			Metadata: apiKeyAuditMetadata(principal),
 		})
 		c.JSON(http.StatusCreated, apiKeyCreateResponse{APIKey: principal})
 	})
@@ -547,10 +561,12 @@ type quotaLimitRequest struct {
 }
 
 type apiKeyCreateRequest struct {
-	ID       string `json:"id,omitempty"`
-	RawKey   string `json:"raw_key,omitempty"`
-	TenantID string `json:"tenant_id,omitempty"`
-	UserID   string `json:"user_id,omitempty"`
+	ID        string    `json:"id,omitempty"`
+	RawKey    string    `json:"raw_key,omitempty"`
+	TenantID  string    `json:"tenant_id,omitempty"`
+	UserID    string    `json:"user_id,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	Disabled  bool      `json:"disabled,omitempty"`
 }
 
 type apiKeyCreateResponse struct {
@@ -789,6 +805,20 @@ func apiKeyAuditTarget(principal security.APIKeyPrincipal) AuditTarget {
 		TenantID: principal.TenantID,
 		UserID:   principal.UserID,
 	}
+}
+
+func apiKeyAuditMetadata(principal security.APIKeyPrincipal) map[string]string {
+	metadata := map[string]string{}
+	if !principal.ExpiresAt.IsZero() {
+		metadata["expires_at"] = principal.ExpiresAt.Format(time.RFC3339)
+	}
+	if principal.Disabled {
+		metadata["disabled"] = "true"
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
 }
 
 func authenticatePublicRequest(c *gin.Context, store *security.APIKeyStore) (security.APIKeyPrincipal, bool) {

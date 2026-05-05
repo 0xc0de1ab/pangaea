@@ -553,6 +553,35 @@ func TestHTTPAPIKeyAdminCreatesListsAndDeletesKey(t *testing.T) {
 	}
 }
 
+func TestHTTPAPIKeyAdminCreatesDisabledKey(t *testing.T) {
+	engine, _ := testEngine(t)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+	body := []byte(`{"id":"key_disabled","raw_key":"pk_disabled_router","tenant_id":"team-a","user_id":"usr_1","disabled":true}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/router/v1/api-keys", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var created apiKeyCreateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created key: %v", err)
+	}
+	if !created.APIKey.Disabled {
+		t.Fatalf("expected disabled key principal, got %#v", created.APIKey)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("authorization", "Bearer pk_disabled_router")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected disabled key to be rejected, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
 	engine, _ := testEngine(t)
 	handler := NewHTTPHandler(HTTPOptions{Engine: engine})

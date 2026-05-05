@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAPIKeyStoreAuthenticatesRawKey(t *testing.T) {
@@ -33,6 +34,56 @@ func TestAPIKeyStoreRejectsWrongKey(t *testing.T) {
 
 	if _, ok := store.Authenticate("pk_test_wrong"); ok {
 		t.Fatalf("expected auth failure")
+	}
+}
+
+func TestAPIKeyStoreRejectsExpiredAndDisabledKeys(t *testing.T) {
+	store := NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKeyWithOptions(APIKeyOptions{
+		ID:        "key_expired",
+		Raw:       "pk_expired_123456789",
+		TenantID:  "team-a",
+		UserID:    "usr_1",
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("add expired key: %v", err)
+	}
+	if _, err := store.AddRawKeyWithOptions(APIKeyOptions{
+		ID:       "key_disabled",
+		Raw:      "pk_disabled_123456789",
+		TenantID: "team-a",
+		UserID:   "usr_1",
+		Disabled: true,
+	}); err != nil {
+		t.Fatalf("add disabled key: %v", err)
+	}
+	if _, ok := store.Authenticate("pk_expired_123456789"); ok {
+		t.Fatalf("expected expired key auth failure")
+	}
+	if _, ok := store.Authenticate("pk_disabled_123456789"); ok {
+		t.Fatalf("expected disabled key auth failure")
+	}
+}
+
+func TestAPIKeyStoreRecordsLastUsedAt(t *testing.T) {
+	store := NewAPIKeyStore([]byte("pepper"))
+	raw, principal, err := store.CreateKey("team-a", "usr_1")
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	if !principal.LastUsedAt.IsZero() {
+		t.Fatalf("new key should not have last_used_at: %#v", principal)
+	}
+	got, ok := store.Authenticate(raw)
+	if !ok {
+		t.Fatalf("expected generated key auth success")
+	}
+	if got.LastUsedAt.IsZero() {
+		t.Fatalf("expected last_used_at after auth: %#v", got)
+	}
+	listed := store.List()
+	if len(listed) != 1 || listed[0].LastUsedAt.IsZero() {
+		t.Fatalf("expected list to include last_used_at: %#v", listed)
 	}
 }
 
