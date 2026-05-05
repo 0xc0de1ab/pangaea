@@ -6,14 +6,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type CommandRunner interface {
 	Run(context.Context, string, []string, []byte) (ExecResult, error)
+}
+
+type LogCommandRunner interface {
+	RunLogs(context.Context, string, []string) (<-chan LogEvent, error)
 }
 
 type DockerRuntime struct {
@@ -234,6 +240,15 @@ func (d *DockerRuntime) Logs(ctx context.Context, id ContainerID, spec LogSpec) 
 		args = append(args, "--follow")
 	}
 	args = append(args, id.String())
+	if spec.Follow {
+		runner := d.Runner
+		if runner == nil {
+			runner = shellRunner{}
+		}
+		if logRunner, ok := runner.(LogCommandRunner); ok {
+			return logRunner.RunLogs(ctx, d.binary(), args)
+		}
+	}
 	out, err := d.run(ctx, args, nil)
 	if err != nil {
 		return nil, err
@@ -267,15 +282,18 @@ func (d *DockerRuntime) Remove(ctx context.Context, id ContainerID, opts RemoveO
 }
 
 func (d *DockerRuntime) run(ctx context.Context, args []string, stdin []byte) (ExecResult, error) {
-	binary := d.Binary
-	if binary == "" {
-		binary = "docker"
-	}
 	runner := d.Runner
 	if runner == nil {
 		runner = shellRunner{}
 	}
-	return runner.Run(ctx, binary, args, stdin)
+	return runner.Run(ctx, d.binary(), args, stdin)
+}
+
+func (d *DockerRuntime) binary() string {
+	if d == nil || d.Binary == "" {
+		return "docker"
+	}
+	return d.Binary
 }
 
 func appendResourceArgs(args []string, limits ResourceLimits) []string {
@@ -314,6 +332,45 @@ func (shellRunner) Run(ctx context.Context, binary string, args []string, stdin 
 		return result, fmt.Errorf("docker %s failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return result, nil
+}
+
+func (shellRunner) RunLogs(ctx context.Context, binary string, args []string) (<-chan LogEvent, error) {
+	cmd := exec.CommandContext(ctx, binary, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	ch := make(chan LogEvent)
+	go func() {
+		defer close(ch)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go scanLogPipe(ctx, &wg, stdout, LogStreamStdout, ch)
+		go scanLogPipe(ctx, &wg, stderr, LogStreamStderr, ch)
+		wg.Wait()
+		_ = cmd.Wait()
+	}()
+	return ch, nil
+}
+
+func scanLogPipe(ctx context.Context, wg *sync.WaitGroup, r io.Reader, stream LogStream, ch chan<- LogEvent) {
+	defer wg.Done()
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		event := LogEvent{Stream: stream, Line: append([]byte(nil), scanner.Bytes()...)}
+		select {
+		case <-ctx.Done():
+			return
+		case ch <- event:
+		}
+	}
 }
 
 type dockerStats struct {

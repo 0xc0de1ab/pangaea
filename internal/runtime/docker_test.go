@@ -28,6 +28,16 @@ func (r *recordingRunner) Run(_ context.Context, binary string, args []string, _
 	return ExecResult{ExitCode: 0, Stdout: []byte("ok\n")}, nil
 }
 
+type streamingRunner struct {
+	recordingRunner
+	logs chan LogEvent
+}
+
+func (r *streamingRunner) RunLogs(_ context.Context, binary string, args []string) (<-chan LogEvent, error) {
+	r.commands = append(r.commands, recordedCommand{binary: binary, args: append([]string(nil), args...)})
+	return r.logs, nil
+}
+
 func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string]ExecResult{
 		"create --name pangaea-codex-samtest --label pangaea.provider_id=codex-samtest --label pangaea.provider_instance_id=codex-samtest-a1 --env PANGAEA_PROVIDER_ID=codex-samtest --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea --tmpfs /run/pangaea --tmpfs /tmp --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
@@ -140,6 +150,26 @@ func TestDockerRuntimeCreateIncludesResourceLimits(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected resource arg %q in:\n%s", want, got)
 		}
+	}
+}
+
+func TestDockerRuntimeFollowLogsUsesStreamingRunner(t *testing.T) {
+	logs := make(chan LogEvent, 1)
+	logs <- LogEvent{Stream: LogStreamStdout, Line: []byte("ready")}
+	close(logs)
+	runner := &streamingRunner{logs: logs}
+	rt := &DockerRuntime{Binary: "docker", Runner: runner}
+	out, err := rt.Logs(context.Background(), "container-1", LogSpec{Tail: 10, Follow: true})
+	if err != nil {
+		t.Fatalf("logs: %v", err)
+	}
+	event, ok := <-out
+	if !ok || event.Stream != LogStreamStdout || string(event.Line) != "ready" {
+		t.Fatalf("unexpected log event: ok=%v event=%#v", ok, event)
+	}
+	got := joinedCommands(runner.commands)
+	if !strings.Contains(got, "docker logs --tail 10 --follow container-1") {
+		t.Fatalf("expected follow logs command in:\n%s", got)
 	}
 }
 
