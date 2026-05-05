@@ -151,10 +151,7 @@ func (p *Provider) InvokeStream(ctx context.Context, registration provider.Regis
 		p.recordUsage(response.Usage, err)
 		return response, err
 	case compat.APIDialectGemini:
-		response, err := p.invokeGemini(ctx, request)
-		if err == nil {
-			err = emitEventsFromResponse(response, emit)
-		}
+		response, err := p.invokeGeminiStream(ctx, request, emit)
 		p.recordUsage(response.Usage, err)
 		return response, err
 	default:
@@ -537,6 +534,110 @@ func (p *Provider) invokeGemini(ctx context.Context, request compat.Request) (co
 	return response, nil
 }
 
+func (p *Provider) invokeGeminiStream(ctx context.Context, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	upstreamRequest, err := compat.GeminiGenerateContentRequestFromCanonical(request)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	path := "/v1beta/models/" + url.PathEscape(request.Model) + ":streamGenerateContent?alt=sse"
+	resp, err := p.doRequest(ctx, http.MethodPost, path, upstreamRequest, "text/event-stream")
+	if err != nil {
+		return compat.Response{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return compat.Response{}, readErr
+		}
+		return compat.Response{}, fmt.Errorf("%w: upstream status=%d body=%s", ErrAPIProviderConfig, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	response := compat.Response{
+		ID:      request.ID,
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{Role: compat.MessageRoleAssistant},
+	}
+	started := false
+	if err := processSSEPayloads(resp.Body, func(payload string) (bool, error) {
+		return applyGeminiStreamPayload(&response, &started, payload, emit)
+	}); err != nil {
+		return compat.Response{}, err
+	}
+	if !started {
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	if response.StopReason == "" {
+		response.StopReason = "stop"
+	}
+	if err := response.Validate(); err != nil {
+		return compat.Response{}, err
+	}
+	return response, nil
+}
+
+func applyGeminiStreamPayload(response *compat.Response, started *bool, payload string, emit func(compat.Event) error) (bool, error) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" || payload == "[DONE]" {
+		return payload == "[DONE]", nil
+	}
+	var chunk compat.GeminiGenerateContentResponse
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return false, err
+	}
+	if chunk.ModelVersion != "" {
+		response.Model = chunk.ModelVersion
+	}
+	if !*started {
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
+			return false, err
+		}
+		*started = true
+	}
+	for _, candidate := range chunk.Candidates {
+		for _, part := range candidate.Content.Parts {
+			if part.Text == "" {
+				continue
+			}
+			content := compat.ContentPart{Type: compat.ContentPartText, Text: part.Text}
+			if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventContentDelta, ContentDelta: &content}); err != nil {
+				return false, err
+			}
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventContentDelta, ContentDelta: &content}); err != nil {
+				return false, err
+			}
+		}
+		if candidate.FinishReason != "" {
+			response.StopReason = geminiStopToCanonical(candidate.FinishReason)
+		}
+	}
+	if chunk.UsageMetadata != nil {
+		usage := compat.Usage{
+			InputTokens:  chunk.UsageMetadata.PromptTokenCount,
+			OutputTokens: chunk.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:  chunk.UsageMetadata.TotalTokenCount,
+		}
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+		}
+		delta := usageDifference(usage, response.Usage)
+		response.Usage = usage
+		if delta != (compat.Usage{}) {
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventUsageDelta, UsageDelta: &delta}); err != nil {
+				return false, err
+			}
+		}
+	}
+	if response.StopReason != "" {
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventDone, DoneReason: response.StopReason}); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
 func (p *Provider) doJSON(ctx context.Context, method string, path string, body any, out any) error {
 	resp, err := p.doRequest(ctx, method, path, body, "application/json")
 	if err != nil {
@@ -632,10 +733,14 @@ func (p *Provider) apiKeyForRequest() (string, error) {
 func (p *Provider) endpoint(path string, apiKey string) string {
 	u := *p.baseURL
 	basePath := strings.TrimRight(u.Path, "/")
+	pathOnly, rawQuery, hasQuery := strings.Cut(path, "?")
 	if basePath == "" {
-		u.Path = path
+		u.Path = pathOnly
 	} else {
-		u.Path = basePath + path
+		u.Path = basePath + pathOnly
+	}
+	if hasQuery {
+		u.RawQuery = rawQuery
 	}
 	if apiKey != "" && p.apiKeyMode == "query" {
 		q := u.Query()
@@ -729,6 +834,32 @@ func emitEventsFromResponse(response compat.Response, emit func(compat.Event) er
 		}
 	}
 	return nil
+}
+
+func geminiStopToCanonical(stop string) string {
+	switch strings.ToUpper(stop) {
+	case "MAX_TOKENS":
+		return "max_tokens"
+	case "SAFETY":
+		return "safety"
+	default:
+		return "stop"
+	}
+}
+
+func usageDifference(current compat.Usage, previous compat.Usage) compat.Usage {
+	return compat.Usage{
+		InputTokens:  nonNegativeDifference(current.InputTokens, previous.InputTokens),
+		OutputTokens: nonNegativeDifference(current.OutputTokens, previous.OutputTokens),
+		TotalTokens:  nonNegativeDifference(current.TotalTokens, previous.TotalTokens),
+	}
+}
+
+func nonNegativeDifference(current int64, previous int64) int64 {
+	if current <= previous {
+		return 0
+	}
+	return current - previous
 }
 
 func stringFromAny(value any) string {

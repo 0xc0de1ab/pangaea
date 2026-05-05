@@ -284,6 +284,74 @@ func TestProviderInvokeStreamAnthropicCompatibleUpstreamSSE(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeStreamGeminiCompatibleUpstreamSSE(t *testing.T) {
+	var sawSSE bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1beta/models/gemini-upstream:streamGenerateContent" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("alt") == "sse" && r.URL.Query().Get("key") == "gemini-key" && strings.Contains(r.Header.Get("accept"), "text/event-stream") {
+			sawSSE = true
+		}
+		var request compat.GeminiGenerateContentRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(request.Contents) != 1 || request.Contents[0].Role != "user" || len(request.Contents[0].Parts) != 1 || request.Contents[0].Parts[0].Text != "hello" {
+			t.Fatalf("unexpected upstream request: %#v", request)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"modelVersion\":\"gemini-upstream\",\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"gemini \"}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"modelVersion\":\"gemini-upstream\",\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"stream\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":4,\"totalTokenCount\":7}}\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := New(Options{
+		Registration:     testRegistration(),
+		BaseURL:          server.URL,
+		Dialect:          compat.APIDialectGemini,
+		APIKey:           "gemini-key",
+		APIKeyMode:       "query",
+		APIKeyQueryParam: "key",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	events := []compat.Event{}
+	request := compat.Request{
+		Dialect: compat.APIDialectGemini,
+		Model:   "gemini-upstream",
+		Stream:  true,
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}
+	response, err := client.InvokeStream(context.Background(), mustRegistration(t, client), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if !sawSSE {
+		t.Fatalf("expected Gemini upstream SSE request")
+	}
+	if response.Model != "gemini-upstream" || response.Message.Content[0].Text != "gemini stream" || response.Usage.TotalTokens != 7 || response.StopReason != "stop" {
+		t.Fatalf("unexpected stream response: %#v", response)
+	}
+	if len(events) != 5 || events[0].Type != compat.EventMessageStart || events[1].ContentDelta.Text != "gemini " || events[2].ContentDelta.Text != "stream" || events[3].UsageDelta.TotalTokens != 7 || events[4].DoneReason != "stop" {
+		t.Fatalf("unexpected stream events: %#v", events)
+	}
+	usage, err := client.Usage()
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if usage.Requests != 1 || usage.TotalTokens != 7 {
+		t.Fatalf("unexpected accumulated usage: %#v", usage)
+	}
+}
+
 func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
