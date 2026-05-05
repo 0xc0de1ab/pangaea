@@ -329,7 +329,11 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			c.JSON(http.StatusOK, gin.H{"sessions": []DataSessionSnapshot{}})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"sessions": opts.DataBroker.Sessions()})
+		sessions := opts.DataBroker.Sessions()
+		if opts.Engine != nil {
+			sessions = opts.Engine.EnrichDataSessions(sessions)
+		}
+		c.JSON(http.StatusOK, gin.H{"sessions": sessions})
 	})
 	r.GET("/router/v1/audit/events", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)

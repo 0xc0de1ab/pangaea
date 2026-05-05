@@ -34,9 +34,14 @@ type DataBroker struct {
 }
 
 type DataSessionSnapshot struct {
-	ProviderInstanceID string    `json:"provider_instance_id"`
-	ConnectedAt        time.Time `json:"connected_at"`
-	PendingRequests    int       `json:"pending_requests"`
+	ProviderInstanceID string           `json:"provider_instance_id"`
+	ProviderID         string           `json:"provider_id,omitempty"`
+	NodeID             string           `json:"node_id,omitempty"`
+	HostName           string           `json:"host_name,omitempty"`
+	Service            provider.Service `json:"service,omitempty"`
+	Account            provider.Account `json:"account,omitempty"`
+	ConnectedAt        time.Time        `json:"connected_at"`
+	PendingRequests    int              `json:"pending_requests"`
 }
 
 func NewDataBroker(tokenKey []byte) (*DataBroker, error) {
@@ -169,6 +174,26 @@ func (b *DataBroker) Sessions() []DataSessionSnapshot {
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].ProviderInstanceID < out[j].ProviderInstanceID
 	})
+	return out
+}
+
+func (e *Engine) EnrichDataSessions(sessions []DataSessionSnapshot) []DataSessionSnapshot {
+	if e == nil || e.registry == nil || len(sessions) == 0 {
+		return sessions
+	}
+	out := append([]DataSessionSnapshot(nil), sessions...)
+	for i := range out {
+		registration, ok := e.registry.Get(out[i].ProviderInstanceID)
+		if !ok {
+			continue
+		}
+		identity := registration.Identity
+		out[i].ProviderID = identity.ProviderID
+		out[i].NodeID = identity.NodeID
+		out[i].HostName = identity.HostName
+		out[i].Service = identity.Service
+		out[i].Account = identity.Account
+	}
 	return out
 }
 

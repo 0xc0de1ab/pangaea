@@ -49,6 +49,44 @@ func TestHTTPDataSessionsListsConnectedProvider(t *testing.T) {
 	}
 }
 
+func TestHTTPDataSessionsIncludesProviderMetadata(t *testing.T) {
+	engine, _ := testEngine(t)
+	broker, err := NewDataBroker([]byte("test-data-session-metadata-key"))
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{Engine: engine, DataBroker: broker}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/data/ws?provider_instance_id=codex-samtest-a1", nil)
+	if err != nil {
+		t.Fatalf("dial data ws: %v", err)
+	}
+	defer conn.Close()
+
+	resp, err := http.Get(server.URL + "/router/v1/data/sessions")
+	if err != nil {
+		t.Fatalf("get data sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out struct {
+		Sessions []DataSessionSnapshot `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	if len(out.Sessions) != 1 {
+		t.Fatalf("expected one data session, got %#v", out.Sessions)
+	}
+	got := out.Sessions[0]
+	if got.ProviderInstanceID != "codex-samtest-a1" || got.HostName != "snowbox" || got.Account.Display != "samtest4u@gmail.com" {
+		t.Fatalf("data session response lost provider metadata: %#v", got)
+	}
+}
+
 func TestHTTPDataSessionsWithoutBrokerReturnsEmptyList(t *testing.T) {
 	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{}))
 	defer server.Close()
