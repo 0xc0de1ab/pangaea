@@ -228,6 +228,62 @@ func TestProviderInvokeStreamOpenAICompatibleUpstreamSSE(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeStreamAnthropicCompatibleUpstreamSSE(t *testing.T) {
+	var sawStream bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request compat.AnthropicMessagesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		sawStream = request.Stream
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-stream\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-upstream\",\"content\":[],\"usage\":{\"input_tokens\":4}}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"anthropic \"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"stream\"}}\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":6}}\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectAnthropic, "")
+	events := []compat.Event{}
+	request := compat.Request{
+		Dialect: compat.APIDialectAnthropic,
+		Model:   "claude-upstream",
+		Stream:  true,
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}
+	response, err := client.InvokeStream(context.Background(), mustRegistration(t, client), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if !sawStream {
+		t.Fatalf("expected upstream request stream=true")
+	}
+	if response.ID != "msg-stream" || response.Model != "claude-upstream" || response.Message.Content[0].Text != "anthropic stream" || response.Usage.TotalTokens != 10 {
+		t.Fatalf("unexpected stream response: %#v", response)
+	}
+	if len(events) != 6 || events[0].Type != compat.EventMessageStart || events[2].ContentDelta.Text != "anthropic " || events[3].ContentDelta.Text != "stream" || events[4].UsageDelta.OutputTokens != 6 || events[5].DoneReason != "end_turn" {
+		t.Fatalf("unexpected stream events: %#v", events)
+	}
+}
+
 func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)

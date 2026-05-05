@@ -104,10 +104,10 @@ Current implementation note:
 
 - The shim advertises `stream.sse` because router can expose public SSE
   responses.
-- OpenAI-compatible upstreams use native SSE when router invokes the provider
-  through the streaming data plane.
-- Anthropic/Gemini-compatible upstream streaming currently falls back to a
-  completed JSON response that router wraps into public SSE shape.
+- OpenAI/Anthropic-compatible upstreams use native SSE when router invokes the
+  provider through the streaming data plane.
+- Gemini-compatible upstream streaming currently falls back to a completed JSON
+  response that router wraps into public SSE shape.
 
 ## Models
 

@@ -147,10 +147,7 @@ func (p *Provider) InvokeStream(ctx context.Context, registration provider.Regis
 		p.recordUsage(response.Usage, err)
 		return response, err
 	case compat.APIDialectAnthropic:
-		response, err := p.invokeAnthropic(ctx, request)
-		if err == nil {
-			err = emitEventsFromResponse(response, emit)
-		}
+		response, err := p.invokeAnthropicStream(ctx, request, emit)
 		p.recordUsage(response.Usage, err)
 		return response, err
 	case compat.APIDialectGemini:
@@ -252,33 +249,10 @@ func (p *Provider) invokeOpenAIStream(ctx context.Context, request compat.Reques
 		Message: compat.Message{Role: compat.MessageRoleAssistant},
 	}
 	started := false
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024), 1024*1024)
-	var dataLines []string
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
-			if len(dataLines) > 0 {
-				if done, err := applyOpenAIStreamPayload(&response, &started, strings.Join(dataLines, "\n"), emit); err != nil {
-					return compat.Response{}, err
-				} else if done {
-					break
-				}
-				dataLines = dataLines[:0]
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	if err := processSSEPayloads(resp.Body, func(payload string) (bool, error) {
+		return applyOpenAIStreamPayload(&response, &started, payload, emit)
+	}); err != nil {
 		return compat.Response{}, err
-	}
-	if len(dataLines) > 0 {
-		if _, err := applyOpenAIStreamPayload(&response, &started, strings.Join(dataLines, "\n"), emit); err != nil {
-			return compat.Response{}, err
-		}
 	}
 	if !started {
 		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
@@ -365,6 +339,158 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventDone, DoneReason: response.StopReason}); err != nil {
 			return false, err
 		}
+	}
+	return false, nil
+}
+
+type anthropicStreamDeltaPayload struct {
+	Type    string                           `json:"type"`
+	Index   int                              `json:"index,omitempty"`
+	Message compat.AnthropicMessagesResponse `json:"message,omitempty"`
+	Delta   anthropicStreamDeltaBody         `json:"delta,omitempty"`
+	Usage   compat.AnthropicUsage            `json:"usage,omitempty"`
+	Error   *anthropicStreamErrorBody        `json:"error,omitempty"`
+}
+
+type anthropicStreamDeltaBody struct {
+	Type       string `json:"type,omitempty"`
+	Text       string `json:"text,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+}
+
+type anthropicStreamErrorBody struct {
+	Type    string `json:"type,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+func (p *Provider) invokeAnthropicStream(ctx context.Context, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	upstreamRequest, err := compat.AnthropicMessagesRequestFromCanonical(request)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	upstreamRequest.Stream = true
+	resp, err := p.doRequest(ctx, http.MethodPost, "/v1/messages", upstreamRequest, "text/event-stream")
+	if err != nil {
+		return compat.Response{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return compat.Response{}, readErr
+		}
+		return compat.Response{}, fmt.Errorf("%w: upstream status=%d body=%s", ErrAPIProviderConfig, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	response := compat.Response{
+		ID:      request.ID,
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{Role: compat.MessageRoleAssistant},
+	}
+	started := false
+	if err := processSSEPayloads(resp.Body, func(payload string) (bool, error) {
+		return applyAnthropicStreamPayload(&response, &started, payload, emit)
+	}); err != nil {
+		return compat.Response{}, err
+	}
+	if !started {
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	if response.StopReason == "" {
+		response.StopReason = "end_turn"
+	}
+	if err := response.Validate(); err != nil {
+		return compat.Response{}, err
+	}
+	return response, nil
+}
+
+func applyAnthropicStreamPayload(response *compat.Response, started *bool, payload string, emit func(compat.Event) error) (bool, error) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" || payload == "[DONE]" {
+		return payload == "[DONE]", nil
+	}
+	var event anthropicStreamDeltaPayload
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return false, err
+	}
+	if event.Type == "error" && event.Error != nil {
+		errEvent := compat.Event{
+			ResponseID: response.ID,
+			Dialect:    response.Dialect,
+			Model:      response.Model,
+			Type:       compat.EventError,
+			Error:      &compat.EventErrorPayload{Message: event.Error.Message, Code: event.Error.Type},
+		}
+		if err := emit(errEvent); err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("%w: upstream stream error: %s", ErrAPIProviderConfig, event.Error.Message)
+	}
+	switch event.Type {
+	case "message_start":
+		if event.Message.ID != "" {
+			response.ID = event.Message.ID
+		}
+		if event.Message.Model != "" {
+			response.Model = event.Message.Model
+		}
+		startEvent := compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}
+		if err := emit(startEvent); err != nil {
+			return false, err
+		}
+		*started = true
+		if event.Message.Usage.InputTokens > 0 {
+			usage := compat.Usage{InputTokens: event.Message.Usage.InputTokens}
+			if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
+				return false, err
+			}
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
+				return false, err
+			}
+		}
+	case "content_block_delta":
+		if !*started {
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
+				return false, err
+			}
+			*started = true
+		}
+		if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
+			part := compat.ContentPart{Type: compat.ContentPartText, Text: event.Delta.Text}
+			if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventContentDelta, ContentDelta: &part}); err != nil {
+				return false, err
+			}
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventContentDelta, ContentDelta: &part}); err != nil {
+				return false, err
+			}
+		}
+	case "message_delta":
+		if event.Delta.StopReason != "" {
+			response.StopReason = event.Delta.StopReason
+		}
+		if event.Usage.OutputTokens > 0 {
+			usage := compat.Usage{OutputTokens: event.Usage.OutputTokens}
+			if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
+				return false, err
+			}
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
+				return false, err
+			}
+		}
+	case "message_stop":
+		if response.Usage.TotalTokens == 0 {
+			response.Usage.TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
+		}
+		if response.StopReason == "" {
+			response.StopReason = "end_turn"
+		}
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventDone, DoneReason: response.StopReason}); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	return false, nil
 }
@@ -457,6 +583,39 @@ func (p *Provider) doRequest(ctx context.Context, method string, path string, bo
 		req.Header.Set(key, value)
 	}
 	return p.client.Do(req)
+}
+
+func processSSEPayloads(body io.Reader, handle func(string) (bool, error)) error {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+	var dataLines []string
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r")
+		if line == "" {
+			if len(dataLines) > 0 {
+				done, err := handle(strings.Join(dataLines, "\n"))
+				if err != nil {
+					return err
+				}
+				if done {
+					return nil
+				}
+				dataLines = dataLines[:0]
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if len(dataLines) > 0 {
+		_, err := handle(strings.Join(dataLines, "\n"))
+		return err
+	}
+	return nil
 }
 
 func (p *Provider) apiKeyForRequest() (string, error) {
