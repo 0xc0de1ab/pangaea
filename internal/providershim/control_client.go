@@ -48,6 +48,9 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 	if err := readControlOK(conn); err != nil {
 		return err
 	}
+	if err := writeSimulatorUsageReport(conn, opts.Simulator, "provider_usage_initial"); err != nil {
+		return err
+	}
 
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
@@ -66,6 +69,9 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 				return err
 			}
 			if err := readControlOK(conn); err != nil {
+				return err
+			}
+			if err := writeSimulatorUsageReport(conn, opts.Simulator, "provider_usage_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
 				return err
 			}
 		}
@@ -98,6 +104,21 @@ func writeEnvelope(conn *websocket.Conn, messageType control.MessageType, id str
 		return err
 	}
 	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func writeSimulatorUsageReport(conn *websocket.Conn, sim *providersim.Simulator, id string) error {
+	usage, err := sim.Usage()
+	if err != nil {
+		return nil
+	}
+	if err := writeEnvelope(conn, control.MessageTypeProviderUsageReport, id, control.ProviderUsageReport{
+		ProviderInstanceID: usage.Identity.ProviderInstanceID,
+		Usage:              usage.Usage,
+		ReportedAt:         usage.ReportedAt,
+	}); err != nil {
+		return err
+	}
+	return readControlOK(conn)
 }
 
 func readControlOK(conn *websocket.Conn) error {

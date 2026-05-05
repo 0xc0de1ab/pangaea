@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
@@ -18,6 +20,8 @@ type Engine struct {
 	registry *provider.Registry
 	ledger   *quota.Ledger
 	invoker  Invoker
+	usageMu  sync.RWMutex
+	usages   map[string]ProviderUsageSnapshot
 }
 
 type RouteExecutionRequest struct {
@@ -52,7 +56,7 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 	if ledger == nil {
 		ledger = quota.NewLedger()
 	}
-	return &Engine{policy: policy, registry: registry, ledger: ledger}, nil
+	return &Engine{policy: policy, registry: registry, ledger: ledger, usages: make(map[string]ProviderUsageSnapshot)}, nil
 }
 
 func (e *Engine) SetInvoker(invoker Invoker) {
@@ -129,6 +133,90 @@ func (e *Engine) UpdateProviderAuth(providerInstanceID string, auth provider.Aut
 	}
 	registration.Auth = auth
 	return e.registry.Upsert(registration)
+}
+
+type ProviderUsageSnapshot struct {
+	ProviderInstanceID string               `json:"provider_instance_id"`
+	ProviderID         string               `json:"provider_id"`
+	NodeID             string               `json:"node_id"`
+	HostName           string               `json:"host_name"`
+	ContainerID        string               `json:"container_id,omitempty"`
+	Service            provider.Service     `json:"service"`
+	Kind               provider.Kind        `json:"kind"`
+	Account            provider.Account     `json:"account,omitempty"`
+	Usage              provider.UsageReport `json:"usage"`
+	ReportedAt         time.Time            `json:"reported_at,omitempty"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+}
+
+func (e *Engine) UpdateProviderUsage(providerInstanceID string, usage provider.UsageReport, reportedAt time.Time) error {
+	if e == nil || e.registry == nil {
+		return ErrRouterNotReady
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return provider.ErrProviderNotFound
+	}
+	now := time.Now().UTC()
+	if reportedAt.IsZero() {
+		reportedAt = usage.ObservedAt
+	}
+	if reportedAt.IsZero() {
+		reportedAt = now
+	}
+	if usage.ObservedAt.IsZero() {
+		usage.ObservedAt = reportedAt
+	}
+	identity := registration.Identity
+	snapshot := ProviderUsageSnapshot{
+		ProviderInstanceID: identity.ProviderInstanceID,
+		ProviderID:         identity.ProviderID,
+		NodeID:             identity.NodeID,
+		HostName:           identity.HostName,
+		ContainerID:        identity.ContainerID,
+		Service:            identity.Service,
+		Kind:               identity.Kind,
+		Account:            identity.Account,
+		Usage:              usage,
+		ReportedAt:         reportedAt,
+		UpdatedAt:          now,
+	}
+	e.usageMu.Lock()
+	defer e.usageMu.Unlock()
+	if e.usages == nil {
+		e.usages = make(map[string]ProviderUsageSnapshot)
+	}
+	e.usages[providerInstanceID] = snapshot
+	return nil
+}
+
+func (e *Engine) ProviderUsages() []ProviderUsageSnapshot {
+	if e == nil {
+		return nil
+	}
+	e.usageMu.RLock()
+	defer e.usageMu.RUnlock()
+	out := make([]ProviderUsageSnapshot, 0, len(e.usages))
+	for _, usage := range e.usages {
+		out = append(out, usage)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a := out[i]
+		b := out[j]
+		switch {
+		case a.HostName != b.HostName:
+			return a.HostName < b.HostName
+		case a.Service != b.Service:
+			return a.Service < b.Service
+		case a.ProviderID != b.ProviderID:
+			return a.ProviderID < b.ProviderID
+		case a.Account.Display != b.Account.Display:
+			return a.Account.Display < b.Account.Display
+		default:
+			return a.ProviderInstanceID < b.ProviderInstanceID
+		}
+	})
+	return out
 }
 
 func (e *Engine) ReserveRoute(request RouteExecutionRequest) (RouteExecution, error) {

@@ -98,6 +98,47 @@ func TestControlWSProviderAuthReportUpdatesAuth(t *testing.T) {
 	t.Fatalf("registered provider missing")
 }
 
+func TestControlWSProviderUsageReportUpdatesUsage(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+	defer conn.Close()
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+
+	reportedAt := time.Now().UTC()
+	writeControlEnvelope(t, conn, control.MessageTypeProviderUsageReport, "msg_usage", control.ProviderUsageReport{
+		ProviderInstanceID: "codex-control-a1",
+		Usage: provider.UsageReport{
+			ObservedAt:    reportedAt,
+			Source:        "test",
+			Requests:      3,
+			InputTokens:   100,
+			OutputTokens:  40,
+			TotalTokens:   140,
+			NativeSummary: map[string]any{"window": "5h"},
+		},
+		ReportedAt: reportedAt,
+	})
+	readControlAck(t, conn, "msg_usage")
+
+	usages := engine.ProviderUsages()
+	if len(usages) != 1 {
+		t.Fatalf("expected one usage snapshot, got %#v", usages)
+	}
+	got := usages[0]
+	if got.ProviderInstanceID != "codex-control-a1" || got.HostName != "snowbox" || got.Service != provider.ServiceCodex {
+		t.Fatalf("usage snapshot lost provider identity: %#v", got)
+	}
+	if got.Account.Display != "control@example.test" {
+		t.Fatalf("usage snapshot account = %#v", got.Account)
+	}
+	if got.Usage.TotalTokens != 140 || got.Usage.Requests != 3 {
+		t.Fatalf("unexpected usage totals: %#v", got.Usage)
+	}
+}
+
 func TestControlWSUnknownProviderReportsError(t *testing.T) {
 	engine, _ := testEngine(t)
 	conn := dialControlWS(t, engine)

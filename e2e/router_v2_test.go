@@ -80,6 +80,10 @@ func TestE2E_V2RouterShimDataPlaneOpenAIChat(t *testing.T) {
 	if response.Usage == nil || response.Usage.TotalTokens == 0 {
 		t.Fatalf("expected usage in response, got %#v", response.Usage)
 	}
+	usage := waitForV2ProviderUsage(t, client, server.URL, "providersim-openai-0001")
+	if usage.HostName != "providersim-host" || usage.Account.Display != "providersim@example.test" {
+		t.Fatalf("usage lost provider host/account dimensions: %#v", usage)
+	}
 }
 
 func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) {
@@ -144,6 +148,46 @@ func waitForV2OpenAIChat(t *testing.T, client *http.Client, baseURL string) comp
 	}
 	t.Fatalf("chat completion did not succeed: %v", lastErr)
 	return compat.OpenAIChatResponse{}
+}
+
+func waitForV2ProviderUsage(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) v2router.ProviderUsageSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL + "/router/v1/usage/providers")
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		var out struct {
+			Usage []v2router.ProviderUsageSnapshot `json:"usage"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode usage response: %v body=%s", err, string(data))
+		}
+		for _, usage := range out.Usage {
+			if usage.ProviderInstanceID == providerInstanceID && usage.Usage.TotalTokens > 0 {
+				return usage
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("provider usage did not update: %v", lastErr)
+	return v2router.ProviderUsageSnapshot{}
 }
 
 func httpURLToWS(raw string) string {

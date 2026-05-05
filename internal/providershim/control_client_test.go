@@ -75,6 +75,43 @@ func TestRunSimulatorControlClientSendsHeartbeat(t *testing.T) {
 	t.Fatalf("provider heartbeat did not update registry")
 }
 
+func TestRunSimulatorControlClientSendsUsage(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunSimulatorControlClient(ctx, ControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: time.Second,
+			Simulator:         sim,
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, usage := range engine.ProviderUsages() {
+			if usage.ProviderInstanceID == "providersim-openai-0001" && usage.HostName == "providersim-host" && usage.Usage.TotalTokens > 0 {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("provider usage did not update registry")
+}
+
 func controlURL(serverURL string) string {
 	return "ws" + strings.TrimPrefix(serverURL, "http") + "/router/v1/control/ws"
 }

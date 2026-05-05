@@ -84,8 +84,14 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		}
 		return engine.UpdateProviderAuth(report.ProviderInstanceID, report.Auth)
 	case control.MessageTypeProviderUsageReport:
-		_, err := control.Decode[control.ProviderUsageReport](env, control.MessageTypeProviderUsageReport)
-		return err
+		report, err := control.Decode[control.ProviderUsageReport](env, control.MessageTypeProviderUsageReport)
+		if err != nil {
+			return err
+		}
+		if report.ProviderInstanceID == "" {
+			return control.ErrInvalidPayload
+		}
+		return engine.UpdateProviderUsage(report.ProviderInstanceID, report.Usage, report.ReportedAt)
 	case control.MessageTypeNodeHello, control.MessageTypeNodeHeartbeat:
 		_, err := control.DecodeKnownPayload(env)
 		return err

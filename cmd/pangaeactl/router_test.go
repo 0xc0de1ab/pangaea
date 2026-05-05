@@ -60,3 +60,10 @@ func TestRouterServeCommandExposesModelsWithSimulatorEngine(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 }
+
+func TestRouterServeCommandExposesStreamTokenKeyFlag(t *testing.T) {
+	cmd := newRouterServeCmd()
+	if cmd.Flags().Lookup("stream-token-key") == nil {
+		t.Fatalf("expected stream-token-key flag")
+	}
+}

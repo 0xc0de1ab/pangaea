@@ -32,4 +32,10 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if _, err := time.ParseDuration(flag.DefValue); err != nil {
 		t.Fatalf("heartbeat interval default is not a duration: %v", err)
 	}
+	if cmd.Flags().Lookup("router-data") == nil {
+		t.Fatalf("expected router-data flag")
+	}
+	if cmd.Flags().Lookup("stream-token-key") == nil {
+		t.Fatalf("expected stream-token-key flag")
+	}
 }

@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
 	"github.com/0xc0de1ab/pangaea/internal/security"
 )
@@ -85,6 +87,46 @@ func TestHTTPProviders(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("codex-samtest-a1")) {
 		t.Fatalf("expected provider instance in body, got %s", rec.Body.String())
+	}
+}
+
+func TestHTTPProviderUsage(t *testing.T) {
+	engine, _ := testEngine(t)
+	observedAt := time.Now().UTC()
+	if err := engine.UpdateProviderUsage("codex-samtest-a1", provider.UsageReport{
+		ObservedAt:   observedAt,
+		Source:       "test",
+		Requests:     2,
+		InputTokens:  20,
+		OutputTokens: 10,
+		TotalTokens:  30,
+	}, observedAt); err != nil {
+		t.Fatalf("update provider usage: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/usage/providers", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Usage []ProviderUsageSnapshot `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Usage) != 1 {
+		t.Fatalf("expected one usage snapshot, got %#v", out)
+	}
+	got := out.Usage[0]
+	if got.HostName != "snowbox" || got.Account.Display != "samtest4u@gmail.com" {
+		t.Fatalf("usage response lost host/account dimensions: %#v", got)
+	}
+	if got.Usage.TotalTokens != 30 {
+		t.Fatalf("unexpected usage: %#v", got.Usage)
 	}
 }
 
