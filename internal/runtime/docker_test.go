@@ -153,6 +153,39 @@ func TestDockerRuntimeCreateIncludesResourceLimits(t *testing.T) {
 	}
 }
 
+func TestDockerRuntimeCreateUsesCanonicalManagedLabels(t *testing.T) {
+	runner := &recordingRunner{}
+	rt := &DockerRuntime{Binary: "docker", Runner: runner}
+	_, err := rt.Create(context.Background(), ContainerSpec{
+		ProviderID:         "codex-samtest",
+		ProviderInstanceID: "codex-samtest-a1",
+		Image:              "pangaea/provider-codex:test",
+		Labels: map[string]string{
+			"pangaea.provider_id":          "wrong-provider",
+			"pangaea.provider_instance_id": "wrong-instance",
+			"pangaea.service":              "codex",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got := joinedCommands(runner.commands)
+	for _, bad := range []string{"wrong-provider", "wrong-instance"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("managed label used non-canonical value %q in:\n%s", bad, got)
+		}
+	}
+	for _, want := range []string{
+		"--label pangaea.provider_id=codex-samtest",
+		"--label pangaea.provider_instance_id=codex-samtest-a1",
+		"--label pangaea.service=codex",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected label %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestDockerRuntimeFollowLogsUsesStreamingRunner(t *testing.T) {
 	logs := make(chan LogEvent, 1)
 	logs <- LogEvent{Stream: LogStreamStdout, Line: []byte("ready")}

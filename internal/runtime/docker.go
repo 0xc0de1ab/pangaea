@@ -64,6 +64,9 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 		args = append(args, "--name", spec.Name)
 	}
 	for key, value := range spec.Labels {
+		if isManagedPangaeaLabel(key) {
+			continue
+		}
 		args = append(args, "--label", key+"="+value)
 	}
 	args = append(args, "--label", "pangaea.provider_id="+spec.ProviderID)
@@ -92,6 +95,15 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 		return "", fmt.Errorf("docker create returned empty container id")
 	}
 	return ContainerID(id), nil
+}
+
+func isManagedPangaeaLabel(key string) bool {
+	switch key {
+	case "pangaea.provider_id", "pangaea.provider_instance_id":
+		return true
+	default:
+		return false
+	}
 }
 
 func (d *DockerRuntime) Start(ctx context.Context, id ContainerID) error {
