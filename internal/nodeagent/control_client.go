@@ -209,7 +209,9 @@ func reconcileProviderContainers(ctx context.Context, opts ControlClientOptions)
 	}
 	reports := make([]control.ContainerReport, 0, len(opts.ProviderSpecs))
 	for _, spec := range opts.ProviderSpecs {
-		result, err := ReconcileProviderContainer(ctx, opts.ContainerRuntime, spec, opts.NodeID, opts.HostName)
+		result, err := ReconcileProviderContainerWithOptions(ctx, opts.ContainerRuntime, spec, opts.NodeID, opts.HostName, ContainerSpecOptions{
+			RouterControlURL: opts.ControlURL,
+		})
 		if err != nil {
 			return nil, err
 		}

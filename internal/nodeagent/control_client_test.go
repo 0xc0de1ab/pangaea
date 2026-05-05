@@ -148,6 +148,9 @@ func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
 			if rt.pulled != "pangaea/provider-codex:test" || rt.created.ProviderInstanceID != "codex-samtest-0001" {
 				t.Fatalf("runtime did not reconcile provider: pulled=%q created=%#v", rt.pulled, rt.created)
 			}
+			if rt.created.Env["PANGAEA_ROUTER_CONTROL_URL"] != controlURL(server.URL) {
+				t.Fatalf("reconciled container did not receive router control url: %#v", rt.created.Env)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

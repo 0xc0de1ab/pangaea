@@ -26,6 +26,40 @@ func TestRunProviderShimRequiresSimulatorForNow(t *testing.T) {
 	}
 }
 
+func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
+	t.Setenv("PANGAEA_SHIM_MODE", "cli-container")
+	t.Setenv("PANGAEA_ROUTER_CONTROL_URL", "ws://router/control")
+	t.Setenv("PANGAEA_PROVIDER_ID", "codex-samtest")
+	t.Setenv("PANGAEA_PROVIDER_INSTANCE_ID", "codex-samtest-a1")
+	t.Setenv("PANGAEA_NODE_ID", "node-a1")
+	t.Setenv("PANGAEA_HOST_NAME", "snowbox")
+	t.Setenv("PANGAEA_SERVICE", "codex")
+	t.Setenv("PANGAEA_ACCOUNT_DISPLAY", "codex@example.test")
+	t.Setenv("PANGAEA_UPSTREAM_BASE_URL", "http://127.0.0.1:8080")
+	t.Setenv("PANGAEA_UPSTREAM_DIALECT", "openai")
+	t.Setenv("PANGAEA_MODEL", "gpt-5-codex")
+	t.Setenv("PANGAEA_MODEL_ALIAS", "codex-default")
+	t.Setenv("PANGAEA_AUTH_PATH", "/var/lib/pangaea/auth/codex/auth.json")
+	t.Setenv("PANGAEA_AUTH_FORMAT", "codex-auth-json-format")
+	t.Setenv("PANGAEA_REFRESH_COMMAND", "codex exec ping")
+	t.Setenv("PANGAEA_REFRESH_LOGIN_SHELL", "false")
+	t.Setenv("PANGAEA_REFRESH_TIMEOUT", "45s")
+
+	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true})
+	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.ProviderID != "codex-samtest" {
+		t.Fatalf("env defaults did not populate identity/mode: %#v", opts)
+	}
+	if opts.Account != "codex@example.test" || opts.UpstreamBaseURL != "http://127.0.0.1:8080" || opts.Model != "gpt-5-codex" {
+		t.Fatalf("env defaults did not populate provider config: %#v", opts)
+	}
+	if opts.AuthPath != "/var/lib/pangaea/auth/codex/auth.json" || opts.AuthFormat != "codex-auth-json-format" || opts.RefreshCommand != "codex exec ping" {
+		t.Fatalf("env defaults did not populate auth config: %#v", opts)
+	}
+	if opts.RefreshLoginShell || opts.RefreshTimeout != 45*time.Second {
+		t.Fatalf("env defaults did not populate refresh options: %#v", opts)
+	}
+}
+
 func TestProviderShimRunCommandExists(t *testing.T) {
 	cmd := newProviderShimRunCmd()
 	if cmd.Use != "run" {

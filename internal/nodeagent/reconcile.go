@@ -18,15 +18,25 @@ type ReconcileResult struct {
 	Report      control.ContainerReport `json:"report"`
 }
 
+type ContainerSpecOptions struct {
+	RouterControlURL string
+	RouterDataURL    string
+	StreamTokenKey   string
+}
+
 type containerFinder interface {
 	FindByLabels(context.Context, map[string]string) (runtime.ContainerStatus, bool, error)
 }
 
 func ReconcileProviderContainer(ctx context.Context, rt runtime.Runtime, spec ProviderSpec, nodeID string, hostName string) (ReconcileResult, error) {
+	return ReconcileProviderContainerWithOptions(ctx, rt, spec, nodeID, hostName, ContainerSpecOptions{})
+}
+
+func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runtime, spec ProviderSpec, nodeID string, hostName string, opts ContainerSpecOptions) (ReconcileResult, error) {
 	if rt == nil {
 		return ReconcileResult{}, fmt.Errorf("%w: runtime is required", ErrNodeAgentConfig)
 	}
-	containerSpec, err := ContainerSpecFromProviderSpec(spec, nodeID, hostName)
+	containerSpec, err := ContainerSpecFromProviderSpecWithOptions(spec, nodeID, hostName, opts)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
@@ -36,17 +46,17 @@ func ReconcileProviderContainer(ctx context.Context, rt runtime.Runtime, spec Pr
 			return ReconcileResult{}, err
 		}
 		if found {
-			if containerSpec.AuthCopy != nil {
-				if err := rt.CopyTo(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
-					return ReconcileResult{}, err
-				}
-			}
 			state := status.State
 			if state != "running" {
 				if err := rt.Start(ctx, status.ID); err != nil {
 					return ReconcileResult{}, err
 				}
 				state = "running"
+			}
+			if containerSpec.AuthCopy != nil {
+				if err := rt.CopyTo(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
+					return ReconcileResult{}, err
+				}
 			}
 			now := time.Now().UTC()
 			report := control.ContainerReport{
@@ -73,13 +83,13 @@ func ReconcileProviderContainer(ctx context.Context, rt runtime.Runtime, spec Pr
 	if err != nil {
 		return ReconcileResult{}, err
 	}
+	if err := rt.Start(ctx, containerID); err != nil {
+		return ReconcileResult{}, err
+	}
 	if containerSpec.AuthCopy != nil {
 		if err := rt.CopyTo(ctx, containerID, *containerSpec.AuthCopy); err != nil {
 			return ReconcileResult{}, err
 		}
-	}
-	if err := rt.Start(ctx, containerID); err != nil {
-		return ReconcileResult{}, err
 	}
 	now := time.Now().UTC()
 	report := control.ContainerReport{
@@ -121,6 +131,10 @@ func uint64ToInt64(value uint64) int64 {
 }
 
 func ContainerSpecFromProviderSpec(spec ProviderSpec, nodeID string, hostName string) (runtime.ContainerSpec, error) {
+	return ContainerSpecFromProviderSpecWithOptions(spec, nodeID, hostName, ContainerSpecOptions{})
+}
+
+func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, hostName string, opts ContainerSpecOptions) (runtime.ContainerSpec, error) {
 	if err := spec.Validate(); err != nil {
 		return runtime.ContainerSpec{}, err
 	}
@@ -145,6 +159,37 @@ func ContainerSpecFromProviderSpec(spec ProviderSpec, nodeID string, hostName st
 		"PANGAEA_NODE_ID":              nodeID,
 		"PANGAEA_HOST_NAME":            hostName,
 		"PANGAEA_SERVICE":              string(spec.Service),
+		"PANGAEA_SHIM_MODE":            string(spec.Kind),
+	}
+	if opts.RouterControlURL != "" {
+		env["PANGAEA_ROUTER_CONTROL_URL"] = opts.RouterControlURL
+	}
+	if opts.RouterDataURL != "" {
+		env["PANGAEA_ROUTER_DATA_URL"] = opts.RouterDataURL
+	}
+	if opts.StreamTokenKey != "" {
+		env["PANGAEA_STREAM_TOKEN_KEY"] = opts.StreamTokenKey
+	}
+	if spec.AccountHint != "" {
+		env["PANGAEA_ACCOUNT_DISPLAY"] = spec.AccountHint
+	}
+	if spec.Upstream.BaseURL != "" {
+		env["PANGAEA_UPSTREAM_BASE_URL"] = spec.Upstream.BaseURL
+	}
+	if dialect := providerDialect(spec); dialect != "" {
+		env["PANGAEA_UPSTREAM_DIALECT"] = dialect
+	}
+	if len(spec.Models) > 0 {
+		env["PANGAEA_MODEL"] = spec.Models[0].ID
+		if len(spec.Models[0].Aliases) > 0 {
+			env["PANGAEA_MODEL_ALIAS"] = spec.Models[0].Aliases[0]
+		}
+	}
+	if len(spec.Refresh.Command) > 0 {
+		env["PANGAEA_REFRESH_COMMAND"] = shellJoin(spec.Refresh.Command)
+	}
+	if spec.Refresh.Timeout != "" {
+		env["PANGAEA_REFRESH_TIMEOUT"] = spec.Refresh.Timeout
 	}
 	containerSpec := runtime.ContainerSpec{
 		ProviderID:         spec.ID,
@@ -176,11 +221,42 @@ func ContainerSpecFromProviderSpec(spec ProviderSpec, nodeID string, hostName st
 		containerSpec.AuthCopy = &copySpec
 		env["PANGAEA_AUTH_PATH"] = spec.Auth.ContainerPath
 		env["PANGAEA_AUTH_DIR"] = filepath.Dir(spec.Auth.ContainerPath)
+		if spec.Auth.Format != "" {
+			env["PANGAEA_AUTH_FORMAT"] = spec.Auth.Format
+		}
 	}
 	if err := containerSpec.Validate(); err != nil {
 		return runtime.ContainerSpec{}, err
 	}
 	return containerSpec, nil
+}
+
+func providerDialect(spec ProviderSpec) string {
+	if spec.Upstream.Compat != "" {
+		return spec.Upstream.Compat
+	}
+	for _, protocol := range spec.Shim.Protocols {
+		protocol = strings.TrimSpace(protocol)
+		if protocol != "" {
+			return protocol
+		}
+	}
+	return ""
+}
+
+func shellJoin(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func defaultContainerName(providerID string, instanceID string) string {

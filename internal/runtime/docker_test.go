@@ -30,7 +30,7 @@ func (r *recordingRunner) Run(_ context.Context, binary string, args []string, _
 
 func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-codex-samtest --label pangaea.provider_id=codex-samtest --label pangaea.provider_instance_id=codex-samtest-a1 --env PANGAEA_PROVIDER_ID=codex-samtest --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-codex-samtest --label pangaea.provider_id=codex-samtest --label pangaea.provider_instance_id=codex-samtest-a1 --env PANGAEA_PROVIDER_ID=codex-samtest --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea --tmpfs /run/pangaea --tmpfs /tmp --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{

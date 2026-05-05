@@ -6,6 +6,7 @@ VERSION ?= $(shell ./scripts/version.sh "$(VERSION_BASE)")
 # --- cross-build matrix ---------------------------------------------------
 GO_PKG         ?= ./cmd/pangaeactl
 APP_NAME       ?= pangaeactl
+PROVIDER_CODEX_IMAGE ?= pangaea/provider-codex:dev
 OS_LIST        ?= linux darwin windows
 ARCH_LIST      ?= amd64 arm64
 BUILD_VARIANTS ?= debug release
@@ -55,7 +56,7 @@ token3 = $(word 3,$(subst -, ,$(1)))
 .PHONY: all clean help \
 	$(OS_LIST) $(ARCH_LIST) $(BUILD_VARIANTS) \
 	$(OS_ARCH_PAIRS) $(OS_VARIANT_PAIRS) $(ARCH_VARIANT_PAIRS) $(FULL_KEYS) \
-	test race integration lint fmt vet tidy demo
+	test race integration lint fmt vet tidy demo docker-provider-codex
 
 all: $(FULL_TARGETS)
 
@@ -116,6 +117,9 @@ tidy:
 demo:
 	docker compose up --build
 
+docker-provider-codex:
+	docker build -f providers/codex/Dockerfile -t $(PROVIDER_CODEX_IMAGE) --build-arg VERSION=$(VERSION) .
+
 help:
 	@echo "Build matrix:"
 	@echo "  make all                     build every $(OS_LIST) x $(ARCH_LIST) x $(BUILD_VARIANTS)"
@@ -132,6 +136,7 @@ help:
 	@echo "Version: $(VERSION)"
 	@echo
 	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  demo"
+	@echo "Provider images: docker-provider-codex"
 
 %:
 	@echo "Unknown target '$@'"

@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ type fakeContainerRuntime struct {
 	copied  *runtime.CopySpec
 	started runtime.ContainerID
 	stats   runtime.Stats
+	calls   []string
 }
 
 func (r *fakeContainerRuntime) Info(context.Context) (runtime.RuntimeInfo, error) {
@@ -22,16 +24,19 @@ func (r *fakeContainerRuntime) Info(context.Context) (runtime.RuntimeInfo, error
 }
 
 func (r *fakeContainerRuntime) Pull(_ context.Context, image runtime.ImageRef) error {
+	r.calls = append(r.calls, "pull")
 	r.pulled = image
 	return nil
 }
 
 func (r *fakeContainerRuntime) Create(_ context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
+	r.calls = append(r.calls, "create")
 	r.created = spec
 	return "container-1", nil
 }
 
 func (r *fakeContainerRuntime) Start(_ context.Context, id runtime.ContainerID) error {
+	r.calls = append(r.calls, "start")
 	r.started = id
 	return nil
 }
@@ -45,6 +50,7 @@ func (r *fakeContainerRuntime) Exec(context.Context, runtime.ContainerID, runtim
 }
 
 func (r *fakeContainerRuntime) CopyTo(_ context.Context, _ runtime.ContainerID, spec runtime.CopySpec) error {
+	r.calls = append(r.calls, "copy")
 	r.copied = &spec
 	return nil
 }
@@ -87,8 +93,13 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 		Image:       "pangaea/provider-codex:test",
 		AccountHint: "samtest4u@gmail.com",
 		Service:     provider.ServiceCodex,
+		Models: []provider.Model{{
+			ID:      "gpt-5-codex",
+			Aliases: []string{"codex-default"},
+		}},
 		Auth: AuthSpec{
 			Mode:          "file",
+			Format:        "codex-auth-json-format",
 			Bootstrap:     "copy",
 			HostPath:      "/srv/pangaea/auth/codex/samtest/auth.json",
 			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
@@ -96,7 +107,11 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 			OwnerGID:      &gid,
 			FileMode:      "0600",
 		},
-		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		Refresh: RefreshSpec{Command: []string{"codex", "exec", "Reply with OK only."}, Timeout: "90s"},
+		Shim:    ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		Upstream: UpstreamSpec{
+			BaseURL: "http://127.0.0.1:8080",
+		},
 	}, "node-a1", "snowbox")
 	if err != nil {
 		t.Fatalf("container spec from provider spec: %v", err)
@@ -107,11 +122,54 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	if spec.Env["PANGAEA_AUTH_PATH"] != "/var/lib/pangaea/auth/codex/auth.json" {
 		t.Fatalf("missing auth env: %#v", spec.Env)
 	}
+	for key, want := range map[string]string{
+		"PANGAEA_SHIM_MODE":            "cli-container",
+		"PANGAEA_ACCOUNT_DISPLAY":      "samtest4u@gmail.com",
+		"PANGAEA_UPSTREAM_BASE_URL":    "http://127.0.0.1:8080",
+		"PANGAEA_UPSTREAM_DIALECT":     "openai",
+		"PANGAEA_MODEL":                "gpt-5-codex",
+		"PANGAEA_MODEL_ALIAS":          "codex-default",
+		"PANGAEA_AUTH_FORMAT":          "codex-auth-json-format",
+		"PANGAEA_REFRESH_COMMAND":      "'codex' 'exec' 'Reply with OK only.'",
+		"PANGAEA_REFRESH_TIMEOUT":      "90s",
+		"PANGAEA_PROVIDER_INSTANCE_ID": "codex-samtest-a1",
+	} {
+		if spec.Env[key] != want {
+			t.Fatalf("env[%s] = %q, want %q in %#v", key, spec.Env[key], want, spec.Env)
+		}
+	}
 	if spec.AuthCopy == nil || spec.AuthCopy.OwnerUID != 10001 || spec.AuthCopy.FileMode != 0o600 {
 		t.Fatalf("unexpected auth copy: %#v", spec.AuthCopy)
 	}
 	if !spec.Security.RunAsNonRoot || !spec.Security.ReadOnlyRootFS {
 		t.Fatalf("expected hardened defaults: %#v", spec.Security)
+	}
+}
+
+func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T) {
+	spec, err := ContainerSpecFromProviderSpecWithOptions(ProviderSpec{
+		ID:         "codex-samtest",
+		InstanceID: "codex-samtest-a1",
+		Kind:       provider.KindCLIContainer,
+		Image:      "pangaea/provider-codex:test",
+		Service:    provider.ServiceCodex,
+		Shim:       ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "snowbox", ContainerSpecOptions{
+		RouterControlURL: "ws://router/router/v1/control/ws",
+		RouterDataURL:    "ws://router/router/v1/data/ws",
+		StreamTokenKey:   "test-token-key",
+	})
+	if err != nil {
+		t.Fatalf("container spec from provider spec with options: %v", err)
+	}
+	for key, want := range map[string]string{
+		"PANGAEA_ROUTER_CONTROL_URL": "ws://router/router/v1/control/ws",
+		"PANGAEA_ROUTER_DATA_URL":    "ws://router/router/v1/data/ws",
+		"PANGAEA_STREAM_TOKEN_KEY":   "test-token-key",
+	} {
+		if spec.Env[key] != want {
+			t.Fatalf("env[%s] = %q, want %q in %#v", key, spec.Env[key], want, spec.Env)
+		}
 	}
 }
 
@@ -138,6 +196,9 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	}
 	if rt.pulled != "pangaea/provider-gemini:test" || rt.created.ProviderID != "gemini-nullcode" || rt.copied == nil || rt.started != "container-1" {
 		t.Fatalf("runtime calls not recorded as expected: pulled=%q created=%#v copied=%#v started=%q", rt.pulled, rt.created, rt.copied, rt.started)
+	}
+	if got, want := strings.Join(rt.calls, ","), "pull,create,start,copy"; got != want {
+		t.Fatalf("runtime call order = %s, want %s", got, want)
 	}
 	if result.Report.ProviderInstanceID != "gemini-nullcode-a3" || result.Report.State != "running" || result.Report.Labels["pangaea.service"] != "gemini" {
 		t.Fatalf("unexpected reconcile report: %#v", result.Report)

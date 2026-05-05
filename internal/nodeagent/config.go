@@ -43,6 +43,7 @@ type ProviderSpec struct {
 	HostName    string           `json:"host_name,omitempty" yaml:"host_name,omitempty"`
 	AccountHint string           `json:"account_hint,omitempty" yaml:"account_hint,omitempty"`
 	Service     provider.Service `json:"service" yaml:"service"`
+	Models      []provider.Model `json:"models,omitempty" yaml:"models,omitempty"`
 	Auth        AuthSpec         `json:"auth,omitempty" yaml:"auth,omitempty"`
 	Refresh     RefreshSpec      `json:"refresh,omitempty" yaml:"refresh,omitempty"`
 	Shim        ShimSpec         `json:"shim,omitempty" yaml:"shim,omitempty"`
@@ -52,6 +53,7 @@ type ProviderSpec struct {
 
 type AuthSpec struct {
 	Mode          string       `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Format        string       `json:"format,omitempty" yaml:"format,omitempty"`
 	Bootstrap     string       `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
 	HostPath      string       `json:"host_path,omitempty" yaml:"host_path,omitempty"`
 	ContainerPath string       `json:"container_path,omitempty" yaml:"container_path,omitempty"`
@@ -235,6 +237,7 @@ func (p ProviderSpec) Registration(nodeID string, hostName string, now time.Time
 			Account:            account,
 		},
 		Capabilities: append([]provider.Capability(nil), p.Shim.Capabilities...),
+		Models:       append([]provider.Model(nil), p.Models...),
 		Health:       provider.Health{Status: provider.HealthUnknown, CheckedAt: now},
 		Auth: provider.AuthState{
 			Status:      provider.AuthUnknown,

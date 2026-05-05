@@ -342,6 +342,13 @@ func appendSecurityArgs(args []string, profile SecurityProfile) []string {
 	if profile.ReadOnlyRootFS {
 		args = append(args, "--read-only")
 	}
+	for _, writablePath := range profile.WritablePaths {
+		writablePath = strings.TrimSpace(writablePath)
+		if writablePath == "" {
+			continue
+		}
+		args = append(args, "--tmpfs", writablePath)
+	}
 	if profile.RunAsNonRoot && profile.RunAsUser > 0 {
 		user := strconv.Itoa(profile.RunAsUser)
 		if profile.RunAsGroup > 0 {

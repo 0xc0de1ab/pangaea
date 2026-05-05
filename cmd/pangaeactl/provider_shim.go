@@ -94,6 +94,7 @@ func newProviderShimRunCmd() *cobra.Command {
 }
 
 func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
+	opts = applyProviderShimEnvDefaults(opts)
 	if opts.RouterControlURL == "" {
 		return fmt.Errorf("--router-control is required")
 	}
@@ -139,6 +140,66 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 		})
 	default:
 		return fmt.Errorf("one of --simulator, --api-compatible, or --cli-container is required")
+	}
+}
+
+func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOptions {
+	mode := strings.TrimSpace(os.Getenv("PANGAEA_SHIM_MODE"))
+	if enabledModes(opts) == 0 {
+		switch mode {
+		case "simulator":
+			opts.Simulator = true
+		case "api-compatible":
+			opts.APICompatible = true
+		case "cli-container":
+			opts.CLIContainer = true
+		}
+	}
+	opts.RouterControlURL = stringEnvDefault(opts.RouterControlURL, "PANGAEA_ROUTER_CONTROL_URL")
+	opts.RouterDataURL = stringEnvDefault(opts.RouterDataURL, "PANGAEA_ROUTER_DATA_URL")
+	opts.StreamTokenKey = stringEnvDefault(opts.StreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
+	opts.ProviderID = stringEnvDefault(opts.ProviderID, "PANGAEA_PROVIDER_ID")
+	opts.ProviderInstanceID = stringEnvDefault(opts.ProviderInstanceID, "PANGAEA_PROVIDER_INSTANCE_ID")
+	opts.NodeID = stringEnvDefault(opts.NodeID, "PANGAEA_NODE_ID")
+	opts.HostName = stringEnvDefault(opts.HostName, "PANGAEA_HOST_NAME")
+	opts.Service = stringEnvDefault(opts.Service, "PANGAEA_SERVICE")
+	opts.Account = stringEnvDefault(opts.Account, "PANGAEA_ACCOUNT")
+	opts.Account = stringEnvDefault(opts.Account, "PANGAEA_ACCOUNT_DISPLAY")
+	opts.UpstreamBaseURL = stringEnvDefault(opts.UpstreamBaseURL, "PANGAEA_UPSTREAM_BASE_URL")
+	opts.UpstreamDialect = stringEnvDefault(opts.UpstreamDialect, "PANGAEA_UPSTREAM_DIALECT")
+	opts.UpstreamAPIKey = stringEnvDefault(opts.UpstreamAPIKey, "PANGAEA_UPSTREAM_API_KEY")
+	opts.UpstreamAPIKeyFile = stringEnvDefault(opts.UpstreamAPIKeyFile, "PANGAEA_UPSTREAM_API_KEY_FILE")
+	opts.Model = stringEnvDefault(opts.Model, "PANGAEA_MODEL")
+	opts.ModelAlias = stringEnvDefault(opts.ModelAlias, "PANGAEA_MODEL_ALIAS")
+	opts.AuthPath = stringEnvDefault(opts.AuthPath, "PANGAEA_AUTH_PATH")
+	opts.AuthFormat = stringEnvDefault(opts.AuthFormat, "PANGAEA_AUTH_FORMAT")
+	opts.RefreshCommand = stringEnvDefault(opts.RefreshCommand, "PANGAEA_REFRESH_COMMAND")
+	if raw, ok := os.LookupEnv("PANGAEA_REFRESH_LOGIN_SHELL"); ok {
+		opts.RefreshLoginShell = parseEnvBool(raw, opts.RefreshLoginShell)
+	}
+	if raw, ok := os.LookupEnv("PANGAEA_REFRESH_TIMEOUT"); ok {
+		if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil {
+			opts.RefreshTimeout = parsed
+		}
+	}
+	return opts
+}
+
+func stringEnvDefault(current string, name string) string {
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	return strings.TrimSpace(os.Getenv(name))
+}
+
+func parseEnvBool(raw string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	case "0", "f", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
 	}
 }
 

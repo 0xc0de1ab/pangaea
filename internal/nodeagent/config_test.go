@@ -25,8 +25,13 @@ providers:
     image: pangaea/provider-codex:2026.05.1
     account_hint: samtest4u@gmail.com
     service: codex
+    models:
+      - id: gpt-5-codex
+        aliases: [codex-default]
+        capabilities: [api.openai.chat]
     auth:
       mode: file
+      format: codex-auth-json-format
       bootstrap: copy
       host_path: /srv/pangaea/auth/codex/samtest/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
@@ -48,6 +53,7 @@ providers:
       host_path: /srv/pangaea/auth/codex/nullcode/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
     shim:
+      protocols: [openai]
       capabilities: [api.openai.chat]
 `))
 	if err != nil {
@@ -65,6 +71,9 @@ providers:
 	}
 	if !registration.Auth.Refreshable {
 		t.Fatalf("expected refreshable registration")
+	}
+	if len(registration.Models) != 1 || registration.Models[0].ID != "gpt-5-codex" {
+		t.Fatalf("expected configured model registration, got %#v", registration.Models)
 	}
 	foundModelsRead := false
 	for _, capability := range registration.Capabilities {
