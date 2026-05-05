@@ -37,4 +37,5 @@ const (
 	CLIShortVersion = "print build version"
 	CLIShortRouter  = "run v2 router APIs"
 	CLIShortShim    = "run v2 provider shim"
+	CLIShortNode    = "run v2 node agent"
 )

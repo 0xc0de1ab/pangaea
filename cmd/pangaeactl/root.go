@@ -49,5 +49,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newRouterCmd())
 	root.AddCommand(newProviderShimCmd())
+	root.AddCommand(newNodeAgentCmd())
 	return root
 }

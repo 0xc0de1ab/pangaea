@@ -1,0 +1,159 @@
+// Package nodeagent contains node-side router control-plane clients.
+package nodeagent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	goruntime "runtime"
+	"strings"
+	"time"
+
+	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/gorilla/websocket"
+)
+
+var ErrNodeAgentConfig = errors.New("invalid node agent config")
+
+type ControlClientOptions struct {
+	ControlURL        string
+	NodeID            string
+	HostName          string
+	AgentVersion      string
+	OS                string
+	Arch              string
+	Runtime           control.RuntimeInfo
+	Capabilities      []string
+	HeartbeatInterval time.Duration
+	Resources         control.ResourceUsage
+}
+
+func RunControlClient(ctx context.Context, opts ControlClientOptions) error {
+	opts, err := normalizeOptions(opts)
+	if err != nil {
+		return err
+	}
+
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := writeEnvelope(conn, control.MessageTypeNodeHello, "node_hello", control.NodeHello{
+		NodeID:       opts.NodeID,
+		AgentVersion: opts.AgentVersion,
+		OS:           opts.OS,
+		Arch:         opts.Arch,
+		Runtime:      opts.Runtime,
+		Capabilities: append([]string(nil), opts.Capabilities...),
+	}); err != nil {
+		return err
+	}
+	if err := readControlOK(conn); err != nil {
+		return err
+	}
+	if err := writeHeartbeat(conn, opts); err != nil {
+		return err
+	}
+
+	ticker := time.NewTicker(opts.HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := writeHeartbeat(conn, opts); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func normalizeOptions(opts ControlClientOptions) (ControlClientOptions, error) {
+	if strings.TrimSpace(opts.ControlURL) == "" {
+		return opts, fmt.Errorf("%w: control url is required", ErrNodeAgentConfig)
+	}
+	if strings.TrimSpace(opts.HostName) == "" {
+		hostName, err := os.Hostname()
+		if err != nil {
+			return opts, fmt.Errorf("%w: host name is required: %v", ErrNodeAgentConfig, err)
+		}
+		opts.HostName = hostName
+	}
+	if strings.TrimSpace(opts.NodeID) == "" {
+		opts.NodeID = opts.HostName
+	}
+	if strings.TrimSpace(opts.AgentVersion) == "" {
+		opts.AgentVersion = "dev"
+	}
+	if strings.TrimSpace(opts.OS) == "" {
+		opts.OS = goruntime.GOOS
+	}
+	if strings.TrimSpace(opts.Arch) == "" {
+		opts.Arch = goruntime.GOARCH
+	}
+	if strings.TrimSpace(opts.Runtime.Kind) == "" {
+		opts.Runtime.Kind = "docker"
+	}
+	if len(opts.Capabilities) == 0 {
+		opts.Capabilities = []string{"container.inventory", "container.stats", "provider.lifecycle"}
+	}
+	if opts.HeartbeatInterval <= 0 {
+		opts.HeartbeatInterval = 30 * time.Second
+	}
+	return opts, nil
+}
+
+func writeHeartbeat(conn *websocket.Conn, opts ControlClientOptions) error {
+	now := time.Now().UTC()
+	if err := writeEnvelope(conn, control.MessageTypeNodeHeartbeat, "node_heartbeat_"+now.Format("20060102150405.000000000"), control.NodeHeartbeat{
+		NodeID:     opts.NodeID,
+		HostName:   opts.HostName,
+		Health:     control.HealthReport{Status: "ready", CheckedAt: now},
+		Resources:  opts.Resources,
+		ReportedAt: now,
+	}); err != nil {
+		return err
+	}
+	return readControlOK(conn)
+}
+
+func writeEnvelope(conn *websocket.Conn, messageType control.MessageType, id string, payload any) error {
+	data, err := control.Marshal(messageType, id, time.Now().UTC(), payload)
+	if err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func readControlOK(conn *websocket.Conn) error {
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+	env, err := control.Unmarshal(data)
+	if err != nil {
+		return err
+	}
+	if env.Type == control.MessageTypeControlError {
+		payload, err := control.Decode[control.ControlError](env, control.MessageTypeControlError)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: %s", ErrNodeAgentConfig, payload.Message)
+	}
+	if env.Type != control.MessageTypeAck {
+		return fmt.Errorf("%w: unexpected ack type %q", ErrNodeAgentConfig, env.Type)
+	}
+	payload, err := control.Decode[control.Ack](env, control.MessageTypeAck)
+	if err != nil {
+		return err
+	}
+	if !payload.OK {
+		return fmt.Errorf("%w: %s", ErrNodeAgentConfig, payload.Message)
+	}
+	return nil
+}
