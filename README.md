@@ -150,12 +150,24 @@ pangaeactl status --socket /tmp/pangaea.sock
 
 ## Documentation
 
+Current implementation:
+
 - Build guide: [docs/build.md](./docs/build.md)
 - Deployment guide: [docs/deploy.md](./docs/deploy.md)
 - Feature overview: [docs/features.md](./docs/features.md)
 - Claude format notes: [docs/claude.md](./docs/claude.md)
 - Codex format notes: [docs/codex.md](./docs/codex.md)
 - Gemini format notes: [docs/gemini.md](./docs/gemini.md)
+- Current design notes: [docs/design/specs.md](./docs/design/specs.md)
+
+Future platform design drafts:
+
+- Design index: [docs/design/README.md](./docs/design/README.md)
+- Monorepo platform design: [docs/design/monorepo-platform-design.md](./docs/design/monorepo-platform-design.md)
+- Provider protocol v1: [docs/design/provider-protocol-v1.md](./docs/design/provider-protocol-v1.md)
+- Provider container spec v1: [docs/design/container-spec-v1.md](./docs/design/container-spec-v1.md)
+- Routing policy v1: [docs/design/routing-policy-v1.md](./docs/design/routing-policy-v1.md)
+- Provider notes: [docs/providers/README.md](./docs/providers/README.md)
 
 ## License
 

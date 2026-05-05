@@ -1,5 +1,9 @@
 # 배포 가이드
 
+이 문서는 현재 auth-sync 배포 절차를 설명한다. 차세대 containerized
+router/platform 설계 초안은 [docs/design](./design/README.md)과
+[docs/providers](./providers/README.md)에 둔다.
+
 이 문서는 `pangaeactl`의 실제 배포 방법을 정리합니다.
 
 지원 인증 방식:

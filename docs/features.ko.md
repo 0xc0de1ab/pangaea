@@ -1,5 +1,9 @@
 # 기능 개요
 
+이 문서는 현재 auth-sync 구현을 설명한다. 차세대 containerized
+router/platform 설계 초안은 [docs/design](./design/README.md)과
+[docs/providers](./providers/README.md)에 둔다.
+
 이 문서는 현재 저장소가 제공하는 기능을 요약하고, 초기 구현 계획이 끝난 뒤 남아 있는 정리 항목을 함께 정리한다.
 
 ## 상태 요약

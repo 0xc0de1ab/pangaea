@@ -1,5 +1,9 @@
 # Feature Overview
 
+This document describes the current auth-sync implementation. Future
+containerized router/platform design drafts live under
+[docs/design](./design/README.md) and [docs/providers](./providers/README.md).
+
 This document summarizes the features currently provided by the repository and records the remaining cleanup items after the original implementation plan was completed.
 
 ## Status Summary

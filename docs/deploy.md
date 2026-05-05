@@ -1,5 +1,9 @@
 # Deployment Guide
 
+This guide describes the current auth-sync deployment model. Future
+containerized router/node-agent/provider-shim deployment design is tracked in
+[docs/design](./design/README.md) and [docs/providers](./providers/README.md).
+
 This guide covers practical deployment for `pangaeactl` in both supported auth modes:
 
 - `mtls`
