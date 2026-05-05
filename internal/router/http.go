@@ -46,6 +46,8 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
+	r.GET("/router/ui", serveRouterDashboard)
+	r.GET("/router/ui/", serveRouterDashboard)
 	r.GET("/v1/models", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
 			return
@@ -524,6 +526,10 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		c.JSON(status, decision)
 	})
 	return r
+}
+
+func serveRouterDashboard(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(routerDashboardHTML))
 }
 
 type openAIChatStreamChunk struct {

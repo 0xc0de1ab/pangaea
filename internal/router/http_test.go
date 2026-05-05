@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,23 @@ func TestHTTPModels(t *testing.T) {
 	}
 	if len(out.Data) != 1 || out.Data[0].ID != "gpt-5-codex" {
 		t.Fatalf("unexpected model list: %#v", out)
+	}
+}
+
+func TestHTTPRouterDashboard(t *testing.T) {
+	handler := NewHTTPHandler(HTTPOptions{})
+	req := httptest.NewRequest(http.MethodGet, "/router/ui", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("content-type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("expected html content type, got %q", got)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("Pangaea Router")) || !bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/providers")) {
+		t.Fatalf("dashboard body missing expected content: %s", rec.Body.String())
 	}
 }
 
