@@ -478,6 +478,63 @@ func TestHTTPOpenAIChatCompletionsRequiresAPIKeyWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestHTTPAPIKeyAdminCreatesListsAndDeletesKey(t *testing.T) {
+	engine, _ := testEngine(t)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/router/v1/api-keys", bytes.NewReader([]byte(`{"tenant_id":"team-a","user_id":"usr_1"}`)))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var created apiKeyCreateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created key: %v", err)
+	}
+	if created.RawKey == "" || created.APIKey.ID == "" || created.APIKey.TenantID != "team-a" {
+		t.Fatalf("unexpected created key: %#v", created)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/api-keys", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 list, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(created.RawKey)) {
+		t.Fatalf("api key list leaked raw key: %s", rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(created.APIKey.ID)) {
+		t.Fatalf("api key list missing id: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("authorization", "Bearer "+created.RawKey)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected generated key to authenticate, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/router/v1/api-keys/"+created.APIKey.ID, nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 delete, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/api-keys", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 list after delete, got %d", rec.Code)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(created.APIKey.ID)) {
+		t.Fatalf("deleted key still listed: %s", rec.Body.String())
+	}
+}
+
 var _ = compat.APIDialectOpenAI
 
 func testDialectEngine(t *testing.T, dialect compat.APIDialect, capability provider.Capability, service provider.Service, publicModel string, canonicalModel string) (*Engine, *providersim.Simulator) {

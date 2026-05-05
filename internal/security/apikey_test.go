@@ -56,3 +56,33 @@ func TestAPIKeyStoreRejectsInvalidAdd(t *testing.T) {
 		t.Fatalf("expected ErrInvalidAPIKey, got %v", err)
 	}
 }
+
+func TestAPIKeyStoreCreateListAndRemove(t *testing.T) {
+	store := NewAPIKeyStore([]byte("pepper"))
+	raw, principal, err := store.CreateKey("team-a", "usr_1")
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	if !strings.HasPrefix(raw, "pk_") {
+		t.Fatalf("expected generated key prefix, got %q", raw)
+	}
+	if principal.ID == "" || principal.Prefix == "" {
+		t.Fatalf("unexpected principal: %#v", principal)
+	}
+	if _, ok := store.Authenticate(raw); !ok {
+		t.Fatalf("generated key did not authenticate")
+	}
+	keys := store.List()
+	if len(keys) != 1 || keys[0].ID != principal.ID {
+		t.Fatalf("unexpected key list: %#v", keys)
+	}
+	if strings.Contains(keys[0].Prefix, raw) {
+		t.Fatalf("list leaked raw key: %#v", keys)
+	}
+	if !store.Remove(principal.ID) {
+		t.Fatalf("expected remove success")
+	}
+	if _, ok := store.Authenticate(raw); ok {
+		t.Fatalf("removed key still authenticates")
+	}
+}

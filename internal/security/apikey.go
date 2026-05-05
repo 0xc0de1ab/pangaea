@@ -4,9 +4,13 @@ package security
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -62,6 +66,22 @@ func (s *APIKeyStore) AddRawKey(id, raw, tenantID, userID string) (APIKeyPrincip
 	return principal, nil
 }
 
+func (s *APIKeyStore) CreateKey(tenantID, userID string) (string, APIKeyPrincipal, error) {
+	raw, err := GenerateRawAPIKey()
+	if err != nil {
+		return "", APIKeyPrincipal{}, err
+	}
+	id, err := generateAPIKeyID()
+	if err != nil {
+		return "", APIKeyPrincipal{}, err
+	}
+	principal, err := s.AddRawKey(id, raw, tenantID, userID)
+	if err != nil {
+		return "", APIKeyPrincipal{}, err
+	}
+	return raw, principal, nil
+}
+
 func (s *APIKeyStore) Authenticate(raw string) (APIKeyPrincipal, bool) {
 	raw = strings.TrimSpace(raw)
 	if s == nil || raw == "" {
@@ -85,6 +105,33 @@ func (s *APIKeyStore) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.keys)
+}
+
+func (s *APIKeyStore) List() []APIKeyPrincipal {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]APIKeyPrincipal, 0, len(s.keys))
+	for _, record := range s.keys {
+		out = append(out, record.principal)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func (s *APIKeyStore) Remove(id string) bool {
+	if s == nil || strings.TrimSpace(id) == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.keys[id]; !ok {
+		return false
+	}
+	delete(s.keys, id)
+	return true
 }
 
 func (s *APIKeyStore) DebugDigests() []string {
@@ -114,4 +161,31 @@ func keyPrefix(raw string) string {
 		return raw
 	}
 	return raw[:12]
+}
+
+func GenerateRawAPIKey() (string, error) {
+	token, err := randomToken(24)
+	if err != nil {
+		return "", err
+	}
+	return "pk_" + token, nil
+}
+
+func generateAPIKeyID() (string, error) {
+	token, err := randomToken(10)
+	if err != nil {
+		return "", err
+	}
+	return "key_" + token, nil
+}
+
+func randomToken(bytes int) (string, error) {
+	if bytes <= 0 {
+		return "", fmt.Errorf("%w: token size must be positive", ErrInvalidAPIKey)
+	}
+	buf := make([]byte, bytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }

@@ -33,6 +33,9 @@ type openAIModel struct {
 
 func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
+	if opts.APIKeys == nil {
+		opts.APIKeys = security.NewAPIKeyStore(nil)
+	}
 	r := gin.New()
 	r.Use(gin.Recovery())
 
@@ -264,6 +267,42 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		c.JSON(http.StatusOK, snapshot)
 	})
+	r.GET("/router/v1/api-keys", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"api_keys": opts.APIKeys.List()})
+	})
+	r.POST("/router/v1/api-keys", func(c *gin.Context) {
+		var request apiKeyCreateRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if request.RawKey == "" {
+			raw, principal, err := opts.APIKeys.CreateKey(request.TenantID, request.UserID)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusCreated, apiKeyCreateResponse{APIKey: principal, RawKey: raw})
+			return
+		}
+		if request.ID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id is required when raw_key is provided"})
+			return
+		}
+		principal, err := opts.APIKeys.AddRawKey(request.ID, request.RawKey, request.TenantID, request.UserID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, apiKeyCreateResponse{APIKey: principal})
+	})
+	r.DELETE("/router/v1/api-keys/:id", func(c *gin.Context) {
+		if !opts.APIKeys.Remove(c.Param("id")) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
 	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine))
 	r.GET("/router/v1/data/ws", func(c *gin.Context) {
 		if opts.DataBroker == nil {
@@ -304,6 +343,18 @@ type openAIChatStreamChunk struct {
 type quotaLimitRequest struct {
 	Scope quota.Scope `json:"scope"`
 	Limit quota.Limit `json:"limit"`
+}
+
+type apiKeyCreateRequest struct {
+	ID       string `json:"id,omitempty"`
+	RawKey   string `json:"raw_key,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+}
+
+type apiKeyCreateResponse struct {
+	APIKey security.APIKeyPrincipal `json:"api_key"`
+	RawKey string                   `json:"raw_key,omitempty"`
 }
 
 type openAIChatStreamChoice struct {
