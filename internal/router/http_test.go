@@ -53,7 +53,10 @@ func TestHTTPRouterDashboard(t *testing.T) {
 	if got := rec.Header().Get("content-type"); !strings.Contains(got, "text/html") {
 		t.Fatalf("expected html content type, got %q", got)
 	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte("Pangaea Router")) || !bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/providers")) {
+	if !bytes.Contains(rec.Body.Bytes(), []byte("Pangaea Router")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/providers")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("Route Dry Run")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/routes/dry-run")) {
 		t.Fatalf("dashboard body missing expected content: %s", rec.Body.String())
 	}
 }

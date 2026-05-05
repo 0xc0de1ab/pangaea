@@ -162,6 +162,54 @@ const routerDashboardHTML = `<!doctype html>
       padding: 16px;
       color: var(--muted);
     }
+    .inline-form {
+      display: grid;
+      grid-template-columns: minmax(160px, 1.4fr) minmax(110px, 0.8fr) auto auto;
+      gap: 8px;
+      padding: 12px;
+      align-items: end;
+      border-bottom: 1px solid var(--line);
+    }
+    label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    input, select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      padding: 6px 8px;
+      font: inherit;
+    }
+    .checkline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .checkline input { width: auto; min-height: auto; }
+    .result {
+      padding: 12px;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 7px 10px;
+      align-items: baseline;
+    }
+    .kv .key {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
     .error {
       padding: 10px 14px;
       border-top: 1px solid var(--line);
@@ -179,6 +227,7 @@ const routerDashboardHTML = `<!doctype html>
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .metric .value { font-size: 21px; }
       .toolbar { width: 100%; justify-content: space-between; }
+      .inline-form { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -217,6 +266,16 @@ const routerDashboardHTML = `<!doctype html>
       </div>
       <div>
         <section>
+          <h2>Route Dry Run</h2>
+          <form id="dry-run-form" class="inline-form">
+            <label>Model<input id="dry-run-model" name="model" value="providersim-default" autocomplete="off"></label>
+            <label>Dialect<select id="dry-run-dialect" name="api_dialect"><option value="openai">openai</option><option value="anthropic">anthropic</option><option value="gemini">gemini</option></select></label>
+            <label class="checkline"><input id="dry-run-stream" name="stream" type="checkbox"> Stream</label>
+            <button type="submit">Run</button>
+          </form>
+          <div id="dry-run-result" class="result"><div class="empty">No dry run yet</div></div>
+        </section>
+        <section>
           <h2>Usage</h2>
           <div id="usage" class="table-wrap"></div>
         </section>
@@ -246,7 +305,8 @@ const routerDashboardHTML = `<!doctype html>
       control: "/router/v1/control/sessions",
       data: "/router/v1/data/sessions",
       audit: "/router/v1/audit/events?limit=8",
-      traces: "/router/v1/traces?limit=8"
+      traces: "/router/v1/traces?limit=8",
+      dryRun: "/router/v1/routes/dry-run"
     };
     const state = {};
     const $ = (id) => document.getElementById(id);
@@ -400,7 +460,51 @@ const routerDashboardHTML = `<!doctype html>
         { label: "ms", render: (r) => esc(r.duration_ms) }
       ], "No traces");
     }
+    async function runDryRun(event) {
+      event.preventDefault();
+      $("error").style.display = "none";
+      const model = $("dry-run-model").value.trim();
+      if (!model) {
+        renderDryRunResult({ allowed: false, reason: "model is required" }, 0);
+        return;
+      }
+      const request = {
+        model,
+        api_dialect: $("dry-run-dialect").value,
+        stream: $("dry-run-stream").checked
+      };
+      try {
+        const res = await fetch(endpoints.dryRun, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request)
+        });
+        const decision = await res.json();
+        renderDryRunResult(decision, res.status);
+      } catch (err) {
+        renderDryRunResult({ allowed: false, reason: err.message }, 0);
+      }
+    }
+    function renderDryRunResult(decision, status) {
+      const selected = decision.selected || "";
+      const rejections = decision.rejections || [];
+      let html = '<div class="kv">';
+      html += '<div class="key">Status</div><div>' + statusPill(decision.allowed ? "allowed" : "rejected") + (status ? ' <code>' + esc(status) + '</code>' : '') + '</div>';
+      html += '<div class="key">Route</div><div><code>' + esc(decision.route_id) + '</code></div>';
+      html += '<div class="key">Model</div><div>' + esc([decision.model_alias, decision.canonical_model].filter(Boolean).join(" -> ")) + '</div>';
+      html += '<div class="key">Selected</div><div><code>' + esc(selected) + '</code></div>';
+      html += '<div class="key">Reason</div><div>' + esc(decision.reason) + '</div>';
+      html += '</div>';
+      if (rejections.length > 0) {
+        html += table(rejections, [
+          { label: "Provider", render: (r) => '<code>' + esc(r.provider_instance_id) + '</code>' },
+          { label: "Reason", render: (r) => esc(r.reason) }
+        ], "");
+      }
+      $("dry-run-result").innerHTML = html;
+    }
     $("refresh").addEventListener("click", refresh);
+    $("dry-run-form").addEventListener("submit", runDryRun);
     refresh();
     setInterval(refresh, 10000);
   </script>
