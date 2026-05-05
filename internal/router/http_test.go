@@ -548,6 +548,31 @@ func TestHTTPGeminiGenerateContentWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPGeminiStreamGenerateContentWithSimulator(t *testing.T) {
+	engine, sim := testDialectEngine(t, compat.APIDialectGemini, provider.CapabilityGeminiGenerateContent, provider.ServiceGemini, "gemini-sim", "gemini-native")
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-sim:streamGenerateContent?alt=sse", bytes.NewReader([]byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello gemini stream"}]}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_gemini_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("content-type"); got != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %q", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "data:") || !strings.Contains(body, "providersim: hello gemini stream") || !strings.Contains(body, `"modelVersion":"gemini-native"`) {
+		t.Fatalf("unexpected Gemini stream body: %s", body)
+	}
+}
+
 func TestHTTPHandlerRequiresEngine(t *testing.T) {
 	handler := NewHTTPHandler(HTTPOptions{})
 

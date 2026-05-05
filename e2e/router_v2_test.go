@@ -122,6 +122,10 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	if len(gemini.Candidates) != 1 || gemini.Candidates[0].Content.Parts[0].Text != "providersim: e2e gemini" {
 		t.Fatalf("unexpected Gemini response: %#v", gemini)
 	}
+	geminiStreamBody := waitForV2GeminiGenerateContentStream(t, client, server.URL)
+	if !strings.Contains(geminiStreamBody, "data:") || !strings.Contains(geminiStreamBody, "providersim: e2e gemini stream") {
+		t.Fatalf("unexpected Gemini stream body: %s", geminiStreamBody)
+	}
 	usage := waitForV2ProviderUsage(t, client, server.URL, registration.Identity.ProviderInstanceID)
 	if usage.HostName != "providersim-host" || usage.Account.Display != "providersim@example.test" {
 		t.Fatalf("usage lost provider host/account dimensions: %#v", usage)
@@ -898,6 +902,41 @@ func waitForV2GeminiGenerateContent(t *testing.T, client *http.Client, baseURL s
 	}
 	t.Fatalf("Gemini generateContent did not succeed: %v", lastErr)
 	return compat.GeminiGenerateContentResponse{}
+}
+
+func waitForV2GeminiGenerateContentStream(t *testing.T, client *http.Client, baseURL string) string {
+	t.Helper()
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"e2e gemini stream"}]}]}`)
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1beta/models/gemini-default:streamGenerateContent?alt=sse", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("x-request-id", "req_e2e_v2_gemini_stream")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK && strings.Contains(resp.Header.Get("content-type"), "text/event-stream") {
+			return string(data)
+		}
+		lastErr = fmt.Errorf("status=%d content-type=%s body=%s", resp.StatusCode, resp.Header.Get("content-type"), string(data))
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Gemini streamGenerateContent did not succeed: %v", lastErr)
+	return ""
 }
 
 func waitForV2ProviderUsage(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) v2router.ProviderUsageSnapshot {

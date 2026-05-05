@@ -729,6 +729,19 @@ func writeAnthropicMessagesStream(c *gin.Context, response compat.Response) {
 	writeSSEEvent(c, "message_stop", gin.H{"type": "message_stop"})
 }
 
+func writeGeminiGenerateContentStream(c *gin.Context, response compat.Response) {
+	geminiResponse, err := compat.GeminiGenerateContentResponseFromCanonical(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache")
+	c.Header("connection", "keep-alive")
+	c.Status(http.StatusOK)
+	writeSSEData(c, geminiResponse)
+}
+
 func writeControlCommandError(c *gin.Context, err error) {
 	status := http.StatusConflict
 	switch {
@@ -777,10 +790,13 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
 	if !ok {
 		return
 	}
-	model, ok := geminiModelFromAction(c.Param("modelAction"))
+	model, stream, ok := geminiModelFromAction(c.Param("modelAction"))
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "unsupported Gemini model action"})
 		return
+	}
+	if c.Query("alt") == "sse" {
+		stream = true
 	}
 	var geminiRequest compat.GeminiGenerateContentRequest
 	if err := c.ShouldBindJSON(&geminiRequest); err != nil {
@@ -792,6 +808,7 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	canonicalRequest.Stream = stream
 	requestID := publicRequestID(c)
 	routeRequest := applyPublicPrincipal(principal, RouteRequest{
 		TenantID:   c.GetHeader("x-pangaea-tenant-id"),
@@ -799,6 +816,7 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
 		APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
 		Model:      model,
 		APIDialect: compat.APIDialectGemini,
+		Stream:     stream,
 	})
 	response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
 		RequestID:     requestID,
@@ -808,6 +826,10 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
 	}, canonicalRequest)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if stream {
+		writeGeminiGenerateContentStream(c, response)
 		return
 	}
 	geminiResponse, err := compat.GeminiGenerateContentResponseFromCanonical(response)
@@ -939,11 +961,18 @@ func bearerToken(header string) string {
 	return strings.TrimSpace(header[len(prefix):])
 }
 
-func geminiModelFromAction(action string) (string, bool) {
+func geminiModelFromAction(action string) (string, bool, bool) {
 	action = strings.TrimPrefix(action, "/")
 	model, suffix, ok := strings.Cut(action, ":")
-	if !ok || suffix != "generateContent" || strings.TrimSpace(model) == "" {
-		return "", false
+	if !ok || strings.TrimSpace(model) == "" {
+		return "", false, false
 	}
-	return model, true
+	switch suffix {
+	case "generateContent":
+		return model, false, true
+	case "streamGenerateContent":
+		return model, true, true
+	default:
+		return "", false, false
+	}
 }
