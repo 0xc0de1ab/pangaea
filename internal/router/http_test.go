@@ -59,7 +59,11 @@ func TestHTTPRouterDashboard(t *testing.T) {
 		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/routes/dry-run")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("Provider Controls")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("/auth/refresh")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/drain")) {
+		!bytes.Contains(rec.Body.Bytes(), []byte("/drain")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("API Keys")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/api-keys")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("Quotas")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/quotas")) {
 		t.Fatalf("dashboard body missing expected content: %s", rec.Body.String())
 	}
 }

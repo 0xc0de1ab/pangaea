@@ -299,6 +299,14 @@ const routerDashboardHTML = `<!doctype html>
           <div id="usage" class="table-wrap"></div>
         </section>
         <section>
+          <h2>API Keys</h2>
+          <div id="api-keys" class="table-wrap"></div>
+        </section>
+        <section>
+          <h2>Quotas</h2>
+          <div id="quotas" class="table-wrap"></div>
+        </section>
+        <section>
           <h2>Sessions</h2>
           <div id="sessions" class="table-wrap"></div>
         </section>
@@ -326,7 +334,9 @@ const routerDashboardHTML = `<!doctype html>
       audit: "/router/v1/audit/events?limit=8",
       traces: "/router/v1/traces?limit=8",
       dryRun: "/router/v1/routes/dry-run",
-      providerBase: "/router/v1/providers"
+      providerBase: "/router/v1/providers",
+      apiKeys: "/router/v1/api-keys",
+      quotas: "/router/v1/quotas"
     };
     const state = {};
     const $ = (id) => document.getElementById(id);
@@ -365,7 +375,7 @@ const routerDashboardHTML = `<!doctype html>
         const health = await loadJSON("health", endpoints.health);
         $("health-dot").className = "status-dot ok";
         $("health-text").textContent = text(health) || "ok";
-        const [providers, nodes, containers, usage, control, data, audit, traces] = await Promise.all([
+        const [providers, nodes, containers, usage, control, data, audit, traces, apiKeys, quotas] = await Promise.all([
           loadJSON("providers", endpoints.providers),
           loadJSON("nodes", endpoints.nodes),
           loadJSON("containers", endpoints.containers),
@@ -373,7 +383,9 @@ const routerDashboardHTML = `<!doctype html>
           loadJSON("control sessions", endpoints.control),
           loadJSON("data sessions", endpoints.data),
           loadJSON("audit", endpoints.audit),
-          loadJSON("traces", endpoints.traces)
+          loadJSON("traces", endpoints.traces),
+          loadJSON("api keys", endpoints.apiKeys),
+          loadJSON("quotas", endpoints.quotas)
         ]);
         state.providers = providers.providers || [];
         state.nodes = nodes.nodes || [];
@@ -383,6 +395,8 @@ const routerDashboardHTML = `<!doctype html>
         state.data = data.sessions || [];
         state.audit = audit.events || [];
         state.traces = traces.traces || [];
+        state.apiKeys = apiKeys.api_keys || [];
+        state.quotas = quotas.quotas || [];
         render();
       } catch (err) {
         $("health-dot").className = "status-dot bad";
@@ -406,6 +420,8 @@ const routerDashboardHTML = `<!doctype html>
       renderNodes(state.nodes || []);
       renderContainers(state.containers || []);
       renderUsage(usage);
+      renderAPIKeys(state.apiKeys || []);
+      renderQuotas(state.quotas || []);
       renderSessions(state.control || [], state.data || []);
       renderAudit(state.audit || []);
       renderTraces(state.traces || []);
@@ -464,6 +480,45 @@ const routerDashboardHTML = `<!doctype html>
         { label: "Output", render: (r) => esc(r.usage && r.usage.output_tokens) },
         { label: "Total", render: (r) => esc(r.usage && r.usage.total_tokens) }
       ], "No usage reports");
+    }
+    function renderAPIKeys(rows) {
+      $("api-keys").innerHTML = table(rows, [
+        { label: "Key", render: (r) => '<code>' + esc(r.id) + '</code>' },
+        { label: "Prefix", render: (r) => '<code>' + esc(r.prefix) + '</code>' },
+        { label: "Tenant", render: (r) => esc(r.tenant_id) },
+        { label: "User", render: (r) => esc(r.user_id) },
+        { label: "Status", render: (r) => statusPill(r.disabled ? "disabled" : (r.expires_at && new Date(r.expires_at) <= new Date() ? "expired" : "active")) },
+        { label: "Expires", render: (r) => esc(fmtTime(r.expires_at)) },
+        { label: "Last Used", render: (r) => esc(fmtTime(r.last_used_at)) }
+      ], "No API keys configured");
+    }
+    function renderQuotas(rows) {
+      $("quotas").innerHTML = table(rows, [
+        { label: "Scope", render: (r) => '<code>' + esc(fmtScope(r.scope || {})) + '</code>' },
+        { label: "Limit", render: (r) => esc(fmtLimit(r.limit || {})) },
+        { label: "Committed", render: (r) => esc(fmtUsage(r.committed || {})) },
+        { label: "Reserved", render: (r) => esc(fmtUsage(r.reserved || {})) }
+      ], "No quota records");
+    }
+    function fmtScope(scope) {
+      return [
+        scope.tenant_id && "tenant=" + scope.tenant_id,
+        scope.user_id && "user=" + scope.user_id,
+        scope.api_key_id && "key=" + scope.api_key_id,
+        scope.model && "model=" + scope.model
+      ].filter(Boolean).join(" ");
+    }
+    function fmtLimit(limit) {
+      return [
+        limit.max_tokens ? limit.max_tokens + " tokens" : "",
+        limit.max_requests ? limit.max_requests + " requests" : ""
+      ].filter(Boolean).join(" / ");
+    }
+    function fmtUsage(usage) {
+      return [
+        usage.tokens ? usage.tokens + " tokens" : "0 tokens",
+        usage.requests ? usage.requests + " requests" : "0 requests"
+      ].join(" / ");
     }
     function renderSessions(controlRows, dataRows) {
       const rows = [
