@@ -20,6 +20,8 @@ var ErrNodeAgentConfig = errors.New("invalid node agent config")
 
 type ControlClientOptions struct {
 	ControlURL        string
+	RouterDataURL     string
+	StreamTokenKey    string
 	NodeID            string
 	HostName          string
 	AgentVersion      string
@@ -211,6 +213,8 @@ func reconcileProviderContainers(ctx context.Context, opts ControlClientOptions)
 	for _, spec := range opts.ProviderSpecs {
 		result, err := ReconcileProviderContainerWithOptions(ctx, opts.ContainerRuntime, spec, opts.NodeID, opts.HostName, ContainerSpecOptions{
 			RouterControlURL: opts.ControlURL,
+			RouterDataURL:    opts.RouterDataURL,
+			StreamTokenKey:   opts.StreamTokenKey,
 		})
 		if err != nil {
 			return nil, err

@@ -15,6 +15,8 @@ import (
 type nodeAgentRunOptions struct {
 	ConfigPath          string
 	RouterControlURL    string
+	RouterDataURL       string
+	StreamTokenKey      string
 	NodeID              string
 	HostName            string
 	HeartbeatInterval   time.Duration
@@ -52,6 +54,8 @@ func newNodeAgentRunCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.ConfigPath, "config", "", "node-agent provider spec YAML path")
 	cmd.Flags().StringVar(&opts.RouterControlURL, "router-control", "", "router control WebSocket URL")
+	cmd.Flags().StringVar(&opts.RouterDataURL, "router-data", "", "router data WebSocket URL for reconciled provider containers")
+	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
 	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "stable node id; defaults to --host-name or OS host name")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "physical host name to report to the router")
 	cmd.Flags().DurationVar(&opts.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "node heartbeat interval")
@@ -106,6 +110,8 @@ func runNodeAgentControl(ctx context.Context, opts nodeAgentRunOptions, provider
 	}
 	return nodeagent.RunControlClient(ctx, nodeagent.ControlClientOptions{
 		ControlURL:        opts.RouterControlURL,
+		RouterDataURL:     opts.RouterDataURL,
+		StreamTokenKey:    opts.StreamTokenKey,
 		NodeID:            opts.NodeID,
 		HostName:          opts.HostName,
 		AgentVersion:      version,
@@ -162,13 +168,16 @@ func runNodeAgentBootstrapAuth(ctx context.Context, opts nodeAgentBootstrapAuthO
 }
 
 type nodeAgentReconcileProviderOptions struct {
-	ConfigPath  string
-	ProviderID  string
-	NodeID      string
-	HostName    string
-	RuntimeKind string
-	DockerBin   string
-	DryRun      bool
+	ConfigPath       string
+	ProviderID       string
+	NodeID           string
+	HostName         string
+	RouterControlURL string
+	RouterDataURL    string
+	StreamTokenKey   string
+	RuntimeKind      string
+	DockerBin        string
+	DryRun           bool
 }
 
 func newNodeAgentReconcileProviderCmd() *cobra.Command {
@@ -186,6 +195,9 @@ func newNodeAgentReconcileProviderCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.ProviderID, "provider", "", "provider id to reconcile")
 	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "override node id")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "override host name")
+	cmd.Flags().StringVar(&opts.RouterControlURL, "router-control", "", "router control WebSocket URL to inject into the provider container")
+	cmd.Flags().StringVar(&opts.RouterDataURL, "router-data", "", "router data WebSocket URL to inject into the provider container")
+	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "stream token key to inject into the provider container")
 	cmd.Flags().StringVar(&opts.RuntimeKind, "runtime-kind", "docker", "container runtime kind")
 	cmd.Flags().StringVar(&opts.DockerBin, "docker-bin", "docker", "docker CLI binary")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "validate and build container spec without touching runtime")
@@ -216,7 +228,11 @@ func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileP
 		hostName = cfg.Node.HostName
 	}
 	if opts.DryRun {
-		_, err := nodeagent.ContainerSpecFromProviderSpec(spec, nodeID, hostName)
+		_, err := nodeagent.ContainerSpecFromProviderSpecWithOptions(spec, nodeID, hostName, nodeagent.ContainerSpecOptions{
+			RouterControlURL: opts.RouterControlURL,
+			RouterDataURL:    opts.RouterDataURL,
+			StreamTokenKey:   opts.StreamTokenKey,
+		})
 		return err
 	}
 	var rt containerruntime.Runtime
@@ -226,6 +242,10 @@ func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileP
 	default:
 		return fmt.Errorf("unsupported --runtime-kind %q", opts.RuntimeKind)
 	}
-	_, err = nodeagent.ReconcileProviderContainer(ctx, rt, spec, nodeID, hostName)
+	_, err = nodeagent.ReconcileProviderContainerWithOptions(ctx, rt, spec, nodeID, hostName, nodeagent.ContainerSpecOptions{
+		RouterControlURL: opts.RouterControlURL,
+		RouterDataURL:    opts.RouterDataURL,
+		StreamTokenKey:   opts.StreamTokenKey,
+	})
 	return err
 }

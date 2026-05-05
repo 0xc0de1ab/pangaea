@@ -23,6 +23,8 @@ func TestRunControlClientSendsNodeHelloAndHeartbeat(t *testing.T) {
 	go func() {
 		errCh <- RunControlClient(ctx, ControlClientOptions{
 			ControlURL:        controlURL(server.URL),
+			RouterDataURL:     "ws://router.example.test/router/v1/data/ws",
+			StreamTokenKey:    "node-stream-token-key",
 			NodeID:            "node-a1",
 			HostName:          "snowbox",
 			AgentVersion:      "test-agent",
@@ -64,6 +66,8 @@ func TestRunControlClientSendsConfiguredProviderInventory(t *testing.T) {
 	go func() {
 		errCh <- RunControlClient(ctx, ControlClientOptions{
 			ControlURL:        controlURL(server.URL),
+			RouterDataURL:     "ws://router.example.test/router/v1/data/ws",
+			StreamTokenKey:    "node-stream-token-key",
 			NodeID:            "node-a1",
 			HostName:          "snowbox",
 			HeartbeatInterval: time.Second,
@@ -120,6 +124,8 @@ func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
 	go func() {
 		errCh <- RunControlClient(ctx, ControlClientOptions{
 			ControlURL:        controlURL(server.URL),
+			RouterDataURL:     "ws://router.example.test/router/v1/data/ws",
+			StreamTokenKey:    "node-stream-token-key",
 			NodeID:            "node-a1",
 			HostName:          "snowbox",
 			HeartbeatInterval: time.Second,
@@ -150,6 +156,9 @@ func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
 			}
 			if rt.created.Env["PANGAEA_ROUTER_CONTROL_URL"] != controlURL(server.URL) {
 				t.Fatalf("reconciled container did not receive router control url: %#v", rt.created.Env)
+			}
+			if rt.created.Env["PANGAEA_ROUTER_DATA_URL"] != "ws://router.example.test/router/v1/data/ws" || rt.created.Env["PANGAEA_STREAM_TOKEN_KEY"] != "node-stream-token-key" {
+				t.Fatalf("reconciled container did not receive data plane config: %#v", rt.created.Env)
 			}
 			return
 		}
