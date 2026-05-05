@@ -108,6 +108,80 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	}
 }
 
+func TestE2E_V2RouterDataPlaneFallbackWhenSelectedSessionMissing(t *testing.T) {
+	tokenKey := []byte("test-v2-stream-token-key")
+	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2FallbackE2EPolicy))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	registry := provider.NewRegistry()
+	missing := routerV2E2ERegistration(time.Now())
+	missing.Identity.ProviderID = "providersim-missing"
+	missing.Identity.ProviderInstanceID = "providersim-missing-0001"
+	missing.Identity.HostName = "missing-host"
+	missing.Identity.Account = provider.Account{ID: "acct-missing", Display: "missing@example.test"}
+	missing.Auth.Account = missing.Identity.Account
+	if err := registry.Upsert(missing); err != nil {
+		t.Fatalf("upsert missing provider: %v", err)
+	}
+	engine, err := v2router.NewEngine(policy, registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	dataBroker, err := v2router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	engine.SetInvoker(dataBroker)
+
+	server := httptest.NewServer(v2router.NewHTTPHandler(v2router.HTTPOptions{
+		Engine:     engine,
+		DataBroker: dataBroker,
+	}))
+	defer server.Close()
+
+	available := routerV2E2ERegistration(time.Now())
+	sim, err := providersim.New(providersim.Options{Mode: providersim.ModeAPICompatible, Registration: available})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	shimDone := make(chan error, 1)
+	go func() {
+		shimDone <- providershim.RunSimulatorShim(ctx, providershim.SimulatorShimOptions{
+			ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
+			HeartbeatInterval: 20 * time.Millisecond,
+			TokenKey:          tokenKey,
+			Simulator:         sim,
+		})
+	}()
+	defer func() {
+		cancel()
+		select {
+		case err := <-shimDone:
+			if err != nil {
+				t.Fatalf("shim exited with error: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("shim did not stop")
+		}
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitForV2Provider(t, client, server.URL, available.Identity.ProviderInstanceID)
+	response := waitForV2OpenAIChat(t, client, server.URL)
+	if len(response.Choices) != 1 || response.Choices[0].Message.Content != "providersim: e2e hello" {
+		t.Fatalf("unexpected fallback response: %#v", response)
+	}
+	trace := waitForV2Trace(t, client, server.URL, "req_e2e_v2_data")
+	if trace.Provider == nil || trace.Provider.ProviderInstanceID != available.Identity.ProviderInstanceID {
+		t.Fatalf("trace did not record fallback provider: %#v", trace)
+	}
+	if len(trace.Decision.Rejections) == 0 || !strings.Contains(trace.Decision.Rejections[len(trace.Decision.Rejections)-1].Reason, "router data session not found") {
+		t.Fatalf("trace did not record missing data session rejection: %#v", trace.Decision.Rejections)
+	}
+}
+
 func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -513,6 +587,33 @@ routes:
         account: providersim@example.test
         host_name: providersim-host
         weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      max_queue_depth: 4
+`
+
+const routerV2FallbackE2EPolicy = `
+version: routing-policy/v1
+model_aliases:
+  providersim-default:
+    canonical_model: gpt-5-sim
+    required_capabilities:
+      - api.openai.chat
+routes:
+  - id: providersim-openai-fallback
+    match:
+      models: [providersim-default]
+      api_dialects: [openai]
+    candidates:
+      - provider: providersim-missing
+        account: missing@example.test
+        host_name: missing-host
+        weight: 100
+      - provider: providersim-multi
+        account: providersim@example.test
+        host_name: providersim-host
+        weight: 10
     constraints:
       auth_status: [healthy, refresh_soon]
       health_state: [ready]

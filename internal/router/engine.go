@@ -320,13 +320,41 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 	if request.ID == "" {
 		request.ID = execution.RequestID
 	}
-	response, err := e.invoker.Invoke(ctx, *routeExecution.Decision.SelectedProvider, request)
-	if err != nil {
-		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
-			routeExecution.Reservation = released
+	candidates := e.executionCandidates(routeExecution.Decision)
+	var response compat.Response
+	var invokeErr error
+	var invokeRejections []RouteRejection
+	finalExecution := routeExecution
+	for _, candidate := range candidates {
+		candidateExecution := routeExecution
+		candidateExecution.Decision.Selected = candidate.Identity.ProviderInstanceID
+		candidateExecution.Decision.SelectedProvider = &candidate
+		candidateExecution.Decision.Reason = "selected provider"
+		response, invokeErr = e.invoker.Invoke(ctx, candidate, request)
+		if invokeErr == nil {
+			finalExecution = candidateExecution
+			break
 		}
-		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "provider_error", err, startedAt, time.Now().UTC()))
-		return compat.Response{}, routeExecution, err
+		invokeRejections = append(invokeRejections, RouteRejection{
+			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
+			ProviderID:         candidate.Identity.ProviderID,
+			Reason:             "invoke failed: " + invokeErr.Error(),
+		})
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if invokeErr != nil {
+		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+			finalExecution.Reservation = released
+		}
+		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+		e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", invokeErr, startedAt, time.Now().UTC()))
+		return compat.Response{}, finalExecution, invokeErr
+	}
+	if len(invokeRejections) > 0 {
+		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+		finalExecution.Decision.Reason = "fallback selected after provider invoke failure"
 	}
 	actualUsage := quota.Usage{
 		Tokens:   response.Usage.TotalTokens,
@@ -334,11 +362,36 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 	}
 	committed, err := e.Commit(execution.RequestID, actualUsage)
 	if err != nil {
-		e.recordRequestTrace(newRequestTrace(execution, routeExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
-		return compat.Response{}, routeExecution, err
+		e.recordRequestTrace(newRequestTrace(execution, finalExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
+		return compat.Response{}, finalExecution, err
 	}
-	traceExecution := routeExecution
+	traceExecution := finalExecution
 	traceExecution.Reservation = committed
 	e.recordRequestTrace(newRequestTrace(execution, traceExecution, actualUsage, "completed", nil, startedAt, time.Now().UTC()))
-	return response, routeExecution, nil
+	return response, finalExecution, nil
+}
+
+func (e *Engine) executionCandidates(decision RouteDecision) []provider.Registration {
+	if e == nil || e.registry == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	out := make([]provider.Registration, 0, len(decision.FallbackChain))
+	if decision.SelectedProvider != nil {
+		selected := *decision.SelectedProvider
+		out = append(out, selected)
+		seen[selected.Identity.ProviderInstanceID] = struct{}{}
+	}
+	for _, providerInstanceID := range decision.FallbackChain {
+		if _, ok := seen[providerInstanceID]; ok {
+			continue
+		}
+		registration, ok := e.registry.Get(providerInstanceID)
+		if !ok {
+			continue
+		}
+		out = append(out, registration)
+		seen[providerInstanceID] = struct{}{}
+	}
+	return out
 }
