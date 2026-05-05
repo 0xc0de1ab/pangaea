@@ -67,6 +67,15 @@ const routerDashboardHTML = `<!doctype html>
       color: var(--muted);
       white-space: nowrap;
     }
+    .auth-token {
+      width: 220px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .auth-token input {
+      min-height: 31px;
+      padding: 5px 8px;
+    }
     .status-dot {
       width: 9px;
       height: 9px;
@@ -234,7 +243,8 @@ const routerDashboardHTML = `<!doctype html>
       main { padding: 14px; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .metric .value { font-size: 21px; }
-      .toolbar { width: 100%; justify-content: space-between; }
+      .toolbar { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+      .auth-token { width: 100%; }
       .inline-form, .control-form { grid-template-columns: 1fr; }
     }
   </style>
@@ -245,6 +255,9 @@ const routerDashboardHTML = `<!doctype html>
     <div class="toolbar">
       <span><span id="health-dot" class="status-dot"></span> <span id="health-text">checking</span></span>
       <span id="updated-at">never</span>
+      <label class="auth-token">API Key<input id="api-token" type="password" autocomplete="off" placeholder="Bearer token"></label>
+      <button id="save-token" type="button" title="Use API key">Use</button>
+      <button id="clear-token" type="button" title="Clear API key">Clear</button>
       <button id="refresh" type="button" title="Refresh dashboard data">Refresh</button>
     </div>
   </header>
@@ -339,6 +352,8 @@ const routerDashboardHTML = `<!doctype html>
       quotas: "/router/v1/quotas"
     };
     const state = {};
+    const tokenStorageKey = "pangaea.router.api_key";
+    let apiToken = "";
     const $ = (id) => document.getElementById(id);
     function text(value) {
       if (value === undefined || value === null || value === "") return "";
@@ -362,8 +377,33 @@ const routerDashboardHTML = `<!doctype html>
       if (!rows || rows.length === 0) return '<div class="empty">' + esc(emptyText || "No data") + '</div>';
       return '<table><thead><tr>' + columns.map((c) => '<th>' + esc(c.label) + '</th>').join("") + '</tr></thead><tbody>' + rows.map((row) => '<tr>' + columns.map((c) => '<td>' + c.render(row) + '</td>').join("") + '</tr>').join("") + '</tbody></table>';
     }
+    function loadToken() {
+      try {
+        apiToken = localStorage.getItem(tokenStorageKey) || "";
+      } catch (_) {
+        apiToken = "";
+      }
+      $("api-token").value = apiToken;
+    }
+    function saveToken(value) {
+      apiToken = (value || "").trim();
+      try {
+        if (apiToken) localStorage.setItem(tokenStorageKey, apiToken);
+        else localStorage.removeItem(tokenStorageKey);
+      } catch (_) {}
+      $("api-token").value = apiToken;
+    }
+    function authHeaders(extra) {
+      const headers = Object.assign({}, extra || {});
+      if (apiToken) headers.Authorization = "Bearer " + apiToken;
+      return headers;
+    }
+    function authError(name) {
+      return name + ": authorization required";
+    }
     async function loadJSON(name, url) {
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch(url, { cache: "no-store", headers: authHeaders() });
+      if (res.status === 401) throw new Error(authError(name));
       if (!res.ok) throw new Error(name + ": " + res.status);
       const type = res.headers.get("content-type") || "";
       if (type.includes("application/json")) return res.json();
@@ -576,7 +616,7 @@ const routerDashboardHTML = `<!doctype html>
       try {
         const res = await fetch(endpoints.dryRun, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: authHeaders({ "content-type": "application/json" }),
           body: JSON.stringify(request)
         });
         const decision = await res.json();
@@ -626,7 +666,7 @@ const routerDashboardHTML = `<!doctype html>
       try {
         const res = await fetch(path, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: authHeaders({ "content-type": "application/json" }),
           body: JSON.stringify(body)
         });
         const payload = await res.json().catch(() => ({}));
@@ -653,8 +693,18 @@ const routerDashboardHTML = `<!doctype html>
       $("control-result").innerHTML = html;
     }
     $("refresh").addEventListener("click", refresh);
+    $("save-token").addEventListener("click", () => { saveToken($("api-token").value); refresh(); });
+    $("clear-token").addEventListener("click", () => { saveToken(""); refresh(); });
+    $("api-token").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        saveToken($("api-token").value);
+        refresh();
+      }
+    });
     $("dry-run-form").addEventListener("submit", runDryRun);
     $("control-form").addEventListener("submit", sendProviderControl);
+    loadToken();
     refresh();
     setInterval(refresh, 10000);
   </script>
