@@ -29,6 +29,20 @@ func TestBuildRouterEngineWithSimulator(t *testing.T) {
 	}
 }
 
+func TestBuildRouterAPIKeyStore(t *testing.T) {
+	store := buildRouterAPIKeyStore(routerServeOptions{APIKey: "pk_test_router", TenantID: "team-a", UserID: "usr_1"})
+	if store == nil {
+		t.Fatalf("expected API key store")
+	}
+	principal, ok := store.Authenticate("pk_test_router")
+	if !ok {
+		t.Fatalf("expected auth success")
+	}
+	if principal.TenantID != "team-a" || principal.UserID != "usr_1" {
+		t.Fatalf("unexpected principal: %#v", principal)
+	}
+}
+
 func TestRouterServeCommandExposesModelsWithSimulatorEngine(t *testing.T) {
 	engine, err := buildRouterEngine(routerServeOptions{Simulator: true})
 	if err != nil {

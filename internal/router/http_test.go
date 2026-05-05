@@ -9,6 +9,7 @@ import (
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
+	"github.com/0xc0de1ab/pangaea/internal/security"
 )
 
 func TestHTTPModels(t *testing.T) {
@@ -132,6 +133,30 @@ func TestHTTPHandlerRequiresEngine(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestHTTPOpenAIChatCompletionsRequiresAPIKeyWhenConfigured(t *testing.T) {
+	engine, _ := testEngine(t)
+	store := security.NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKey("key_1", "pk_test_router", "team-a", "usr_1"); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine, APIKeys: store})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without bearer token, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("authorization", "Bearer pk_test_router")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with bearer token, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

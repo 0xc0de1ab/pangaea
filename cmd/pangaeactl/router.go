@@ -11,6 +11,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
 	"github.com/0xc0de1ab/pangaea/internal/quota"
 	v2router "github.com/0xc0de1ab/pangaea/internal/router"
+	"github.com/0xc0de1ab/pangaea/internal/security"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +19,9 @@ type routerServeOptions struct {
 	Listen    string
 	Policy    string
 	Simulator bool
+	APIKey    string
+	TenantID  string
+	UserID    string
 }
 
 func newRouterCmd() *cobra.Command {
@@ -48,6 +52,9 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Listen, "listen", "127.0.0.1:8080", "HTTP listen address")
 	cmd.Flags().StringVar(&opts.Policy, "policy", "", "routing policy YAML path")
 	cmd.Flags().BoolVar(&opts.Simulator, "simulator", false, "register a built-in simulator provider")
+	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "optional public API bearer key")
+	cmd.Flags().StringVar(&opts.TenantID, "tenant-id", "dev", "tenant id assigned to --api-key")
+	cmd.Flags().StringVar(&opts.UserID, "user-id", "dev", "user id assigned to --api-key")
 	return cmd
 }
 
@@ -58,7 +65,7 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	}
 	srv := &http.Server{
 		Addr:              opts.Listen,
-		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine}),
+		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts)}),
 		ReadHeaderTimeout: common.ReadTimeout,
 	}
 	errCh := make(chan error, 1)
@@ -101,6 +108,15 @@ func buildRouterEngine(opts routerServeOptions) (*v2router.Engine, error) {
 		engine.SetInvoker(invoker)
 	}
 	return engine, nil
+}
+
+func buildRouterAPIKeyStore(opts routerServeOptions) *security.APIKeyStore {
+	if opts.APIKey == "" {
+		return nil
+	}
+	store := security.NewAPIKeyStore(nil)
+	_, _ = store.AddRawKey("dev-key", opts.APIKey, opts.TenantID, opts.UserID)
+	return store
 }
 
 func loadRouterPolicy(path string, simulator bool) (v2router.RoutingPolicy, error) {

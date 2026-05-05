@@ -2,14 +2,17 @@ package router
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/security"
 	"github.com/gin-gonic/gin"
 )
 
 type HTTPOptions struct {
-	Engine *Engine
+	Engine  *Engine
+	APIKeys *security.APIKeyStore
 }
 
 type openAIModelList struct {
@@ -33,6 +36,9 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		c.String(http.StatusOK, "ok")
 	})
 	r.GET("/v1/models", func(c *gin.Context) {
+		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
+			return
+		}
 		engine, ok := requireEngine(c, opts.Engine)
 		if !ok {
 			return
@@ -54,6 +60,10 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		c.JSON(http.StatusOK, out)
 	})
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok {
+			return
+		}
 		engine, ok := requireEngine(c, opts.Engine)
 		if !ok {
 			return
@@ -79,6 +89,11 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			Model:      openaiRequest.Model,
 			APIDialect: compat.APIDialectOpenAI,
 			Stream:     openaiRequest.Stream,
+		}
+		if principal.ID != "" {
+			routeRequest.TenantID = principal.TenantID
+			routeRequest.UserID = principal.UserID
+			routeRequest.APIKeyID = principal.ID
 		}
 		response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
 			RequestID:     requestID,
@@ -130,4 +145,29 @@ func requireEngine(c *gin.Context, engine *Engine) (*Engine, bool) {
 		return nil, false
 	}
 	return engine, true
+}
+
+func authenticatePublicRequest(c *gin.Context, store *security.APIKeyStore) (security.APIKeyPrincipal, bool) {
+	if store == nil || store.Len() == 0 {
+		return security.APIKeyPrincipal{}, true
+	}
+	raw := bearerToken(c.GetHeader("authorization"))
+	if raw == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+		return security.APIKeyPrincipal{}, false
+	}
+	principal, ok := store.Authenticate(raw)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
+		return security.APIKeyPrincipal{}, false
+	}
+	return principal, true
+}
+
+func bearerToken(header string) string {
+	const prefix = "bearer "
+	if len(header) < len(prefix) || strings.ToLower(header[:len(prefix)]) != prefix {
+		return ""
+	}
+	return strings.TrimSpace(header[len(prefix):])
 }
