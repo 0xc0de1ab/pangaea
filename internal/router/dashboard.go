@@ -547,8 +547,18 @@ const routerDashboardHTML = `<!doctype html>
         { label: "Model", render: (r) => esc(r.route_request && r.route_request.model) },
         { label: "Status", render: (r) => statusPill(r.status) },
         { label: "Provider", render: (r) => '<code>' + esc(r.provider && r.provider.provider_instance_id) + '</code>' },
+        { label: "Error", render: (r) => esc(traceError(r)) },
         { label: "ms", render: (r) => esc(r.duration_ms) }
       ], "No traces");
+    }
+    function traceError(trace) {
+      if (!trace || !trace.error) return "";
+      const parts = [];
+      if (trace.error_status) parts.push("HTTP " + trace.error_status);
+      if (trace.error_code) parts.push(trace.error_code);
+      if (trace.retry_after) parts.push("retry-after " + trace.retry_after);
+      if (parts.length > 0) return parts.join(" / ");
+      return trace.error;
     }
     async function runDryRun(event) {
       event.preventDefault();

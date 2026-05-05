@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"sort"
 	"time"
 
@@ -18,6 +19,9 @@ type RequestTrace struct {
 	Provider       *provider.ProviderIdentity `json:"provider,omitempty"`
 	Status         string                     `json:"status"`
 	Error          string                     `json:"error,omitempty"`
+	ErrorCode      string                     `json:"error_code,omitempty"`
+	ErrorStatus    int                        `json:"error_status,omitempty"`
+	RetryAfter     string                     `json:"retry_after,omitempty"`
 	EstimatedUsage quota.Usage                `json:"estimated_usage,omitempty"`
 	ActualUsage    quota.Usage                `json:"actual_usage,omitempty"`
 	StartedAt      time.Time                  `json:"started_at"`
@@ -41,6 +45,15 @@ func newRequestTrace(execution RouteExecutionRequest, routeExecution RouteExecut
 	if err != nil {
 		errorMessage = err.Error()
 	}
+	errorCode := ""
+	errorStatus := 0
+	retryAfter := ""
+	var upstream *provider.UpstreamError
+	if errors.As(err, &upstream) && upstream != nil {
+		errorCode = upstream.Code
+		errorStatus = upstream.StatusCode
+		retryAfter = upstream.RetryAfter
+	}
 	return RequestTrace{
 		RequestID:      execution.RequestID,
 		RouteRequest:   execution.RouteRequest,
@@ -49,6 +62,9 @@ func newRequestTrace(execution RouteExecutionRequest, routeExecution RouteExecut
 		Provider:       identity,
 		Status:         status,
 		Error:          errorMessage,
+		ErrorCode:      errorCode,
+		ErrorStatus:    errorStatus,
+		RetryAfter:     retryAfter,
 		EstimatedUsage: execution.QuotaEstimate,
 		ActualUsage:    actual,
 		StartedAt:      startedAt,

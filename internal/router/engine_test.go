@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -271,6 +272,46 @@ func TestEngineInvokeRecordsRequestTrace(t *testing.T) {
 	traces := engine.RequestTraces(1)
 	if len(traces) != 1 || traces[0].RequestID != "req_trace_1" {
 		t.Fatalf("unexpected traces list: %#v", traces)
+	}
+}
+
+func TestEngineInvokeTraceRecordsUpstreamErrorMetadata(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.SetInvoker(upstreamErrorFallbackInvoker{
+		failProviderInstanceID: "codex-samtest-a1",
+		err: &provider.UpstreamError{
+			StatusCode: http.StatusTooManyRequests,
+			Code:       "rate_limit_exceeded",
+			Message:    "upstream rate limited",
+			RetryAfter: "13",
+		},
+	})
+
+	_, _, err := engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_trace_upstream_1",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5.3-codex-spark",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected upstream error")
+	}
+	trace, ok := engine.RequestTrace("req_trace_upstream_1")
+	if !ok {
+		t.Fatalf("expected trace")
+	}
+	if trace.Status != "provider_error" || trace.ErrorCode != "rate_limit_exceeded" || trace.ErrorStatus != http.StatusTooManyRequests || trace.RetryAfter != "13" {
+		t.Fatalf("unexpected upstream trace metadata: %#v", trace)
 	}
 }
 
