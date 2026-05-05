@@ -7,6 +7,7 @@ type DataFrameType string
 const (
 	DataFrameRequest  DataFrameType = "request"
 	DataFrameCancel   DataFrameType = "cancel"
+	DataFrameEvent    DataFrameType = "event"
 	DataFrameResponse DataFrameType = "response"
 )
 
@@ -22,6 +23,7 @@ type DataResponse struct {
 	Type      DataFrameType   `json:"type,omitempty"`
 	RequestID string          `json:"request_id"`
 	StreamID  StreamID        `json:"stream_id"`
+	Event     compat.Event    `json:"event,omitempty"`
 	Response  compat.Response `json:"response,omitempty"`
 	Error     string          `json:"error,omitempty"`
 }

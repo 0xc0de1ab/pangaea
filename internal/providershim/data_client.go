@@ -35,6 +35,10 @@ type providerInvoker interface {
 	Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error)
 }
 
+type providerStreamInvoker interface {
+	InvokeStream(context.Context, provider.Registration, compat.Request, func(compat.Event) error) (compat.Response, error)
+}
+
 func RunSimulatorShim(ctx context.Context, opts SimulatorShimOptions) error {
 	if opts.ControlURL == "" {
 		return fmt.Errorf("%w: control url is required", ErrShimConfig)
@@ -196,7 +200,7 @@ func (s *dataClientState) handleRequest(ctx context.Context, signer *tunnel.Toke
 	}
 	go func() {
 		defer s.done(request.RequestID)
-		response := handleDataRequest(requestCtx, signer, registration, invoker, request)
+		response := s.handleDataRequest(requestCtx, signer, registration, invoker, request)
 		_ = s.writeResponse(ctx, response)
 	}()
 }
@@ -251,7 +255,10 @@ func (s *dataClientState) writeResponse(ctx context.Context, response tunnel.Dat
 	return nil
 }
 
-func handleDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registration provider.Registration, invoker providerInvoker, request tunnel.DataRequest) tunnel.DataResponse {
+func (s *dataClientState) handleDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registration provider.Registration, invoker providerInvoker, request tunnel.DataRequest) tunnel.DataResponse {
+	if request.Request.Stream {
+		return s.handleStreamDataRequest(ctx, signer, registration, invoker, request)
+	}
 	response := tunnel.DataResponse{Type: tunnel.DataFrameResponse, RequestID: request.RequestID, StreamID: request.Descriptor.StreamID}
 	if err := request.Descriptor.Validate(); err != nil {
 		response.Error = err.Error()
@@ -270,6 +277,65 @@ func handleDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registra
 	if err != nil {
 		response.Error = err.Error()
 		return response
+	}
+	response.Response = compatResponse
+	return response
+}
+
+func (s *dataClientState) handleStreamDataRequest(ctx context.Context, signer *tunnel.TokenSigner, registration provider.Registration, invoker providerInvoker, request tunnel.DataRequest) tunnel.DataResponse {
+	response := tunnel.DataResponse{Type: tunnel.DataFrameResponse, RequestID: request.RequestID, StreamID: request.Descriptor.StreamID}
+	if err := request.Descriptor.Validate(); err != nil {
+		response.Error = err.Error()
+		return response
+	}
+	claims, err := signer.VerifyForDescriptor(request.CapabilityToken, request.Descriptor, time.Now().UTC())
+	if err != nil {
+		response.Error = err.Error()
+		return response
+	}
+	if claims.RequestID != request.RequestID {
+		response.Error = fmt.Sprintf("%s: token request_id %q does not match frame request_id %q", ErrShimConfig, claims.RequestID, request.RequestID)
+		return response
+	}
+	if streamInvoker, ok := invoker.(providerStreamInvoker); ok {
+		compatResponse, err := streamInvoker.InvokeStream(ctx, registration, request.Request, func(event compat.Event) error {
+			if err := event.Validate(); err != nil {
+				return err
+			}
+			return s.writeResponse(ctx, tunnel.DataResponse{
+				Type:      tunnel.DataFrameEvent,
+				RequestID: request.RequestID,
+				StreamID:  request.Descriptor.StreamID,
+				Event:     event,
+			})
+		})
+		if err != nil {
+			response.Error = err.Error()
+			return response
+		}
+		response.Response = compatResponse
+		return response
+	}
+	compatResponse, err := invoker.Invoke(ctx, registration, request.Request)
+	if err != nil {
+		response.Error = err.Error()
+		return response
+	}
+	events, err := compat.EventsFromResponse(compatResponse)
+	if err != nil {
+		response.Error = err.Error()
+		return response
+	}
+	for _, event := range events {
+		if err := s.writeResponse(ctx, tunnel.DataResponse{
+			Type:      tunnel.DataFrameEvent,
+			RequestID: request.RequestID,
+			StreamID:  request.Descriptor.StreamID,
+			Event:     event,
+		}); err != nil {
+			response.Error = err.Error()
+			return response
+		}
 	}
 	response.Response = compatResponse
 	return response

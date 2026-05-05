@@ -353,6 +353,26 @@ func (s *Simulator) Invoke(_ context.Context, registration provider.Registration
 	}, nil
 }
 
+func (s *Simulator) InvokeStream(ctx context.Context, registration provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	response, err := s.Invoke(ctx, registration, request)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	events, err := compat.EventsFromResponse(response)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	for _, event := range events {
+		if ctx.Err() != nil {
+			return compat.Response{}, ctx.Err()
+		}
+		if err := emit(event); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	return response, nil
+}
+
 // Heartbeat returns the current heartbeat snapshot.
 func (s *Simulator) Heartbeat() HeartbeatReport {
 	s.mu.RLock()

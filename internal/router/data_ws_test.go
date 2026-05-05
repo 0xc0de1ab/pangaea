@@ -166,3 +166,103 @@ func TestDataBrokerSendsCancelFrameWhenInvokeContextCancels(t *testing.T) {
 		t.Fatalf("invoke did not return after cancellation")
 	}
 }
+
+func TestDataBrokerInvokeStreamReceivesEventFrames(t *testing.T) {
+	broker, err := NewDataBroker([]byte("test-data-stream-key"))
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{DataBroker: broker}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/data/ws?provider_instance_id=provider-a1", nil)
+	if err != nil {
+		t.Fatalf("dial data ws: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	events := make(chan compat.Event, 4)
+	done := make(chan struct {
+		response compat.Response
+		err      error
+	}, 1)
+	go func() {
+		response, err := broker.InvokeStream(ctx, provider.Registration{
+			Identity: provider.ProviderIdentity{ProviderInstanceID: "provider-a1"},
+		}, compat.Request{
+			ID:      "req_stream_1",
+			Dialect: compat.APIDialectOpenAI,
+			Model:   "gpt-5-sim",
+			Stream:  true,
+			Messages: []compat.Message{{
+				Role:    compat.MessageRoleUser,
+				Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+			}},
+		}, func(event compat.Event) error {
+			events <- event
+			return nil
+		})
+		done <- struct {
+			response compat.Response
+			err      error
+		}{response: response, err: err}
+	}()
+
+	var request tunnel.DataRequest
+	if err := conn.ReadJSON(&request); err != nil {
+		t.Fatalf("read request frame: %v", err)
+	}
+	if request.Type != tunnel.DataFrameRequest || request.RequestID != "req_stream_1" || !request.Request.Stream {
+		t.Fatalf("unexpected request frame: %#v", request)
+	}
+	if err := conn.WriteJSON(tunnel.DataResponse{
+		Type:      tunnel.DataFrameEvent,
+		RequestID: request.RequestID,
+		StreamID:  request.Descriptor.StreamID,
+		Event: compat.Event{
+			Type:         compat.EventContentDelta,
+			ContentDelta: &compat.ContentPart{Type: compat.ContentPartText, Text: "hello stream"},
+		},
+	}); err != nil {
+		t.Fatalf("write event frame: %v", err)
+	}
+	if err := conn.WriteJSON(tunnel.DataResponse{
+		Type:      tunnel.DataFrameResponse,
+		RequestID: request.RequestID,
+		StreamID:  request.Descriptor.StreamID,
+		Response: compat.Response{
+			Dialect: compat.APIDialectOpenAI,
+			Model:   "gpt-5-sim",
+			Message: compat.Message{
+				Role:    compat.MessageRoleAssistant,
+				Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello stream"}},
+			},
+			StopReason: "stop",
+			Usage:      compat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		},
+	}); err != nil {
+		t.Fatalf("write response frame: %v", err)
+	}
+
+	select {
+	case event := <-events:
+		if event.Type != compat.EventContentDelta || event.ContentDelta.Text != "hello stream" {
+			t.Fatalf("unexpected event: %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("stream event was not emitted")
+	}
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("invoke stream: %v", result.err)
+		}
+		if result.response.Usage.TotalTokens != 3 {
+			t.Fatalf("unexpected response: %#v", result.response)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("invoke stream did not finish")
+	}
+}

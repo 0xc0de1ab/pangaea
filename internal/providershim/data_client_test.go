@@ -77,6 +77,60 @@ func TestRunSimulatorDataClientCancelsInflightRequestOnCancelFrame(t *testing.T)
 	}
 }
 
+func TestRunSimulatorDataClientStreamsEventFrames(t *testing.T) {
+	tokenKey := []byte("test-data-client-stream-key")
+	broker, err := router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{DataBroker: broker}))
+	defer server.Close()
+
+	registration := testDataClientRegistration("provider-stream-a1")
+	streaming := &streamingDataProvider{registration: registration}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- RunSimulatorDataClient(ctx, DataClientOptions{
+			DataURL:  dataURL(server.URL, registration.Identity.ProviderInstanceID),
+			TokenKey: tokenKey,
+			Provider: streaming,
+		})
+	}()
+	waitForDataSession(t, broker, registration.Identity.ProviderInstanceID)
+
+	events := make(chan compat.Event, 4)
+	response, err := broker.InvokeStream(context.Background(), registration, testDataClientStreamRequest("req_stream_shim"), func(event compat.Event) error {
+		events <- event
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if response.Message.Content[0].Text != "streamed response" || response.Usage.TotalTokens != 3 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	select {
+	case event := <-events:
+		if event.Type != compat.EventContentDelta || event.ContentDelta.Text != "streamed response" {
+			t.Fatalf("unexpected event: %#v", event)
+		}
+	default:
+		t.Fatalf("expected streamed event")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("data client returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("data client did not stop")
+	}
+}
+
 type blockingDataProvider struct {
 	registration provider.Registration
 	invoked      chan struct{}
@@ -98,6 +152,40 @@ func (p *blockingDataProvider) Invoke(ctx context.Context, _ provider.Registrati
 	default:
 	}
 	return compat.Response{}, ctx.Err()
+}
+
+type streamingDataProvider struct {
+	registration provider.Registration
+}
+
+func (p *streamingDataProvider) Registration() (provider.Registration, error) {
+	return p.registration, nil
+}
+
+func (p *streamingDataProvider) Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error) {
+	return compat.Response{}, errors.New("non-stream invoke should not be used")
+}
+
+func (p *streamingDataProvider) InvokeStream(_ context.Context, _ provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	if !request.Stream {
+		return compat.Response{}, errors.New("expected stream request")
+	}
+	if err := emit(compat.Event{
+		Type:         compat.EventContentDelta,
+		ContentDelta: &compat.ContentPart{Type: compat.ContentPartText, Text: "streamed response"},
+	}); err != nil {
+		return compat.Response{}, err
+	}
+	return compat.Response{
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role:    compat.MessageRoleAssistant,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "streamed response"}},
+		},
+		StopReason: "stop",
+		Usage:      compat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+	}, nil
 }
 
 func dataURL(serverURL string, providerInstanceID string) string {
@@ -141,4 +229,10 @@ func testDataClientRequest(requestID string) compat.Request {
 			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "slow"}},
 		}},
 	}
+}
+
+func testDataClientStreamRequest(requestID string) compat.Request {
+	request := testDataClientRequest(requestID)
+	request.Stream = true
+	return request
 }
