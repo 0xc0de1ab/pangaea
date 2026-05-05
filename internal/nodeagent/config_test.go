@@ -123,6 +123,36 @@ providers:
 	}
 }
 
+func TestParseConfigYAMLRejectsDuplicateProviderInstanceID(t *testing.T) {
+	_, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: codex-samtest
+    instance_id: codex-shared-a1
+    kind: cli-container
+    service: codex
+    auth:
+      mode: file
+      host_path: /a
+      container_path: /b
+    shim:
+      capabilities: [api.openai.chat]
+  - id: codex-nullcode
+    instance_id: codex-shared-a1
+    kind: cli-container
+    service: codex
+    auth:
+      mode: file
+      host_path: /c
+      container_path: /d
+    shim:
+      capabilities: [api.openai.chat]
+`))
+	if err == nil {
+		t.Fatalf("expected duplicate provider instance_id error")
+	}
+}
+
 func TestParseConfigYAMLAcceptsAPIKeyAuthProvider(t *testing.T) {
 	cfg, err := ParseConfigYAML([]byte(`
 version: node-agent/v1

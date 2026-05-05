@@ -136,15 +136,24 @@ func (c Config) Validate() error {
 	if c.Version != ConfigVersion {
 		return fmt.Errorf("%w: unsupported version %q", ErrNodeAgentConfig, c.Version)
 	}
-	seen := make(map[string]struct{}, len(c.Providers))
+	seenIDs := make(map[string]struct{}, len(c.Providers))
+	seenInstances := make(map[string]struct{}, len(c.Providers))
 	for _, spec := range c.Providers {
 		if err := spec.Validate(); err != nil {
 			return err
 		}
-		if _, ok := seen[spec.ID]; ok {
+		if _, ok := seenIDs[spec.ID]; ok {
 			return fmt.Errorf("%w: duplicate provider id %q", ErrNodeAgentConfig, spec.ID)
 		}
-		seen[spec.ID] = struct{}{}
+		seenIDs[spec.ID] = struct{}{}
+		instanceID := spec.InstanceID
+		if instanceID == "" {
+			instanceID = spec.ID + "-local"
+		}
+		if _, ok := seenInstances[instanceID]; ok {
+			return fmt.Errorf("%w: duplicate provider instance_id %q", ErrNodeAgentConfig, instanceID)
+		}
+		seenInstances[instanceID] = struct{}{}
 	}
 	return nil
 }
