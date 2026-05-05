@@ -394,6 +394,114 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 	}
 }
 
+func TestE2E_V2APICompatibleProviderShimPropagatesUpstreamRateLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.Header().Set("retry-after", "11")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream rate limit hit","code":"rate_limit_exceeded"}}`))
+	}))
+	defer upstream.Close()
+
+	tokenKey := []byte("test-v2-api-compatible-rate-limit-token-key")
+	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2APICompatiblePolicy))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	engine, err := v2router.NewEngine(policy, provider.NewRegistry(), quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	dataBroker, err := v2router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	engine.SetInvoker(dataBroker)
+	server := httptest.NewServer(v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, DataBroker: dataBroker}))
+	defer server.Close()
+
+	apiProvider, err := apiprovider.New(apiprovider.Options{
+		Registration: apiCompatibleE2ERegistration(time.Now()),
+		BaseURL:      upstream.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_test_e2e",
+	})
+	if err != nil {
+		t.Fatalf("new api provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("api provider registration: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
+			ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
+			HeartbeatInterval: time.Second,
+			TokenKey:          tokenKey,
+			Provider:          apiProvider,
+		})
+	}()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("api-compatible shim exited with error: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("api-compatible shim did not stop")
+		}
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitForV2Provider(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	body, err := json.Marshal(compat.OpenAIChatRequest{
+		Model:    "deepseek-default",
+		Messages: []compat.OpenAIChatMessage{{Role: "user", Content: "rate limit please"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal OpenAI chat request: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_e2e_v2_api_provider_rate_limit")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("rate-limit chat request: %v", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read rate-limit response: %v", err)
+	}
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", resp.StatusCode, string(data))
+	}
+	var out struct {
+		Code           string `json:"code"`
+		UpstreamCode   string `json:"upstream_code"`
+		UpstreamStatus int    `json:"upstream_status"`
+		RetryAfter     string `json:"retry_after"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode rate-limit response: %v body=%s", err, string(data))
+	}
+	if out.Code != "upstream_error" || out.UpstreamCode != "rate_limit_exceeded" || out.UpstreamStatus != http.StatusTooManyRequests || out.RetryAfter != "11" {
+		t.Fatalf("unexpected rate-limit payload: %#v body=%s", out, string(data))
+	}
+	degraded := waitForV2ProviderHealth(t, client, server.URL, registration.Identity.ProviderInstanceID, provider.HealthDegraded)
+	if degraded.Health.Reason != "upstream rate limited" {
+		t.Fatalf("unexpected degraded provider health: %#v", degraded.Health)
+	}
+}
+
 func TestE2E_V2CLIContainerProviderShimAuthRefreshAndRoute(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
@@ -603,6 +711,46 @@ func waitForV2ProviderAuth(t *testing.T, client *http.Client, baseURL string, pr
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("provider %q auth status did not become %q: %v", providerInstanceID, status, lastErr)
+	return provider.Registration{}
+}
+
+func waitForV2ProviderHealth(t *testing.T, client *http.Client, baseURL string, providerInstanceID string, status provider.HealthStatus) provider.Registration {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL + "/router/v1/providers")
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		var out struct {
+			Providers []provider.Registration `json:"providers"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode providers response: %v body=%s", err, string(data))
+		}
+		for _, registration := range out.Providers {
+			if registration.Identity.ProviderInstanceID == providerInstanceID && registration.Health.Status == status {
+				return registration
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("provider %q health status did not become %q: %v", providerInstanceID, status, lastErr)
 	return provider.Registration{}
 }
 
