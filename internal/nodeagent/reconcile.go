@@ -54,8 +54,15 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 				state = "running"
 			}
 			if containerSpec.AuthCopy != nil {
-				if err := rt.CopyTo(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
-					return ReconcileResult{}, err
+				if spec.Auth.Sync.ContainerToHost {
+					if err := rt.CopyFrom(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
+						return ReconcileResult{}, err
+					}
+				}
+				if shouldSyncHostToContainerOnReconcile(spec.Auth.Sync.HostToContainer) {
+					if err := rt.CopyTo(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
+						return ReconcileResult{}, err
+					}
 				}
 			}
 			now := time.Now().UTC()
@@ -256,6 +263,15 @@ func shellJoin(args []string) string {
 		quoted = append(quoted, shellQuote(arg))
 	}
 	return strings.Join(quoted, " ")
+}
+
+func shouldSyncHostToContainerOnReconcile(policy string) bool {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "always", "reconcile":
+		return true
+	default:
+		return false
+	}
 }
 
 func shellQuote(value string) string {

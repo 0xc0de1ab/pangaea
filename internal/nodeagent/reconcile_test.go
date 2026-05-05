@@ -11,12 +11,13 @@ import (
 )
 
 type fakeContainerRuntime struct {
-	pulled  runtime.ImageRef
-	created runtime.ContainerSpec
-	copied  *runtime.CopySpec
-	started runtime.ContainerID
-	stats   runtime.Stats
-	calls   []string
+	pulled     runtime.ImageRef
+	created    runtime.ContainerSpec
+	copied     *runtime.CopySpec
+	copiedFrom *runtime.CopySpec
+	started    runtime.ContainerID
+	stats      runtime.Stats
+	calls      []string
 }
 
 func (r *fakeContainerRuntime) Info(context.Context) (runtime.RuntimeInfo, error) {
@@ -55,7 +56,9 @@ func (r *fakeContainerRuntime) CopyTo(_ context.Context, _ runtime.ContainerID, 
 	return nil
 }
 
-func (r *fakeContainerRuntime) CopyFrom(context.Context, runtime.ContainerID, runtime.CopySpec) error {
+func (r *fakeContainerRuntime) CopyFrom(_ context.Context, _ runtime.ContainerID, spec runtime.CopySpec) error {
+	r.calls = append(r.calls, "copy-from")
+	r.copiedFrom = &spec
 	return nil
 }
 
@@ -238,6 +241,73 @@ func TestReconcileProviderContainerReusesExistingContainer(t *testing.T) {
 	}
 	if result.ContainerID != "container-existing" || result.Report.State != "running" {
 		t.Fatalf("unexpected existing container result: %#v", result)
+	}
+}
+
+func TestReconcileExistingContainerDoesNotOverwriteAuthByDefault(t *testing.T) {
+	rt := &fakeExistingContainerRuntime{
+		status: runtime.ContainerStatus{
+			ID:    "container-existing",
+			Image: "pangaea/provider-codex:test",
+			State: "running",
+		},
+		found: true,
+	}
+	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ID:         "codex-samtest",
+		InstanceID: "codex-samtest-a1",
+		Kind:       provider.KindCLIContainer,
+		Image:      "pangaea/provider-codex:test",
+		Service:    provider.ServiceCodex,
+		Auth: AuthSpec{
+			Mode:          "file",
+			HostPath:      "/srv/pangaea/auth/codex/samtest/auth.json",
+			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
+		},
+		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("reconcile existing provider container: %v", err)
+	}
+	if rt.copied != nil || rt.copiedFrom != nil {
+		t.Fatalf("existing container auth should not sync by default: copied=%#v copiedFrom=%#v", rt.copied, rt.copiedFrom)
+	}
+}
+
+func TestReconcileExistingContainerSyncsAuthByPolicy(t *testing.T) {
+	rt := &fakeExistingContainerRuntime{
+		status: runtime.ContainerStatus{
+			ID:    "container-existing",
+			Image: "pangaea/provider-codex:test",
+			State: "running",
+		},
+		found: true,
+	}
+	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ID:         "codex-samtest",
+		InstanceID: "codex-samtest-a1",
+		Kind:       provider.KindCLIContainer,
+		Image:      "pangaea/provider-codex:test",
+		Service:    provider.ServiceCodex,
+		Auth: AuthSpec{
+			Mode:          "file",
+			HostPath:      "/srv/pangaea/auth/codex/samtest/auth.json",
+			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
+			Sync: AuthSyncSpec{
+				ContainerToHost: true,
+				HostToContainer: "reconcile",
+			},
+		},
+		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("reconcile existing provider container: %v", err)
+	}
+	if rt.copied == nil || rt.copiedFrom == nil {
+		t.Fatalf("expected bidirectional auth sync by policy: copied=%#v copiedFrom=%#v", rt.copied, rt.copiedFrom)
+	}
+	if got, want := strings.Join(rt.calls, ","), "copy-from,copy"; got != want {
+		t.Fatalf("sync call order = %s, want %s", got, want)
 	}
 }
 
