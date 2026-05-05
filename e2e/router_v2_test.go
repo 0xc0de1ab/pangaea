@@ -14,6 +14,7 @@ import (
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/nodeagent"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providershim"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
@@ -194,6 +195,78 @@ func TestE2E_V2RouterDataPlaneFallbackWhenSelectedSessionMissing(t *testing.T) {
 	}
 }
 
+func TestE2E_V2NodeAgentProviderInventory(t *testing.T) {
+	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2E2EPolicy))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	engine, err := v2router.NewEngine(policy, provider.NewRegistry(), quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	server := httptest.NewServer(v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- nodeagent.RunControlClient(ctx, nodeagent.ControlClientOptions{
+			ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
+			NodeID:            "node-a1",
+			HostName:          "snowbox",
+			HeartbeatInterval: 20 * time.Millisecond,
+			Runtime:           control.RuntimeInfo{Kind: "docker", Version: "26.1.0"},
+			ProviderSpecs: []nodeagent.ProviderSpec{{
+				ID:          "codex-samtest",
+				InstanceID:  "codex-samtest-0001",
+				Kind:        provider.KindCLIContainer,
+				Image:       "pangaea/provider-codex:test",
+				AccountHint: "samtest4u@gmail.com",
+				Service:     provider.ServiceCodex,
+				Shim:        nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
+			}, {
+				ID:          "gemini-nullcode",
+				InstanceID:  "gemini-nullcode-0001",
+				Kind:        provider.KindCLIContainer,
+				Image:       "pangaea/provider-gemini:test",
+				AccountHint: "nullcode@gmail.com",
+				Service:     provider.ServiceGemini,
+				Shim:        nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityAuthRefreshOneshot}},
+			}},
+		})
+	}()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("node agent exited with error: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("node agent did not stop")
+		}
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitForV2Provider(t, client, server.URL, "codex-samtest-0001")
+	waitForV2Provider(t, client, server.URL, "gemini-nullcode-0001")
+	node := waitForV2Node(t, client, server.URL, "node-a1")
+	if node.HostName != "snowbox" || node.Runtime.Kind != "docker" {
+		t.Fatalf("unexpected node inventory: %#v", node)
+	}
+	containers := waitForV2Containers(t, client, server.URL, 2)
+	seen := map[string]bool{}
+	for _, container := range containers {
+		if container.HostName != "snowbox" {
+			t.Fatalf("container inventory lost host name: %#v", containers)
+		}
+		seen[container.ProviderInstanceID] = true
+	}
+	if !seen["codex-samtest-0001"] || !seen["gemini-nullcode-0001"] {
+		t.Fatalf("expected both provider containers, got %#v", containers)
+	}
+}
+
 func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -217,6 +290,44 @@ func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, provid
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("provider %q did not register", providerInstanceID)
+}
+
+func waitForV2Containers(t *testing.T, client *http.Client, baseURL string, minCount int) []v2router.ContainerSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL + "/router/v1/containers")
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		var out struct {
+			Containers []v2router.ContainerSnapshot `json:"containers"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode containers response: %v body=%s", err, string(data))
+		}
+		if len(out.Containers) >= minCount {
+			return out.Containers
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("container inventory did not reach %d entries: %v", minCount, lastErr)
+	return nil
 }
 
 func waitForV2ProviderAuth(t *testing.T, client *http.Client, baseURL string, providerInstanceID string, status provider.AuthStatus) provider.Registration {
