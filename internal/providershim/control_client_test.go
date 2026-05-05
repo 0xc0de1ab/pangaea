@@ -112,6 +112,57 @@ func TestRunSimulatorControlClientSendsUsage(t *testing.T) {
 	t.Fatalf("provider usage did not update registry")
 }
 
+func TestRunSimulatorControlClientSendsInventoryAndAuth(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunSimulatorControlClient(ctx, ControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: 10 * time.Millisecond,
+			Simulator:         sim,
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, node := range engine.Nodes() {
+			if node.NodeID == "providersim-node" && node.HostName == "providersim-host" && !node.LastInventoryAt.IsZero() {
+				goto inventorySeen
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("provider inventory did not create node snapshot")
+
+inventorySeen:
+	sim.SetAuthStatus(provider.AuthRefreshSoon)
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, registration := range engine.Providers() {
+			if registration.Identity.ProviderInstanceID == "providersim-openai-0001" && registration.Auth.Status == provider.AuthRefreshSoon {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("provider auth heartbeat did not update registry")
+}
+
 func controlURL(serverURL string) string {
 	return "ws" + strings.TrimPrefix(serverURL, "http") + "/router/v1/control/ws"
 }

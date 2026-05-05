@@ -71,6 +71,10 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	waitForV2Provider(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	node := waitForV2Node(t, client, server.URL, registration.Identity.NodeID)
+	if node.HostName != "providersim-host" {
+		t.Fatalf("unexpected node snapshot: %#v", node)
+	}
 	setV2QuotaLimit(t, client, server.URL, quota.Scope{APIKeyID: "req_e2e_v2_data", Model: "providersim-default"}, quota.Limit{MaxTokens: 1000, MaxRequests: 10})
 	response := waitForV2OpenAIChat(t, client, server.URL)
 	if len(response.Choices) != 1 || response.Choices[0].Message.Content != "providersim: e2e hello" {
@@ -205,6 +209,46 @@ func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, provid
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("provider %q did not register", providerInstanceID)
+}
+
+func waitForV2Node(t *testing.T, client *http.Client, baseURL string, nodeID string) v2router.NodeSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL + "/router/v1/nodes")
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		var out struct {
+			Nodes []v2router.NodeSnapshot `json:"nodes"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode nodes response: %v body=%s", err, string(data))
+		}
+		for _, node := range out.Nodes {
+			if node.NodeID == nodeID && !node.LastInventoryAt.IsZero() {
+				return node
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("node %q did not report inventory: %v", nodeID, lastErr)
+	return v2router.NodeSnapshot{}
 }
 
 func setV2QuotaLimit(t *testing.T, client *http.Client, baseURL string, scope quota.Scope, limit quota.Limit) {

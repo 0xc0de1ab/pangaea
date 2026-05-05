@@ -48,6 +48,12 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 	if err := readControlOK(conn); err != nil {
 		return err
 	}
+	if err := writeSimulatorInventoryReport(conn, opts.Simulator, "provider_inventory_initial"); err != nil {
+		return err
+	}
+	if err := writeSimulatorAuthReport(conn, opts.Simulator, "provider_auth_initial"); err != nil {
+		return err
+	}
 	if err := writeSimulatorUsageReport(conn, opts.Simulator, "provider_usage_initial"); err != nil {
 		return err
 	}
@@ -60,9 +66,11 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 			return nil
 		case <-ticker.C:
 			heartbeat := opts.Simulator.Heartbeat()
+			auth := opts.Simulator.Auth()
 			if err := writeEnvelope(conn, control.MessageTypeProviderHeartbeat, "provider_heartbeat_"+time.Now().UTC().Format("20060102150405.000000000"), control.ProviderHeartbeat{
 				ProviderInstanceID: heartbeat.Identity.ProviderInstanceID,
 				Health:             heartbeat.Health,
+				Auth:               auth.Auth,
 				Limits:             heartbeat.Limits,
 				ReportedAt:         heartbeat.ReportedAt,
 			}); err != nil {
@@ -104,6 +112,36 @@ func writeEnvelope(conn *websocket.Conn, messageType control.MessageType, id str
 		return err
 	}
 	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func writeSimulatorInventoryReport(conn *websocket.Conn, sim *providersim.Simulator, id string) error {
+	registration, err := sim.Registration()
+	if err != nil {
+		return err
+	}
+	inventory := sim.Inventory()
+	if err := writeEnvelope(conn, control.MessageTypeProviderInventoryReport, id, control.ProviderInventoryReport{
+		Mode:       "full",
+		NodeID:     registration.Identity.NodeID,
+		HostName:   registration.Identity.HostName,
+		Providers:  []control.ProviderRegisterPayload{registration},
+		ReportedAt: inventory.ReportedAt,
+	}); err != nil {
+		return err
+	}
+	return readControlOK(conn)
+}
+
+func writeSimulatorAuthReport(conn *websocket.Conn, sim *providersim.Simulator, id string) error {
+	auth := sim.Auth()
+	if err := writeEnvelope(conn, control.MessageTypeProviderAuthReport, id, control.ProviderAuthReport{
+		ProviderInstanceID: auth.Identity.ProviderInstanceID,
+		Auth:               auth.Auth,
+		ReportedAt:         auth.ReportedAt,
+	}); err != nil {
+		return err
+	}
+	return readControlOK(conn)
 }
 
 func writeSimulatorUsageReport(conn *websocket.Conn, sim *providersim.Simulator, id string) error {
