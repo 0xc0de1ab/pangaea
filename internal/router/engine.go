@@ -63,6 +63,10 @@ type ProviderAvailability interface {
 	ProviderAvailable(providerInstanceID string) bool
 }
 
+type ProviderLoad interface {
+	ProviderQueueDepth(providerInstanceID string) int
+}
+
 type ModelInfo struct {
 	ID             string                `json:"id"`
 	CanonicalModel string                `json:"canonical_model,omitempty"`
@@ -137,12 +141,24 @@ func (e *Engine) Providers() []provider.Registration {
 
 func (e *Engine) routingRegistrations() []provider.Registration {
 	registrations := e.registry.List()
-	if e.availability == nil {
+	availability := e.availability
+	load, _ := e.invoker.(ProviderLoad)
+	if availability == nil && load == nil {
 		return registrations
 	}
 	out := make([]provider.Registration, len(registrations))
 	for i, registration := range registrations {
-		if !e.availability.ProviderAvailable(registration.Identity.ProviderInstanceID) {
+		providerInstanceID := registration.Identity.ProviderInstanceID
+		if load != nil {
+			queueDepth := load.ProviderQueueDepth(providerInstanceID)
+			if queueDepth > registration.Limits.QueueDepth {
+				registration.Limits.QueueDepth = queueDepth
+			}
+			if queueDepth > registration.Limits.ActiveStreams {
+				registration.Limits.ActiveStreams = queueDepth
+			}
+		}
+		if availability != nil && !availability.ProviderAvailable(providerInstanceID) {
 			registration.Health.Status = provider.HealthDown
 			registration.Health.Reason = "data session disconnected"
 			registration.Health.CheckedAt = time.Now().UTC()

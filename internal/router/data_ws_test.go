@@ -82,6 +82,73 @@ func TestDataBrokerProviderAvailableTracksDataSession(t *testing.T) {
 	t.Fatalf("provider should become unavailable after data session disconnects")
 }
 
+func TestDataBrokerProviderQueueDepthTracksPendingRequest(t *testing.T) {
+	broker, err := NewDataBroker([]byte("test-data-queue-depth-key"))
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{DataBroker: broker}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/data/ws?provider_instance_id=provider-a1", nil)
+	if err != nil {
+		t.Fatalf("dial data ws: %v", err)
+	}
+	defer conn.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := broker.Invoke(context.Background(), provider.Registration{
+			Identity: provider.ProviderIdentity{ProviderInstanceID: "provider-a1"},
+		}, compat.Request{
+			ID:      "req_queue_depth_1",
+			Dialect: compat.APIDialectOpenAI,
+			Model:   "gpt-5-sim",
+			Messages: []compat.Message{{
+				Role:    compat.MessageRoleUser,
+				Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+			}},
+		})
+		done <- err
+	}()
+
+	var request tunnel.DataRequest
+	if err := conn.ReadJSON(&request); err != nil {
+		t.Fatalf("read request frame: %v", err)
+	}
+	if got := broker.ProviderQueueDepth("provider-a1"); got != 1 {
+		t.Fatalf("queue depth while request pending = %d, want 1", got)
+	}
+	if err := conn.WriteJSON(tunnel.DataResponse{
+		Type:      tunnel.DataFrameResponse,
+		RequestID: request.RequestID,
+		StreamID:  request.Descriptor.StreamID,
+		Response: compat.Response{
+			Dialect: compat.APIDialectOpenAI,
+			Model:   "gpt-5-sim",
+			Message: compat.Message{
+				Role:    compat.MessageRoleAssistant,
+				Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "ok"}},
+			},
+			StopReason: "stop",
+			Usage:      compat.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		},
+	}); err != nil {
+		t.Fatalf("write response frame: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("invoke: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("invoke did not finish")
+	}
+	if got := broker.ProviderQueueDepth("provider-a1"); got != 0 {
+		t.Fatalf("queue depth after request finished = %d, want 0", got)
+	}
+}
+
 func TestHTTPDataSessionsIncludesProviderMetadata(t *testing.T) {
 	engine, _ := testEngine(t)
 	broker, err := NewDataBroker([]byte("test-data-session-metadata-key"))

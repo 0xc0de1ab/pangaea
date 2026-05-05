@@ -65,6 +65,47 @@ func TestEngineDryRunFiltersUnavailableDataSessions(t *testing.T) {
 	}
 }
 
+func TestEngineDryRunUsesLiveProviderQueueDepth(t *testing.T) {
+	registry := provider.NewRegistry()
+	busy := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
+	ready := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	if err := registry.Upsert(busy); err != nil {
+		t.Fatalf("upsert busy: %v", err)
+	}
+	if err := registry.Upsert(ready); err != nil {
+		t.Fatalf("upsert ready: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(availabilityInvoker{
+		available: map[string]bool{
+			busy.Identity.ProviderInstanceID:  true,
+			ready.Identity.ProviderInstanceID: true,
+		},
+		queueDepth: map[string]int{busy.Identity.ProviderInstanceID: 9},
+	})
+
+	decision := engine.DryRun(RouteRequest{
+		Model:      "gpt-5-codex",
+		APIDialect: compat.APIDialectOpenAI,
+		Stream:     true,
+	})
+	if !decision.Allowed || decision.Selected != ready.Identity.ProviderInstanceID {
+		t.Fatalf("expected lower-weight ready provider selected, got %#v", decision)
+	}
+	foundBusyRejection := false
+	for _, rejection := range decision.Rejections {
+		if rejection.ProviderInstanceID == busy.Identity.ProviderInstanceID && strings.Contains(rejection.Reason, "queue_depth 9") {
+			foundBusyRejection = true
+		}
+	}
+	if !foundBusyRejection {
+		t.Fatalf("expected busy provider queue-depth rejection, got %#v", decision.Rejections)
+	}
+}
+
 func TestEngineReserveRouteReservesQuota(t *testing.T) {
 	engine, ledger := testEngine(t)
 
@@ -475,11 +516,16 @@ func (f missingDataSessionFallbackInvoker) Invoke(ctx context.Context, registrat
 }
 
 type availabilityInvoker struct {
-	available map[string]bool
+	available  map[string]bool
+	queueDepth map[string]int
 }
 
 func (i availabilityInvoker) ProviderAvailable(providerInstanceID string) bool {
 	return i.available[providerInstanceID]
+}
+
+func (i availabilityInvoker) ProviderQueueDepth(providerInstanceID string) int {
+	return i.queueDepth[providerInstanceID]
 }
 
 func (i availabilityInvoker) Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error) {

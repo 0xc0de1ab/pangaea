@@ -199,6 +199,17 @@ func (b *DataBroker) ProviderAvailable(providerInstanceID string) bool {
 	return b.session(providerInstanceID) != nil
 }
 
+func (b *DataBroker) ProviderQueueDepth(providerInstanceID string) int {
+	if b == nil {
+		return 0
+	}
+	session := b.session(providerInstanceID)
+	if session == nil {
+		return 0
+	}
+	return session.pendingCount()
+}
+
 func (b *DataBroker) Sessions() []DataSessionSnapshot {
 	if b == nil {
 		return nil
@@ -441,11 +452,16 @@ func (s *dataSession) closeWithError(err error) {
 }
 
 func (s *dataSession) snapshot() DataSessionSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	pending := s.pendingCount()
 	return DataSessionSnapshot{
 		ProviderInstanceID: s.providerInstanceID,
 		ConnectedAt:        s.connectedAt,
-		PendingRequests:    len(s.pending),
+		PendingRequests:    pending,
 	}
+}
+
+func (s *dataSession) pendingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending)
 }
