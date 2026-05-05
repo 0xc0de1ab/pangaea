@@ -27,8 +27,6 @@ RUN chmod 0755 /usr/local/bin/provider-entrypoint /usr/local/bin/pangaeactl
 ENV CODEX_HOME=/var/lib/pangaea/auth/codex \
     PANGAEA_SHIM_MODE=cli-container \
     PANGAEA_SERVICE=codex \
-    PANGAEA_AUTH_PATH=/var/lib/pangaea/auth/codex/auth.json \
-    PANGAEA_AUTH_FORMAT=codex-auth-json-format \
     PANGAEA_UPSTREAM_DIALECT=openai \
     PANGAEA_MODEL=gpt-5-codex \
     PANGAEA_MODEL_ALIAS=codex-default
