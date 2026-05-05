@@ -16,6 +16,7 @@ import (
 type APICompatibleShimOptions struct {
 	ControlURL           string
 	DataURL              string
+	PeerToken            string
 	HeartbeatInterval    time.Duration
 	TokenKey             []byte
 	Provider             *apiprovider.Provider
@@ -57,6 +58,7 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 	eg.Go(func() error {
 		return RunStaticControlClient(ctx, StaticControlClientOptions{
 			ControlURL:           opts.ControlURL,
+			PeerToken:            opts.PeerToken,
 			HeartbeatInterval:    opts.HeartbeatInterval,
 			Registration:         registration,
 			UsageReporter:        opts.Provider,
@@ -69,9 +71,10 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 	})
 	eg.Go(func() error {
 		return RunSimulatorDataClient(ctx, DataClientOptions{
-			DataURL:  dataURL,
-			TokenKey: opts.TokenKey,
-			Provider: opts.Provider,
+			DataURL:   dataURL,
+			PeerToken: opts.PeerToken,
+			TokenKey:  opts.TokenKey,
+			Provider:  opts.Provider,
 		})
 	})
 	return eg.Wait()
@@ -79,6 +82,7 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 
 type StaticControlClientOptions struct {
 	ControlURL           string
+	PeerToken            string
 	HeartbeatInterval    time.Duration
 	Registration         provider.Registration
 	UsageReporter        usageReporter
@@ -113,7 +117,7 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 		heartbeatInterval = 30 * time.Second
 	}
 	state := newStaticControlState(opts.Registration)
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		return err
 	}

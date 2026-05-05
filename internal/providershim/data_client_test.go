@@ -20,7 +20,7 @@ func TestRunSimulatorDataClientCancelsInflightRequestOnCancelFrame(t *testing.T)
 	if err != nil {
 		t.Fatalf("new data broker: %v", err)
 	}
-	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{DataBroker: broker}))
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{DataBroker: broker, PeerToken: "peer-secret"}))
 	defer server.Close()
 
 	registration := testDataClientRegistration("provider-a1")
@@ -34,9 +34,10 @@ func TestRunSimulatorDataClientCancelsInflightRequestOnCancelFrame(t *testing.T)
 	done := make(chan error, 1)
 	go func() {
 		done <- RunSimulatorDataClient(ctx, DataClientOptions{
-			DataURL:  dataURL(server.URL, registration.Identity.ProviderInstanceID),
-			TokenKey: tokenKey,
-			Provider: blocking,
+			DataURL:   dataURL(server.URL, registration.Identity.ProviderInstanceID),
+			PeerToken: "peer-secret",
+			TokenKey:  tokenKey,
+			Provider:  blocking,
 		})
 	}()
 	waitForDataSession(t, broker, registration.Identity.ProviderInstanceID)

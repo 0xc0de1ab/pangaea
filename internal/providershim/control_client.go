@@ -18,6 +18,7 @@ var ErrShimConfig = errors.New("invalid provider shim config")
 
 type ControlClientOptions struct {
 	ControlURL        string
+	PeerToken         string
 	HeartbeatInterval time.Duration
 	Simulator         *providersim.Simulator
 }
@@ -34,7 +35,7 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 		heartbeatInterval = 30 * time.Second
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		return err
 	}
@@ -103,10 +104,14 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 }
 
 func RegisterSimulatorOnce(ctx context.Context, controlURL string, sim *providersim.Simulator) error {
+	return RegisterSimulatorOnceWithPeerToken(ctx, controlURL, "", sim)
+}
+
+func RegisterSimulatorOnceWithPeerToken(ctx context.Context, controlURL string, peerToken string, sim *providersim.Simulator) error {
 	if controlURL == "" || sim == nil {
 		return fmt.Errorf("%w: control url and simulator are required", ErrShimConfig)
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, controlURL, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, controlURL, routerPeerDialHeader(peerToken))
 	if err != nil {
 		return err
 	}

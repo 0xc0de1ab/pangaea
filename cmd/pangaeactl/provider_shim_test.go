@@ -29,6 +29,7 @@ func TestRunProviderShimRequiresSimulatorForNow(t *testing.T) {
 func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_SHIM_MODE", "cli-container")
 	t.Setenv("PANGAEA_ROUTER_CONTROL_URL", "ws://router/control")
+	t.Setenv("PANGAEA_ROUTER_PEER_TOKEN", "peer-secret")
 	t.Setenv("PANGAEA_PROVIDER_ID", "codex-samtest")
 	t.Setenv("PANGAEA_PROVIDER_INSTANCE_ID", "codex-samtest-a1")
 	t.Setenv("PANGAEA_NODE_ID", "node-a1")
@@ -52,7 +53,7 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_AUTH_BOOTSTRAP_TIMEOUT", "3s")
 
 	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true})
-	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.ProviderID != "codex-samtest" {
+	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.RouterPeerToken != "peer-secret" || opts.ProviderID != "codex-samtest" {
 		t.Fatalf("env defaults did not populate identity/mode: %#v", opts)
 	}
 	if opts.Account != "codex@example.test" || opts.UpstreamBaseURL != "http://127.0.0.1:8080" || opts.Model != "gpt-5-codex" {
@@ -83,6 +84,9 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	}
 	if cmd.Flags().Lookup("router-data") == nil {
 		t.Fatalf("expected router-data flag")
+	}
+	if cmd.Flags().Lookup("router-peer-token") == nil {
+		t.Fatalf("expected router-peer-token flag")
 	}
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")

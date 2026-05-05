@@ -21,6 +21,7 @@ type HTTPOptions struct {
 	Engine     *Engine
 	APIKeys    *security.APIKeyStore
 	DataBroker *DataBroker
+	PeerToken  string
 }
 
 type openAIModelList struct {
@@ -601,8 +602,11 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		})
 		c.Status(http.StatusNoContent)
 	})
-	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine))
+	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine, opts.PeerToken))
 	r.GET("/router/v1/data/ws", func(c *gin.Context) {
+		if !authenticateRouterPeerRequest(c, opts.PeerToken) {
+			return
+		}
 		if opts.DataBroker == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": ErrDataBrokerNotReady.Error()})
 			return

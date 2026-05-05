@@ -15,8 +15,11 @@ var controlUpgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 
-func handleControlWS(engine *Engine) gin.HandlerFunc {
+func handleControlWS(engine *Engine, peerToken string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !authenticateRouterPeerRequest(c, peerToken) {
+			return
+		}
 		if engine == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": ErrRouterNotReady.Error()})
 			return

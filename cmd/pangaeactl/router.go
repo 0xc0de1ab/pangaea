@@ -23,6 +23,7 @@ type routerServeOptions struct {
 	TenantID       string
 	UserID         string
 	StreamTokenKey string
+	PeerToken      string
 }
 
 func newRouterCmd() *cobra.Command {
@@ -57,10 +58,12 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.TenantID, "tenant-id", "dev", "tenant id assigned to --api-key")
 	cmd.Flags().StringVar(&opts.UserID, "user-id", "dev", "user id assigned to --api-key")
 	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
+	cmd.Flags().StringVar(&opts.PeerToken, "peer-token", "", "optional bearer token required for node-agent and provider-shim websocket connections")
 	return cmd
 }
 
 func runRouterServe(ctx context.Context, opts routerServeOptions) error {
+	opts.PeerToken = stringEnvDefault(opts.PeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
 	engine, err := buildRouterEngine(opts)
 	if err != nil {
 		return err
@@ -74,7 +77,7 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	}
 	srv := &http.Server{
 		Addr:              opts.Listen,
-		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts), DataBroker: dataBroker}),
+		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts), DataBroker: dataBroker, PeerToken: opts.PeerToken}),
 		ReadHeaderTimeout: common.ReadTimeout,
 	}
 	errCh := make(chan error, 1)

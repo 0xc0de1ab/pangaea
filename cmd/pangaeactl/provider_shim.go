@@ -20,6 +20,7 @@ import (
 type providerShimRunOptions struct {
 	RouterControlURL         string
 	RouterDataURL            string
+	RouterPeerToken          string
 	Simulator                bool
 	APICompatible            bool
 	CLIContainer             bool
@@ -74,6 +75,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.RouterControlURL, "router-control", "", "router control WebSocket URL")
 	cmd.Flags().StringVar(&opts.RouterDataURL, "router-data", "", "router data WebSocket URL; defaults to --router-control with /data/ws and provider_instance_id")
+	cmd.Flags().StringVar(&opts.RouterPeerToken, "router-peer-token", "", "optional bearer token for router control and data websocket connections")
 	cmd.Flags().BoolVar(&opts.Simulator, "simulator", false, "run the built-in simulator shim")
 	cmd.Flags().BoolVar(&opts.APICompatible, "api-compatible", false, "run a generic API-compatible provider shim")
 	cmd.Flags().BoolVar(&opts.CLIContainer, "cli-container", false, "run a CLI-container provider shim against a local compatible upstream")
@@ -121,6 +123,7 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 		return providershim.RunSimulatorShim(ctx, providershim.SimulatorShimOptions{
 			ControlURL:        opts.RouterControlURL,
 			DataURL:           opts.RouterDataURL,
+			PeerToken:         opts.RouterPeerToken,
 			HeartbeatInterval: opts.HeartbeatInterval,
 			TokenKey:          []byte(opts.StreamTokenKey),
 			Simulator:         sim,
@@ -133,6 +136,7 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 		return providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
 			ControlURL:        opts.RouterControlURL,
 			DataURL:           opts.RouterDataURL,
+			PeerToken:         opts.RouterPeerToken,
 			HeartbeatInterval: opts.HeartbeatInterval,
 			TokenKey:          []byte(opts.StreamTokenKey),
 			Provider:          apiProvider,
@@ -145,6 +149,7 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 		return providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
 			ControlURL:           opts.RouterControlURL,
 			DataURL:              opts.RouterDataURL,
+			PeerToken:            opts.RouterPeerToken,
 			HeartbeatInterval:    opts.HeartbeatInterval,
 			TokenKey:             []byte(opts.StreamTokenKey),
 			Provider:             apiProvider,
@@ -171,6 +176,7 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	}
 	opts.RouterControlURL = stringEnvDefault(opts.RouterControlURL, "PANGAEA_ROUTER_CONTROL_URL")
 	opts.RouterDataURL = stringEnvDefault(opts.RouterDataURL, "PANGAEA_ROUTER_DATA_URL")
+	opts.RouterPeerToken = stringEnvDefault(opts.RouterPeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
 	opts.StreamTokenKey = stringEnvDefault(opts.StreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
 	opts.ProviderID = stringEnvDefault(opts.ProviderID, "PANGAEA_PROVIDER_ID")
 	opts.ProviderInstanceID = stringEnvDefault(opts.ProviderInstanceID, "PANGAEA_PROVIDER_INSTANCE_ID")

@@ -54,6 +54,22 @@ func TestRegisterSimulatorOnceRegistersProvider(t *testing.T) {
 	}
 }
 
+func TestRegisterSimulatorOnceSendsPeerToken(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine, PeerToken: "peer-secret"}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	if err := RegisterSimulatorOnceWithPeerToken(context.Background(), controlURL(server.URL), "peer-secret", sim); err != nil {
+		t.Fatalf("register simulator once with peer token: %v", err)
+	}
+
+	waitForProvider(t, engine, "providersim-openai-0001")
+}
+
 func TestRunSimulatorControlClientSendsHeartbeat(t *testing.T) {
 	engine := testRouterEngine(t)
 	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))

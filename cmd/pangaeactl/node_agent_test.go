@@ -20,7 +20,7 @@ func TestNodeAgentRunCommandExists(t *testing.T) {
 	if cmd.Use != "run" {
 		t.Fatalf("expected run command, got %q", cmd.Use)
 	}
-	for _, name := range []string{"config", "router-control", "router-data", "stream-token-key", "node-id", "host-name", "heartbeat-interval", "runtime-kind", "runtime-version", "runtime-rootless", "reconcile-containers", "reconcile-interval", "docker-bin"} {
+	for _, name := range []string{"config", "router-control", "router-data", "stream-token-key", "router-peer-token", "node-id", "host-name", "heartbeat-interval", "runtime-kind", "runtime-version", "runtime-rootless", "reconcile-containers", "reconcile-interval", "docker-bin"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -128,7 +128,7 @@ func TestNodeAgentReconcileProviderCommandExists(t *testing.T) {
 	if cmd.Use != "reconcile-provider" {
 		t.Fatalf("expected reconcile-provider command, got %q", cmd.Use)
 	}
-	for _, name := range []string{"config", "provider", "node-id", "host-name", "router-control", "router-data", "stream-token-key", "runtime-kind", "docker-bin", "dry-run"} {
+	for _, name := range []string{"config", "provider", "node-id", "host-name", "router-control", "router-data", "stream-token-key", "router-peer-token", "runtime-kind", "docker-bin", "dry-run"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}

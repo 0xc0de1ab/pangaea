@@ -22,6 +22,7 @@ type ControlClientOptions struct {
 	ControlURL        string
 	RouterDataURL     string
 	StreamTokenKey    string
+	PeerToken         string
 	NodeID            string
 	HostName          string
 	AgentVersion      string
@@ -42,7 +43,7 @@ func RunControlClient(ctx context.Context, opts ControlClientOptions) error {
 		return err
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		return err
 	}
@@ -215,6 +216,7 @@ func reconcileProviderContainers(ctx context.Context, opts ControlClientOptions)
 			RouterControlURL: opts.ControlURL,
 			RouterDataURL:    opts.RouterDataURL,
 			StreamTokenKey:   opts.StreamTokenKey,
+			RouterPeerToken:  opts.PeerToken,
 		})
 		if err != nil {
 			return nil, err

@@ -66,4 +66,7 @@ func TestRouterServeCommandExposesStreamTokenKeyFlag(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
+	if cmd.Flags().Lookup("peer-token") == nil {
+		t.Fatalf("expected peer-token flag")
+	}
 }

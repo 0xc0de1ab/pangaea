@@ -51,6 +51,33 @@ func TestHTTPDataSessionsListsConnectedProvider(t *testing.T) {
 	}
 }
 
+func TestDataWSRequiresPeerTokenWhenConfigured(t *testing.T) {
+	broker, err := NewDataBroker([]byte("test-data-peer-auth-key"))
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{DataBroker: broker, PeerToken: "peer-secret"}))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/router/v1/data/ws?provider_instance_id=provider-a1"
+
+	conn, resp, err := websocket.DefaultDialer.Dial(url, nil)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("expected data ws dial without peer token to fail")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without peer token, got response=%#v err=%v", resp, err)
+	}
+
+	headers := http.Header{}
+	headers.Set("authorization", "Bearer peer-secret")
+	conn, _, err = websocket.DefaultDialer.Dial(url, headers)
+	if err != nil {
+		t.Fatalf("dial data ws with peer token: %v", err)
+	}
+	defer conn.Close()
+}
+
 func TestDataBrokerProviderAvailableTracksDataSession(t *testing.T) {
 	broker, err := NewDataBroker([]byte("test-data-availability-key"))
 	if err != nil {

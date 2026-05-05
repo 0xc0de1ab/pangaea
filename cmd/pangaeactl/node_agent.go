@@ -17,6 +17,7 @@ type nodeAgentRunOptions struct {
 	RouterControlURL    string
 	RouterDataURL       string
 	StreamTokenKey      string
+	RouterPeerToken     string
 	NodeID              string
 	HostName            string
 	HeartbeatInterval   time.Duration
@@ -56,6 +57,7 @@ func newNodeAgentRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.RouterControlURL, "router-control", "", "router control WebSocket URL")
 	cmd.Flags().StringVar(&opts.RouterDataURL, "router-data", "", "router data WebSocket URL for reconciled provider containers")
 	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
+	cmd.Flags().StringVar(&opts.RouterPeerToken, "router-peer-token", "", "optional bearer token for router control websocket and reconciled provider shims")
 	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "stable node id; defaults to --host-name or OS host name")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "physical host name to report to the router")
 	cmd.Flags().DurationVar(&opts.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "node heartbeat interval")
@@ -69,6 +71,7 @@ func newNodeAgentRunCmd() *cobra.Command {
 }
 
 func runNodeAgent(ctx context.Context, opts nodeAgentRunOptions) error {
+	opts.RouterPeerToken = stringEnvDefault(opts.RouterPeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
 	if opts.RouterControlURL == "" {
 		return fmt.Errorf("--router-control is required")
 	}
@@ -112,6 +115,7 @@ func runNodeAgentControl(ctx context.Context, opts nodeAgentRunOptions, provider
 		ControlURL:        opts.RouterControlURL,
 		RouterDataURL:     opts.RouterDataURL,
 		StreamTokenKey:    opts.StreamTokenKey,
+		PeerToken:         opts.RouterPeerToken,
 		NodeID:            opts.NodeID,
 		HostName:          opts.HostName,
 		AgentVersion:      version,
@@ -175,6 +179,7 @@ type nodeAgentReconcileProviderOptions struct {
 	RouterControlURL string
 	RouterDataURL    string
 	StreamTokenKey   string
+	RouterPeerToken  string
 	RuntimeKind      string
 	DockerBin        string
 	DryRun           bool
@@ -198,6 +203,7 @@ func newNodeAgentReconcileProviderCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.RouterControlURL, "router-control", "", "router control WebSocket URL to inject into the provider container")
 	cmd.Flags().StringVar(&opts.RouterDataURL, "router-data", "", "router data WebSocket URL to inject into the provider container")
 	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "stream token key to inject into the provider container")
+	cmd.Flags().StringVar(&opts.RouterPeerToken, "router-peer-token", "", "router peer token to inject into the provider container")
 	cmd.Flags().StringVar(&opts.RuntimeKind, "runtime-kind", "docker", "container runtime kind")
 	cmd.Flags().StringVar(&opts.DockerBin, "docker-bin", "docker", "docker CLI binary")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "validate and build container spec without touching runtime")
@@ -205,6 +211,7 @@ func newNodeAgentReconcileProviderCmd() *cobra.Command {
 }
 
 func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileProviderOptions) error {
+	opts.RouterPeerToken = stringEnvDefault(opts.RouterPeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
 	if opts.ConfigPath == "" {
 		return fmt.Errorf("--config is required")
 	}
@@ -232,6 +239,7 @@ func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileP
 			RouterControlURL: opts.RouterControlURL,
 			RouterDataURL:    opts.RouterDataURL,
 			StreamTokenKey:   opts.StreamTokenKey,
+			RouterPeerToken:  opts.RouterPeerToken,
 		})
 		return err
 	}
@@ -246,6 +254,7 @@ func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileP
 		RouterControlURL: opts.RouterControlURL,
 		RouterDataURL:    opts.RouterDataURL,
 		StreamTokenKey:   opts.StreamTokenKey,
+		RouterPeerToken:  opts.RouterPeerToken,
 	})
 	return err
 }

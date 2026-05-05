@@ -2,6 +2,7 @@ package router
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -336,6 +337,30 @@ func TestControlWSUnknownProviderReportsError(t *testing.T) {
 	if payload.Code != "provider_not_found" {
 		t.Fatalf("expected provider_not_found error, got %#v", payload)
 	}
+}
+
+func TestControlWSRequiresPeerTokenWhenConfigured(t *testing.T) {
+	engine, _ := testEngine(t)
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{Engine: engine, PeerToken: "peer-secret"}))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/router/v1/control/ws"
+
+	conn, resp, err := websocket.DefaultDialer.Dial(url, nil)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("expected control ws dial without peer token to fail")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without peer token, got response=%#v err=%v", resp, err)
+	}
+
+	headers := http.Header{}
+	headers.Set("authorization", "Bearer peer-secret")
+	conn, _, err = websocket.DefaultDialer.Dial(url, headers)
+	if err != nil {
+		t.Fatalf("dial control ws with peer token: %v", err)
+	}
+	defer conn.Close()
 }
 
 func dialControlWS(t *testing.T, engine *Engine) *websocket.Conn {

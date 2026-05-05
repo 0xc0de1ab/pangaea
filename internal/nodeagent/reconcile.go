@@ -22,6 +22,7 @@ type ContainerSpecOptions struct {
 	RouterControlURL string
 	RouterDataURL    string
 	StreamTokenKey   string
+	RouterPeerToken  string
 }
 
 type containerFinder interface {
@@ -176,6 +177,9 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	}
 	if opts.StreamTokenKey != "" {
 		env["PANGAEA_STREAM_TOKEN_KEY"] = opts.StreamTokenKey
+	}
+	if opts.RouterPeerToken != "" {
+		env["PANGAEA_ROUTER_PEER_TOKEN"] = opts.RouterPeerToken
 	}
 	if spec.AccountHint != "" {
 		env["PANGAEA_ACCOUNT_DISPLAY"] = spec.AccountHint

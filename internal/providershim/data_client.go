@@ -20,15 +20,17 @@ import (
 type SimulatorShimOptions struct {
 	ControlURL        string
 	DataURL           string
+	PeerToken         string
 	HeartbeatInterval time.Duration
 	TokenKey          []byte
 	Simulator         *providersim.Simulator
 }
 
 type DataClientOptions struct {
-	DataURL  string
-	TokenKey []byte
-	Provider providerInvoker
+	DataURL   string
+	PeerToken string
+	TokenKey  []byte
+	Provider  providerInvoker
 }
 
 type providerInvoker interface {
@@ -63,15 +65,17 @@ func RunSimulatorShim(ctx context.Context, opts SimulatorShimOptions) error {
 	eg.Go(func() error {
 		return RunSimulatorControlClient(ctx, ControlClientOptions{
 			ControlURL:        opts.ControlURL,
+			PeerToken:         opts.PeerToken,
 			HeartbeatInterval: opts.HeartbeatInterval,
 			Simulator:         opts.Simulator,
 		})
 	})
 	eg.Go(func() error {
 		return RunSimulatorDataClient(ctx, DataClientOptions{
-			DataURL:  dataURL,
-			TokenKey: opts.TokenKey,
-			Provider: opts.Simulator,
+			DataURL:   dataURL,
+			PeerToken: opts.PeerToken,
+			TokenKey:  opts.TokenKey,
+			Provider:  opts.Simulator,
 		})
 	})
 	return eg.Wait()
@@ -92,7 +96,7 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 	if err != nil {
 		return err
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.DataURL, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.DataURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
