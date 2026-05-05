@@ -51,6 +51,8 @@ providers:
       bootstrap: copy
       host_path: ` + hostPath + `
       container_path: ` + containerPath + `
+    shim:
+      capabilities: [api.openai.chat]
 `
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

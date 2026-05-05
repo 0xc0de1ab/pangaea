@@ -65,6 +65,7 @@ func runNodeAgent(ctx context.Context, opts nodeAgentRunOptions) error {
 		if err != nil {
 			return err
 		}
+		providers := cfg.Providers
 		if opts.NodeID == "" {
 			opts.NodeID = cfg.Node.ID
 		}
@@ -80,7 +81,12 @@ func runNodeAgent(ctx context.Context, opts nodeAgentRunOptions) error {
 		if !opts.RuntimeRootless {
 			opts.RuntimeRootless = cfg.Runtime.Rootless
 		}
+		return runNodeAgentControl(ctx, opts, providers)
 	}
+	return runNodeAgentControl(ctx, opts, nil)
+}
+
+func runNodeAgentControl(ctx context.Context, opts nodeAgentRunOptions, providers []nodeagent.ProviderSpec) error {
 	return nodeagent.RunControlClient(ctx, nodeagent.ControlClientOptions{
 		ControlURL:        opts.RouterControlURL,
 		NodeID:            opts.NodeID,
@@ -92,6 +98,7 @@ func runNodeAgent(ctx context.Context, opts nodeAgentRunOptions) error {
 			Version:  opts.RuntimeVersion,
 			Rootless: opts.RuntimeRootless,
 		},
+		ProviderSpecs: providers,
 	})
 }
 

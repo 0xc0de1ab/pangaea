@@ -155,6 +155,9 @@ func (p ProviderSpec) Validate() error {
 	if p.Service == "" {
 		return fmt.Errorf("%w: provider %q service is required", ErrNodeAgentConfig, p.ID)
 	}
+	if len(p.Shim.Capabilities) == 0 {
+		return fmt.Errorf("%w: provider %q shim.capabilities is required", ErrNodeAgentConfig, p.ID)
+	}
 	if err := p.Auth.Validate(p.ID); err != nil {
 		return err
 	}

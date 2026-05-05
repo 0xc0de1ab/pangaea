@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/gorilla/websocket"
 )
 
@@ -25,6 +26,7 @@ type ControlClientOptions struct {
 	Arch              string
 	Runtime           control.RuntimeInfo
 	Capabilities      []string
+	ProviderSpecs     []ProviderSpec
 	HeartbeatInterval time.Duration
 	Resources         control.ResourceUsage
 }
@@ -57,6 +59,9 @@ func RunControlClient(ctx context.Context, opts ControlClientOptions) error {
 	if err := writeHeartbeat(conn, opts); err != nil {
 		return err
 	}
+	if err := writeInventory(conn, opts); err != nil {
+		return err
+	}
 
 	ticker := time.NewTicker(opts.HeartbeatInterval)
 	defer ticker.Stop()
@@ -66,6 +71,9 @@ func RunControlClient(ctx context.Context, opts ControlClientOptions) error {
 			return nil
 		case <-ticker.C:
 			if err := writeHeartbeat(conn, opts); err != nil {
+				return err
+			}
+			if err := writeInventory(conn, opts); err != nil {
 				return err
 			}
 		}
@@ -113,6 +121,51 @@ func writeHeartbeat(conn *websocket.Conn, opts ControlClientOptions) error {
 		NodeID:     opts.NodeID,
 		HostName:   opts.HostName,
 		Health:     control.HealthReport{Status: "ready", CheckedAt: now},
+		Resources:  opts.Resources,
+		ReportedAt: now,
+	}); err != nil {
+		return err
+	}
+	return readControlOK(conn)
+}
+
+func writeInventory(conn *websocket.Conn, opts ControlClientOptions) error {
+	if len(opts.ProviderSpecs) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	providers := make([]provider.Registration, 0, len(opts.ProviderSpecs))
+	containers := make([]control.ContainerReport, 0, len(opts.ProviderSpecs))
+	for _, spec := range opts.ProviderSpecs {
+		registration := spec.Registration(opts.NodeID, opts.HostName, now)
+		if err := registration.Validate(); err != nil {
+			return err
+		}
+		providers = append(providers, registration)
+		containerID := registration.Identity.ContainerID
+		if containerID == "" {
+			containerID = registration.Identity.ProviderInstanceID
+		}
+		containers = append(containers, control.ContainerReport{
+			ContainerID:        containerID,
+			ProviderID:         registration.Identity.ProviderID,
+			ProviderInstanceID: registration.Identity.ProviderInstanceID,
+			Image:              spec.Image,
+			State:              "declared",
+			Health:             control.HealthReport{Status: "declared", CheckedAt: now},
+			Labels: map[string]string{
+				"pangaea.provider_id":          registration.Identity.ProviderID,
+				"pangaea.provider_instance_id": registration.Identity.ProviderInstanceID,
+				"pangaea.service":              string(registration.Identity.Service),
+			},
+		})
+	}
+	if err := writeEnvelope(conn, control.MessageTypeProviderInventoryReport, "node_inventory_"+now.Format("20060102150405.000000000"), control.ProviderInventoryReport{
+		Mode:       "full",
+		NodeID:     opts.NodeID,
+		HostName:   opts.HostName,
+		Providers:  providers,
+		Containers: containers,
 		Resources:  opts.Resources,
 		ReportedAt: now,
 	}); err != nil {

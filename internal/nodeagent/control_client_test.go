@@ -53,6 +53,61 @@ func TestRunControlClientSendsNodeHelloAndHeartbeat(t *testing.T) {
 	t.Fatalf("node control client did not update node snapshot")
 }
 
+func TestRunControlClientSendsConfiguredProviderInventory(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunControlClient(ctx, ControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			NodeID:            "node-a1",
+			HostName:          "snowbox",
+			HeartbeatInterval: time.Second,
+			ProviderSpecs: []ProviderSpec{{
+				ID:          "codex-samtest",
+				InstanceID:  "codex-samtest-0001",
+				Kind:        provider.KindCLIContainer,
+				Image:       "pangaea/provider-codex:test",
+				AccountHint: "samtest4u@gmail.com",
+				Service:     provider.ServiceCodex,
+				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
+			}, {
+				ID:          "codex-nullcode",
+				InstanceID:  "codex-nullcode-0001",
+				Kind:        provider.KindCLIContainer,
+				Image:       "pangaea/provider-codex:test",
+				AccountHint: "nullcode@gmail.com",
+				Service:     provider.ServiceCodex,
+				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+			}},
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(engine.Providers()) == 2 && len(engine.Containers()) == 2 {
+			cancel()
+			if err := <-errCh; err != nil {
+				t.Fatalf("control client returned error: %v", err)
+			}
+			providers := engine.Providers()
+			for _, registration := range providers {
+				if registration.Identity.HostName != "snowbox" {
+					t.Fatalf("inventory lost host name: %#v", providers)
+				}
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("node control client did not report configured provider inventory: providers=%#v containers=%#v", engine.Providers(), engine.Containers())
+}
+
 func TestRunControlClientRequiresControlURL(t *testing.T) {
 	err := RunControlClient(context.Background(), ControlClientOptions{NodeID: "node-a1", HostName: "host-a1"})
 	if err == nil {

@@ -79,6 +79,8 @@ providers:
       mode: file
       host_path: /a
       container_path: /b
+    shim:
+      capabilities: [api.openai.chat]
   - id: codex-samtest
     kind: cli-container
     service: codex
@@ -86,6 +88,8 @@ providers:
       mode: file
       host_path: /c
       container_path: /d
+    shim:
+      capabilities: [api.openai.chat]
 `))
 	if err == nil {
 		t.Fatalf("expected duplicate provider id error")
