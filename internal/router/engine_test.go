@@ -294,6 +294,53 @@ func TestEngineInvokeFallsBackAfterProviderFailure(t *testing.T) {
 	}
 }
 
+func TestEngineInvokeMarksMissingDataSessionProviderDown(t *testing.T) {
+	registry := provider.NewRegistry()
+	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
+	second := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	if err := registry.Upsert(first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	if err := registry.Upsert(second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(missingDataSessionFallbackInvoker{failProviderInstanceID: first.Identity.ProviderInstanceID})
+
+	_, execution, err := engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_missing_data_session_1",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5.3-codex-spark",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if execution.Decision.Selected != second.Identity.ProviderInstanceID {
+		t.Fatalf("expected fallback provider selected, got %#v", execution.Decision)
+	}
+	updated, ok := registry.Get(first.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("missing first provider")
+	}
+	if updated.Health.Status != provider.HealthDown || updated.Health.Reason != "data session disconnected" {
+		t.Fatalf("missing data session provider was not marked down: %#v", updated.Health)
+	}
+}
+
 func testEngine(t *testing.T) (*Engine, *quota.Ledger) {
 	t.Helper()
 	registry := provider.NewRegistry()
@@ -376,4 +423,15 @@ func (f fallbackInvoker) Invoke(_ context.Context, registration provider.Registr
 		},
 		Usage: compat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
 	}, nil
+}
+
+type missingDataSessionFallbackInvoker struct {
+	failProviderInstanceID string
+}
+
+func (f missingDataSessionFallbackInvoker) Invoke(ctx context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
+	if registration.Identity.ProviderInstanceID == f.failProviderInstanceID {
+		return compat.Response{}, ErrNoDataSession
+	}
+	return fallbackInvoker{}.Invoke(ctx, registration, request)
 }

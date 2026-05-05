@@ -355,6 +355,7 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 			finalExecution = candidateExecution
 			break
 		}
+		e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
 		invokeRejections = append(invokeRejections, RouteRejection{
 			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
 			ProviderID:         candidate.Identity.ProviderID,
@@ -463,6 +464,7 @@ func (e *Engine) InvokeStream(ctx context.Context, execution RouteExecutionReque
 			finalExecution = candidateExecution
 			break
 		}
+		e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
 		invokeRejections = append(invokeRejections, RouteRejection{
 			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
 			ProviderID:         candidate.Identity.ProviderID,
@@ -522,4 +524,21 @@ func (e *Engine) executionCandidates(decision RouteDecision) []provider.Registra
 		seen[providerInstanceID] = struct{}{}
 	}
 	return out
+}
+
+func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID string, err error) {
+	if e == nil || e.registry == nil || err == nil {
+		return
+	}
+	if !errors.Is(err, ErrNoDataSession) {
+		return
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return
+	}
+	registration.Health.Status = provider.HealthDown
+	registration.Health.Reason = "data session disconnected"
+	registration.Health.CheckedAt = time.Now().UTC()
+	_ = e.registry.Upsert(registration)
 }
