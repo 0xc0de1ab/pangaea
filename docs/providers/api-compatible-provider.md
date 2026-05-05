@@ -48,6 +48,8 @@ providers:
     upstream:
       base_url: https://api.example.invalid/anthropic
       compat: anthropic
+      api_key_file: /run/secrets/glm_api_key
+      api_key_mode: bearer
     auth:
       mode: api_key
       secret_ref: glm_api_key
@@ -55,6 +57,16 @@ providers:
 
 Secrets are loaded by node-agent/shim from approved secret store or local config.
 Raw secrets are never reported to router.
+
+Supported API key placements:
+
+- `api_key_mode: bearer`: `Authorization: Bearer <key>`; default.
+- `api_key_mode: header` with `api_key_header`: raw header value, for example
+  `x-goog-api-key`.
+- `api_key_mode: query` with `api_key_query_param`: query parameter value, for
+  example `key`.
+- `api_key_mode: none`: no automatic API key injection; use explicit headers or
+  network-local auth.
 
 ## Bootstrap
 

@@ -38,6 +38,9 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_UPSTREAM_BASE_URL", "http://127.0.0.1:8080")
 	t.Setenv("PANGAEA_UPSTREAM_DIALECT", "openai")
 	t.Setenv("PANGAEA_MODEL", "gpt-5-codex")
+	t.Setenv("PANGAEA_UPSTREAM_API_KEY_MODE", "header")
+	t.Setenv("PANGAEA_UPSTREAM_API_KEY_HEADER", "x-api-key")
+	t.Setenv("PANGAEA_UPSTREAM_API_KEY_QUERY_PARAM", "key")
 	t.Setenv("PANGAEA_MODEL_ALIAS", "codex-default")
 	t.Setenv("PANGAEA_AUTH_PATH", "/var/lib/pangaea/auth/codex/auth.json")
 	t.Setenv("PANGAEA_AUTH_FORMAT", "codex-auth-json-format")
@@ -53,6 +56,9 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	}
 	if opts.Account != "codex@example.test" || opts.UpstreamBaseURL != "http://127.0.0.1:8080" || opts.Model != "gpt-5-codex" {
 		t.Fatalf("env defaults did not populate provider config: %#v", opts)
+	}
+	if opts.UpstreamAPIKeyMode != "header" || opts.UpstreamAPIKeyHeader != "x-api-key" || opts.UpstreamAPIKeyQueryParam != "key" {
+		t.Fatalf("env defaults did not populate upstream api key auth config: %#v", opts)
 	}
 	if opts.AuthPath != "/var/lib/pangaea/auth/codex/auth.json" || opts.AuthFormat != "codex-auth-json-format" || opts.RefreshCommand != "codex exec ping" {
 		t.Fatalf("env defaults did not populate auth config: %#v", opts)
@@ -80,10 +86,28 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "model", "model-alias", "auth-path", "auth-format", "refresh-command", "refresh-login-shell", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
+	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "model", "model-alias", "auth-path", "auth-format", "refresh-command", "refresh-login-shell", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
+	}
+}
+
+func TestBuildAPICompatibleProviderRejectsIncompleteAPIKeyHeaderMode(t *testing.T) {
+	_, err := buildAPICompatibleProvider(providerShimRunOptions{
+		ProviderID:         "gemini-api",
+		ProviderInstanceID: "gemini-api-0001",
+		NodeID:             "node-a1",
+		HostName:           "snowbox",
+		Service:            "gemini",
+		UpstreamBaseURL:    "https://generativelanguage.googleapis.com",
+		UpstreamDialect:    "gemini",
+		UpstreamAPIKey:     "key",
+		UpstreamAPIKeyMode: "header",
+		Model:              "gemini-2.5-pro",
+	})
+	if err == nil {
+		t.Fatalf("expected incomplete api key header mode error")
 	}
 }
 

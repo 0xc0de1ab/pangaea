@@ -41,6 +41,11 @@ providers:
       command: [codex, exec, "Reply with OK only."]
       cooldown: 2h
       timeout: 90s
+    upstream:
+      base_url: http://127.0.0.1:8080
+      compat: openai
+      api_key_file: /run/secrets/codex-api-key
+      api_key_mode: bearer
     shim:
       protocols: [openai]
       capabilities: [api.openai.chat, models.read, auth.refresh.oneshot]
@@ -74,6 +79,9 @@ providers:
 	}
 	if len(registration.Models) != 1 || registration.Models[0].ID != "gpt-5-codex" {
 		t.Fatalf("expected configured model registration, got %#v", registration.Models)
+	}
+	if cfg.Providers[0].Upstream.APIKeyFile != "/run/secrets/codex-api-key" || cfg.Providers[0].Upstream.APIKeyMode != "bearer" {
+		t.Fatalf("expected upstream api key config to parse, got %#v", cfg.Providers[0].Upstream)
 	}
 	foundModelsRead := false
 	for _, capability := range registration.Capabilities {
@@ -112,6 +120,34 @@ providers:
 `))
 	if err == nil {
 		t.Fatalf("expected duplicate provider id error")
+	}
+}
+
+func TestParseConfigYAMLAcceptsAPIKeyAuthProvider(t *testing.T) {
+	cfg, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: glm-api
+    kind: api-compatible
+    service: glm
+    models:
+      - id: glm-4.6
+    upstream:
+      base_url: https://api.example.test/anthropic
+      compat: anthropic
+      api_key_file: /run/secrets/glm
+      api_key_mode: bearer
+    auth:
+      mode: api_key
+    shim:
+      protocols: [anthropic]
+      capabilities: [api.anthropic.messages, stream.sse]
+`))
+	if err != nil {
+		t.Fatalf("parse api key provider config: %v", err)
+	}
+	if len(cfg.Providers) != 1 || cfg.Providers[0].Auth.Mode != "api_key" || cfg.Providers[0].Upstream.APIKeyFile != "/run/secrets/glm" {
+		t.Fatalf("unexpected api key provider config: %#v", cfg.Providers)
 	}
 }
 

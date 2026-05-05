@@ -113,7 +113,11 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 		Refresh: RefreshSpec{Command: []string{"codex", "exec", "Reply with OK only."}, Threshold: "5m", Cooldown: "90s", Timeout: "2m"},
 		Shim:    ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 		Upstream: UpstreamSpec{
-			BaseURL: "http://127.0.0.1:8080",
+			BaseURL:          "http://127.0.0.1:8080",
+			APIKeyFile:       "/run/secrets/codex-api-key",
+			APIKeyMode:       "header",
+			APIKeyHeader:     "x-api-key",
+			APIKeyQueryParam: "key",
 		},
 	}, "node-a1", "snowbox")
 	if err != nil {
@@ -126,18 +130,22 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 		t.Fatalf("missing auth env: %#v", spec.Env)
 	}
 	for key, want := range map[string]string{
-		"PANGAEA_SHIM_MODE":            "cli-container",
-		"PANGAEA_ACCOUNT_DISPLAY":      "samtest4u@gmail.com",
-		"PANGAEA_UPSTREAM_BASE_URL":    "http://127.0.0.1:8080",
-		"PANGAEA_UPSTREAM_DIALECT":     "openai",
-		"PANGAEA_MODEL":                "gpt-5-codex",
-		"PANGAEA_MODEL_ALIAS":          "codex-default",
-		"PANGAEA_AUTH_FORMAT":          "codex-auth-json-format",
-		"PANGAEA_REFRESH_COMMAND":      "'codex' 'exec' 'Reply with OK only.'",
-		"PANGAEA_REFRESH_THRESHOLD":    "5m",
-		"PANGAEA_REFRESH_COOLDOWN":     "90s",
-		"PANGAEA_REFRESH_TIMEOUT":      "2m",
-		"PANGAEA_PROVIDER_INSTANCE_ID": "codex-samtest-a1",
+		"PANGAEA_SHIM_MODE":                    "cli-container",
+		"PANGAEA_ACCOUNT_DISPLAY":              "samtest4u@gmail.com",
+		"PANGAEA_UPSTREAM_BASE_URL":            "http://127.0.0.1:8080",
+		"PANGAEA_UPSTREAM_API_KEY_FILE":        "/run/secrets/codex-api-key",
+		"PANGAEA_UPSTREAM_API_KEY_MODE":        "header",
+		"PANGAEA_UPSTREAM_API_KEY_HEADER":      "x-api-key",
+		"PANGAEA_UPSTREAM_API_KEY_QUERY_PARAM": "key",
+		"PANGAEA_UPSTREAM_DIALECT":             "openai",
+		"PANGAEA_MODEL":                        "gpt-5-codex",
+		"PANGAEA_MODEL_ALIAS":                  "codex-default",
+		"PANGAEA_AUTH_FORMAT":                  "codex-auth-json-format",
+		"PANGAEA_REFRESH_COMMAND":              "'codex' 'exec' 'Reply with OK only.'",
+		"PANGAEA_REFRESH_THRESHOLD":            "5m",
+		"PANGAEA_REFRESH_COOLDOWN":             "90s",
+		"PANGAEA_REFRESH_TIMEOUT":              "2m",
+		"PANGAEA_PROVIDER_INSTANCE_ID":         "codex-samtest-a1",
 	} {
 		if spec.Env[key] != want {
 			t.Fatalf("env[%s] = %q, want %q in %#v", key, spec.Env[key], want, spec.Env)

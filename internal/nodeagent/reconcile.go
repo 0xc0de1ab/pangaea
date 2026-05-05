@@ -183,6 +183,21 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	if spec.Upstream.BaseURL != "" {
 		env["PANGAEA_UPSTREAM_BASE_URL"] = spec.Upstream.BaseURL
 	}
+	if spec.Upstream.APIKey != "" {
+		env["PANGAEA_UPSTREAM_API_KEY"] = spec.Upstream.APIKey
+	}
+	if spec.Upstream.APIKeyFile != "" {
+		env["PANGAEA_UPSTREAM_API_KEY_FILE"] = spec.Upstream.APIKeyFile
+	}
+	if spec.Upstream.APIKeyMode != "" {
+		env["PANGAEA_UPSTREAM_API_KEY_MODE"] = spec.Upstream.APIKeyMode
+	}
+	if spec.Upstream.APIKeyHeader != "" {
+		env["PANGAEA_UPSTREAM_API_KEY_HEADER"] = spec.Upstream.APIKeyHeader
+	}
+	if spec.Upstream.APIKeyQueryParam != "" {
+		env["PANGAEA_UPSTREAM_API_KEY_QUERY_PARAM"] = spec.Upstream.APIKeyQueryParam
+	}
 	if dialect := providerDialect(spec); dialect != "" {
 		env["PANGAEA_UPSTREAM_DIALECT"] = dialect
 	}

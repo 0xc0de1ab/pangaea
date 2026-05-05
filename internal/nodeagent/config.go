@@ -88,8 +88,13 @@ type ResourceSpec struct {
 }
 
 type UpstreamSpec struct {
-	BaseURL string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
-	Compat  string `json:"compat,omitempty" yaml:"compat,omitempty"`
+	BaseURL          string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
+	Compat           string `json:"compat,omitempty" yaml:"compat,omitempty"`
+	APIKey           string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	APIKeyFile       string `json:"api_key_file,omitempty" yaml:"api_key_file,omitempty"`
+	APIKeyMode       string `json:"api_key_mode,omitempty" yaml:"api_key_mode,omitempty"`
+	APIKeyHeader     string `json:"api_key_header,omitempty" yaml:"api_key_header,omitempty"`
+	APIKeyQueryParam string `json:"api_key_query_param,omitempty" yaml:"api_key_query_param,omitempty"`
 }
 
 func LoadConfigFile(path string) (Config, error) {
@@ -181,6 +186,8 @@ func (a AuthSpec) Validate(providerID string) error {
 	}
 	switch mode {
 	case "file":
+	case "api_key":
+		return nil
 	default:
 		return fmt.Errorf("%w: provider %q unsupported auth mode %q", ErrNodeAgentConfig, providerID, mode)
 	}

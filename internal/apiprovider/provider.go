@@ -22,25 +22,31 @@ import (
 var ErrAPIProviderConfig = errors.New("invalid api-compatible provider config")
 
 type Options struct {
-	Registration provider.Registration
-	BaseURL      string
-	Dialect      compat.APIDialect
-	APIKey       string
-	APIKeyFile   string
-	Headers      map[string]string
-	HTTPClient   *http.Client
+	Registration     provider.Registration
+	BaseURL          string
+	Dialect          compat.APIDialect
+	APIKey           string
+	APIKeyFile       string
+	APIKeyMode       string
+	APIKeyHeader     string
+	APIKeyQueryParam string
+	Headers          map[string]string
+	HTTPClient       *http.Client
 }
 
 type Provider struct {
-	registration provider.Registration
-	baseURL      *url.URL
-	dialect      compat.APIDialect
-	apiKey       string
-	apiKeyFile   string
-	headers      map[string]string
-	client       *http.Client
-	usageMu      sync.Mutex
-	usage        provider.UsageReport
+	registration     provider.Registration
+	baseURL          *url.URL
+	dialect          compat.APIDialect
+	apiKey           string
+	apiKeyFile       string
+	apiKeyMode       string
+	apiKeyHeader     string
+	apiKeyQueryParam string
+	headers          map[string]string
+	client           *http.Client
+	usageMu          sync.Mutex
+	usage            provider.UsageReport
 }
 
 func New(opts Options) (*Provider, error) {
@@ -60,18 +66,25 @@ func New(opts Options) (*Provider, error) {
 	if !opts.Dialect.Valid() {
 		return nil, fmt.Errorf("%w: unsupported dialect %q", ErrAPIProviderConfig, opts.Dialect)
 	}
+	apiKeyMode, apiKeyHeader, apiKeyQueryParam, err := normalizeAPIKeyAuth(opts.APIKeyMode, opts.APIKeyHeader, opts.APIKeyQueryParam)
+	if err != nil {
+		return nil, err
+	}
 	client := opts.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 2 * time.Minute}
 	}
 	return &Provider{
-		registration: opts.Registration,
-		baseURL:      baseURL,
-		dialect:      opts.Dialect,
-		apiKey:       strings.TrimSpace(opts.APIKey),
-		apiKeyFile:   strings.TrimSpace(opts.APIKeyFile),
-		headers:      cloneHeaders(opts.Headers),
-		client:       client,
+		registration:     opts.Registration,
+		baseURL:          baseURL,
+		dialect:          opts.Dialect,
+		apiKey:           strings.TrimSpace(opts.APIKey),
+		apiKeyFile:       strings.TrimSpace(opts.APIKeyFile),
+		apiKeyMode:       apiKeyMode,
+		apiKeyHeader:     apiKeyHeader,
+		apiKeyQueryParam: apiKeyQueryParam,
+		headers:          cloneHeaders(opts.Headers),
+		client:           client,
 		usage: provider.UsageReport{
 			ObservedAt: time.Now().UTC(),
 			Source:     "api-compatible",
@@ -202,14 +215,14 @@ func (p *Provider) doJSON(ctx context.Context, method string, path string, body 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, p.endpoint(path), bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, method, p.endpoint(path, apiKey), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("accept", "application/json")
-	if apiKey != "" {
-		req.Header.Set("authorization", "Bearer "+apiKey)
+	if err := p.applyAPIKeyHeader(req, apiKey); err != nil {
+		return err
 	}
 	for key, value := range p.headers {
 		req.Header.Set(key, value)
@@ -246,7 +259,7 @@ func (p *Provider) apiKeyForRequest() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-func (p *Provider) endpoint(path string) string {
+func (p *Provider) endpoint(path string, apiKey string) string {
 	u := *p.baseURL
 	basePath := strings.TrimRight(u.Path, "/")
 	if basePath == "" {
@@ -254,7 +267,54 @@ func (p *Provider) endpoint(path string) string {
 	} else {
 		u.Path = basePath + path
 	}
+	if apiKey != "" && p.apiKeyMode == "query" {
+		q := u.Query()
+		q.Set(p.apiKeyQueryParam, apiKey)
+		u.RawQuery = q.Encode()
+	}
 	return u.String()
+}
+
+func (p *Provider) applyAPIKeyHeader(req *http.Request, apiKey string) error {
+	if apiKey == "" || p.apiKeyMode == "query" || p.apiKeyMode == "none" {
+		return nil
+	}
+	switch p.apiKeyMode {
+	case "bearer":
+		req.Header.Set(p.apiKeyHeader, "Bearer "+apiKey)
+	case "header":
+		req.Header.Set(p.apiKeyHeader, apiKey)
+	default:
+		return fmt.Errorf("%w: unsupported api key mode %q", ErrAPIProviderConfig, p.apiKeyMode)
+	}
+	return nil
+}
+
+func normalizeAPIKeyAuth(mode string, header string, queryParam string) (string, string, string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	header = strings.TrimSpace(header)
+	queryParam = strings.TrimSpace(queryParam)
+	if mode == "" {
+		mode = "bearer"
+	}
+	switch mode {
+	case "bearer":
+		if header == "" {
+			header = "authorization"
+		}
+	case "header":
+		if header == "" {
+			return "", "", "", fmt.Errorf("%w: api key header is required for header mode", ErrAPIProviderConfig)
+		}
+	case "query":
+		if queryParam == "" {
+			return "", "", "", fmt.Errorf("%w: api key query param is required for query mode", ErrAPIProviderConfig)
+		}
+	case "none":
+	default:
+		return "", "", "", fmt.Errorf("%w: unsupported api key mode %q", ErrAPIProviderConfig, mode)
+	}
+	return mode, header, queryParam, nil
 }
 
 func cloneHeaders(in map[string]string) map[string]string {

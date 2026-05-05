@@ -18,32 +18,35 @@ import (
 )
 
 type providerShimRunOptions struct {
-	RouterControlURL   string
-	RouterDataURL      string
-	Simulator          bool
-	APICompatible      bool
-	CLIContainer       bool
-	HeartbeatInterval  time.Duration
-	StreamTokenKey     string
-	ProviderID         string
-	ProviderInstanceID string
-	NodeID             string
-	HostName           string
-	Service            string
-	Account            string
-	UpstreamBaseURL    string
-	UpstreamDialect    string
-	UpstreamAPIKey     string
-	UpstreamAPIKeyFile string
-	Model              string
-	ModelAlias         string
-	AuthPath           string
-	AuthFormat         string
-	RefreshCommand     string
-	RefreshLoginShell  bool
-	RefreshTimeout     time.Duration
-	RefreshThreshold   time.Duration
-	RefreshCooldown    time.Duration
+	RouterControlURL         string
+	RouterDataURL            string
+	Simulator                bool
+	APICompatible            bool
+	CLIContainer             bool
+	HeartbeatInterval        time.Duration
+	StreamTokenKey           string
+	ProviderID               string
+	ProviderInstanceID       string
+	NodeID                   string
+	HostName                 string
+	Service                  string
+	Account                  string
+	UpstreamBaseURL          string
+	UpstreamDialect          string
+	UpstreamAPIKey           string
+	UpstreamAPIKeyFile       string
+	UpstreamAPIKeyMode       string
+	UpstreamAPIKeyHeader     string
+	UpstreamAPIKeyQueryParam string
+	Model                    string
+	ModelAlias               string
+	AuthPath                 string
+	AuthFormat               string
+	RefreshCommand           string
+	RefreshLoginShell        bool
+	RefreshTimeout           time.Duration
+	RefreshThreshold         time.Duration
+	RefreshCooldown          time.Duration
 }
 
 func newProviderShimCmd() *cobra.Command {
@@ -85,6 +88,9 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.UpstreamDialect, "upstream-dialect", "openai", "upstream API dialect for --api-compatible (openai|anthropic|gemini)")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKey, "upstream-api-key", "", "upstream API key for --api-compatible")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKeyFile, "upstream-api-key-file", "", "path to an upstream API key file; re-read before each upstream request")
+	cmd.Flags().StringVar(&opts.UpstreamAPIKeyMode, "upstream-api-key-mode", "", "upstream API key placement (bearer|header|query|none; default bearer)")
+	cmd.Flags().StringVar(&opts.UpstreamAPIKeyHeader, "upstream-api-key-header", "", "header name for --upstream-api-key-mode bearer or header")
+	cmd.Flags().StringVar(&opts.UpstreamAPIKeyQueryParam, "upstream-api-key-query-param", "", "query parameter name for --upstream-api-key-mode query")
 	cmd.Flags().StringVar(&opts.Model, "model", "", "canonical upstream model id for --api-compatible")
 	cmd.Flags().StringVar(&opts.ModelAlias, "model-alias", "", "optional public model alias for --api-compatible")
 	cmd.Flags().StringVar(&opts.AuthPath, "auth-path", "", "container-local auth file path for --cli-container")
@@ -175,6 +181,9 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	opts.UpstreamDialect = stringEnvDefault(opts.UpstreamDialect, "PANGAEA_UPSTREAM_DIALECT")
 	opts.UpstreamAPIKey = stringEnvDefault(opts.UpstreamAPIKey, "PANGAEA_UPSTREAM_API_KEY")
 	opts.UpstreamAPIKeyFile = stringEnvDefault(opts.UpstreamAPIKeyFile, "PANGAEA_UPSTREAM_API_KEY_FILE")
+	opts.UpstreamAPIKeyMode = stringEnvDefault(opts.UpstreamAPIKeyMode, "PANGAEA_UPSTREAM_API_KEY_MODE")
+	opts.UpstreamAPIKeyHeader = stringEnvDefault(opts.UpstreamAPIKeyHeader, "PANGAEA_UPSTREAM_API_KEY_HEADER")
+	opts.UpstreamAPIKeyQueryParam = stringEnvDefault(opts.UpstreamAPIKeyQueryParam, "PANGAEA_UPSTREAM_API_KEY_QUERY_PARAM")
 	opts.Model = stringEnvDefault(opts.Model, "PANGAEA_MODEL")
 	opts.ModelAlias = stringEnvDefault(opts.ModelAlias, "PANGAEA_MODEL_ALIAS")
 	opts.AuthPath = stringEnvDefault(opts.AuthPath, "PANGAEA_AUTH_PATH")
@@ -352,10 +361,13 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 			Auth:         auth,
 			RegisteredAt: now,
 		},
-		BaseURL:    opts.UpstreamBaseURL,
-		Dialect:    dialect,
-		APIKey:     opts.UpstreamAPIKey,
-		APIKeyFile: opts.UpstreamAPIKeyFile,
+		BaseURL:          opts.UpstreamBaseURL,
+		Dialect:          dialect,
+		APIKey:           opts.UpstreamAPIKey,
+		APIKeyFile:       opts.UpstreamAPIKeyFile,
+		APIKeyMode:       opts.UpstreamAPIKeyMode,
+		APIKeyHeader:     opts.UpstreamAPIKeyHeader,
+		APIKeyQueryParam: opts.UpstreamAPIKeyQueryParam,
 	})
 }
 

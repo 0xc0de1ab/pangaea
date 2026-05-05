@@ -246,6 +246,96 @@ func TestProviderReloadsAPIKeyFilePerRequest(t *testing.T) {
 	}
 }
 
+func TestProviderSupportsRawHeaderAPIKeyAuth(t *testing.T) {
+	var sawKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawKey = r.Header.Get("x-goog-api-key")
+		_ = json.NewEncoder(w).Encode(compat.GeminiGenerateContentResponse{
+			ModelVersion: "gemini-upstream",
+			Candidates: []compat.GeminiCandidate{{
+				Content:      compat.GeminiContent{Role: "model", Parts: []compat.GeminiPart{{Text: "ok"}}},
+				FinishReason: "STOP",
+			}},
+			UsageMetadata: &compat.GeminiUsage{PromptTokenCount: 1, CandidatesTokenCount: 1, TotalTokenCount: 2},
+		})
+	}))
+	defer server.Close()
+
+	client, err := New(Options{
+		Registration: testRegistration(),
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectGemini,
+		APIKey:       "gemini-key",
+		APIKeyMode:   "header",
+		APIKeyHeader: "x-goog-api-key",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if _, err := client.Invoke(context.Background(), mustRegistration(t, client), compat.Request{
+		Dialect: compat.APIDialectGemini,
+		Model:   "gemini-upstream",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if sawKey != "gemini-key" {
+		t.Fatalf("raw header api key = %q, want gemini-key", sawKey)
+	}
+}
+
+func TestProviderSupportsQueryParamAPIKeyAuth(t *testing.T) {
+	var sawKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawKey = r.URL.Query().Get("key")
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-test",
+			Object: "chat.completion",
+			Model:  "gpt-upstream",
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "ok"},
+				FinishReason: "stop",
+			}},
+			Usage: &compat.OpenAIUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		})
+	}))
+	defer server.Close()
+
+	client, err := New(Options{
+		Registration:     testRegistration(),
+		BaseURL:          server.URL,
+		Dialect:          compat.APIDialectOpenAI,
+		APIKey:           "query-key",
+		APIKeyMode:       "query",
+		APIKeyQueryParam: "key",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if _, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello")); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if sawKey != "query-key" {
+		t.Fatalf("query api key = %q, want query-key", sawKey)
+	}
+}
+
+func TestProviderRejectsIncompleteAPIKeyAuthConfig(t *testing.T) {
+	_, err := New(Options{
+		Registration: testRegistration(),
+		BaseURL:      "https://api.example.test",
+		Dialect:      compat.APIDialectOpenAI,
+		APIKeyMode:   "header",
+	})
+	if err == nil {
+		t.Fatalf("expected missing header error")
+	}
+}
+
 func newTestProvider(t *testing.T, baseURL string, dialect compat.APIDialect, apiKey string) *Provider {
 	t.Helper()
 	client, err := New(Options{
