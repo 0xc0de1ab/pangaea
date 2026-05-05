@@ -79,27 +79,19 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		requestID := c.GetHeader("x-request-id")
-		if requestID == "" {
-			requestID = "req_" + time.Now().UTC().Format("20060102150405.000000000")
-		}
-		routeRequest := RouteRequest{
+		requestID := publicRequestID(c)
+		routeRequest := applyPublicPrincipal(principal, RouteRequest{
 			TenantID:   c.GetHeader("x-pangaea-tenant-id"),
 			UserID:     c.GetHeader("x-pangaea-user-id"),
 			APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
 			Model:      openaiRequest.Model,
 			APIDialect: compat.APIDialectOpenAI,
 			Stream:     openaiRequest.Stream,
-		}
-		if principal.ID != "" {
-			routeRequest.TenantID = principal.TenantID
-			routeRequest.UserID = principal.UserID
-			routeRequest.APIKeyID = principal.ID
-		}
+		})
 		response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
 			RequestID:     requestID,
 			RouteRequest:  routeRequest,
-			QuotaScope:    OpenAIQuotaScope(requestID, routeRequest, canonicalRequest),
+			QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
 			QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
 		}, canonicalRequest)
 		if err != nil {
@@ -112,6 +104,57 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		c.JSON(http.StatusOK, openaiResponse)
+	})
+	r.POST("/v1/messages", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var anthropicRequest compat.AnthropicMessagesRequest
+		if err := c.ShouldBindJSON(&anthropicRequest); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		canonicalRequest, err := compat.AnthropicMessagesRequestToCanonical(anthropicRequest)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		requestID := publicRequestID(c)
+		routeRequest := applyPublicPrincipal(principal, RouteRequest{
+			TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+			UserID:     c.GetHeader("x-pangaea-user-id"),
+			APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+			Model:      anthropicRequest.Model,
+			APIDialect: compat.APIDialectAnthropic,
+			Stream:     anthropicRequest.Stream,
+		})
+		response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
+			RequestID:     requestID,
+			RouteRequest:  routeRequest,
+			QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
+			QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
+		}, canonicalRequest)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, anthropicResponse)
+	})
+	r.POST("/v1beta/models/*modelAction", func(c *gin.Context) {
+		handleGeminiGenerateContent(c, opts)
+	})
+	r.POST("/v1/models/*modelAction", func(c *gin.Context) {
+		handleGeminiGenerateContent(c, opts)
 	})
 	r.GET("/router/v1/providers", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -155,12 +198,80 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	return r
 }
 
+func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
+	principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+	if !ok {
+		return
+	}
+	engine, ok := requireEngine(c, opts.Engine)
+	if !ok {
+		return
+	}
+	model, ok := geminiModelFromAction(c.Param("modelAction"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "unsupported Gemini model action"})
+		return
+	}
+	var geminiRequest compat.GeminiGenerateContentRequest
+	if err := c.ShouldBindJSON(&geminiRequest); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	canonicalRequest, err := compat.GeminiGenerateContentRequestToCanonical(geminiRequest, model)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	requestID := publicRequestID(c)
+	routeRequest := applyPublicPrincipal(principal, RouteRequest{
+		TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+		UserID:     c.GetHeader("x-pangaea-user-id"),
+		APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+		Model:      model,
+		APIDialect: compat.APIDialectGemini,
+	})
+	response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
+		RequestID:     requestID,
+		RouteRequest:  routeRequest,
+		QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
+		QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
+	}, canonicalRequest)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	geminiResponse, err := compat.GeminiGenerateContentResponseFromCanonical(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, geminiResponse)
+}
+
 func requireEngine(c *gin.Context, engine *Engine) (*Engine, bool) {
 	if engine == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": ErrRouterNotReady.Error()})
 		return nil, false
 	}
 	return engine, true
+}
+
+func publicRequestID(c *gin.Context) string {
+	requestID := c.GetHeader("x-request-id")
+	if requestID == "" {
+		requestID = "req_" + time.Now().UTC().Format("20060102150405.000000000")
+	}
+	return requestID
+}
+
+func applyPublicPrincipal(principal security.APIKeyPrincipal, routeRequest RouteRequest) RouteRequest {
+	if principal.ID == "" {
+		return routeRequest
+	}
+	routeRequest.TenantID = principal.TenantID
+	routeRequest.UserID = principal.UserID
+	routeRequest.APIKeyID = principal.ID
+	return routeRequest
 }
 
 func authenticatePublicRequest(c *gin.Context, store *security.APIKeyStore) (security.APIKeyPrincipal, bool) {
@@ -186,4 +297,13 @@ func bearerToken(header string) string {
 		return ""
 	}
 	return strings.TrimSpace(header[len(prefix):])
+}
+
+func geminiModelFromAction(action string) (string, bool) {
+	action = strings.TrimPrefix(action, "/")
+	model, suffix, ok := strings.Cut(action, ":")
+	if !ok || suffix != "generateContent" || strings.TrimSpace(model) == "" {
+		return "", false
+	}
+	return model, true
 }

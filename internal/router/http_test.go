@@ -3,6 +3,7 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -165,6 +166,70 @@ func TestHTTPOpenAIChatCompletionsWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPAnthropicMessagesWithSimulator(t *testing.T) {
+	engine, sim := testDialectEngine(t, compat.APIDialectAnthropic, provider.CapabilityAnthropicMessages, provider.ServiceAnthropic, "claude-sim", "claude-native")
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(`{
+		"model":"claude-sim",
+		"max_tokens":64,
+		"messages":[{"role":"user","content":"hello anthropic"}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_anthropic_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response compat.AnthropicMessagesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Model != "claude-native" {
+		t.Fatalf("expected canonical model, got %q", response.Model)
+	}
+	if len(response.Content) != 1 || response.Content[0].Text != "providersim: hello anthropic" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.Usage.InputTokens == 0 || response.Usage.OutputTokens == 0 {
+		t.Fatalf("expected usage response, got %#v", response.Usage)
+	}
+}
+
+func TestHTTPGeminiGenerateContentWithSimulator(t *testing.T) {
+	engine, sim := testDialectEngine(t, compat.APIDialectGemini, provider.CapabilityGeminiGenerateContent, provider.ServiceGemini, "gemini-sim", "gemini-native")
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-sim:generateContent", bytes.NewReader([]byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello gemini"}]}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_gemini_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response compat.GeminiGenerateContentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ModelVersion != "gemini-native" {
+		t.Fatalf("expected canonical model, got %q", response.ModelVersion)
+	}
+	if len(response.Candidates) != 1 || response.Candidates[0].Content.Parts[0].Text != "providersim: hello gemini" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.UsageMetadata == nil || response.UsageMetadata.TotalTokenCount == 0 {
+		t.Fatalf("expected usage response, got %#v", response.UsageMetadata)
+	}
+}
+
 func TestHTTPHandlerRequiresEngine(t *testing.T) {
 	handler := NewHTTPHandler(HTTPOptions{})
 
@@ -203,3 +268,51 @@ func TestHTTPOpenAIChatCompletionsRequiresAPIKeyWhenConfigured(t *testing.T) {
 }
 
 var _ = compat.APIDialectOpenAI
+
+func testDialectEngine(t *testing.T, dialect compat.APIDialect, capability provider.Capability, service provider.Service, publicModel string, canonicalModel string) (*Engine, *providersim.Simulator) {
+	t.Helper()
+	reg := registration("providersim-"+string(dialect)+"-0001", "providersim-"+string(dialect), string(dialect)+"@example.test", 10, 0)
+	reg.Identity.Service = service
+	reg.Identity.Kind = provider.KindAPICompatible
+	reg.Capabilities = []provider.Capability{capability, provider.CapabilityUsageRead}
+	reg.Models = []provider.Model{{
+		ID:           canonicalModel,
+		Aliases:      []string{publicModel},
+		Capabilities: []provider.Capability{capability},
+	}}
+	policy, err := ParseRoutingPolicyYAML([]byte(fmt.Sprintf(`
+version: routing-policy/v1
+model_aliases:
+  %s:
+    canonical_model: %s
+    required_capabilities: [%s]
+routes:
+  - id: providersim-%s
+    match:
+      models: [%s]
+      api_dialects: [%s]
+    candidates:
+      - provider: %s
+        account: %s@example.test
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+`, publicModel, canonicalModel, capability, dialect, publicModel, dialect, reg.Identity.ProviderID, dialect)))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	registry := provider.NewRegistry()
+	if err := registry.Upsert(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	engine, err := NewEngine(policy, registry, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	sim, err := providersim.New(providersim.Options{Registration: reg})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	return engine, sim
+}

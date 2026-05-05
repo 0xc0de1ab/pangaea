@@ -26,6 +26,10 @@ func EstimateQuotaUsage(request compat.Request) quota.Usage {
 }
 
 func OpenAIQuotaScope(requestID string, route RouteRequest, request compat.Request) quota.Scope {
+	return CanonicalQuotaScope(requestID, route, request)
+}
+
+func CanonicalQuotaScope(requestID string, route RouteRequest, request compat.Request) quota.Scope {
 	scope := quota.Scope{
 		TenantID: route.TenantID,
 		UserID:   route.UserID,

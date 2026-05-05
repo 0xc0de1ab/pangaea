@@ -20,7 +20,7 @@ import (
 	v2router "github.com/0xc0de1ab/pangaea/internal/router"
 )
 
-func TestE2E_V2RouterShimDataPlaneOpenAIChat(t *testing.T) {
+func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	tokenKey := []byte("test-v2-stream-token-key")
 	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2E2EPolicy))
 	if err != nil {
@@ -42,7 +42,8 @@ func TestE2E_V2RouterShimDataPlaneOpenAIChat(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sim, err := providersim.New(providersim.Options{Mode: providersim.ModeAPICompatible})
+	registration := routerV2E2ERegistration(time.Now())
+	sim, err := providersim.New(providersim.Options{Mode: providersim.ModeAPICompatible, Registration: registration})
 	if err != nil {
 		t.Fatalf("new simulator: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestE2E_V2RouterShimDataPlaneOpenAIChat(t *testing.T) {
 	}()
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	waitForV2Provider(t, client, server.URL, "providersim-openai-0001")
+	waitForV2Provider(t, client, server.URL, registration.Identity.ProviderInstanceID)
 	response := waitForV2OpenAIChat(t, client, server.URL)
 	if len(response.Choices) != 1 || response.Choices[0].Message.Content != "providersim: e2e hello" {
 		t.Fatalf("unexpected chat response: %#v", response)
@@ -80,7 +81,15 @@ func TestE2E_V2RouterShimDataPlaneOpenAIChat(t *testing.T) {
 	if response.Usage == nil || response.Usage.TotalTokens == 0 {
 		t.Fatalf("expected usage in response, got %#v", response.Usage)
 	}
-	usage := waitForV2ProviderUsage(t, client, server.URL, "providersim-openai-0001")
+	anthropic := waitForV2AnthropicMessages(t, client, server.URL)
+	if len(anthropic.Content) != 1 || anthropic.Content[0].Text != "providersim: e2e anthropic" {
+		t.Fatalf("unexpected Anthropic response: %#v", anthropic)
+	}
+	gemini := waitForV2GeminiGenerateContent(t, client, server.URL)
+	if len(gemini.Candidates) != 1 || gemini.Candidates[0].Content.Parts[0].Text != "providersim: e2e gemini" {
+		t.Fatalf("unexpected Gemini response: %#v", gemini)
+	}
+	usage := waitForV2ProviderUsage(t, client, server.URL, registration.Identity.ProviderInstanceID)
 	if usage.HostName != "providersim-host" || usage.Account.Display != "providersim@example.test" {
 		t.Fatalf("usage lost provider host/account dimensions: %#v", usage)
 	}
@@ -150,6 +159,84 @@ func waitForV2OpenAIChat(t *testing.T, client *http.Client, baseURL string) comp
 	return compat.OpenAIChatResponse{}
 }
 
+func waitForV2AnthropicMessages(t *testing.T, client *http.Client, baseURL string) compat.AnthropicMessagesResponse {
+	t.Helper()
+	body := []byte(`{"model":"claude-default","max_tokens":64,"messages":[{"role":"user","content":"e2e anthropic"}]}`)
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("x-request-id", "req_e2e_v2_anthropic")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			var response compat.AnthropicMessagesResponse
+			if err := json.Unmarshal(data, &response); err != nil {
+				t.Fatalf("decode Anthropic response: %v body=%s", err, string(data))
+			}
+			return response
+		}
+		lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Anthropic message did not succeed: %v", lastErr)
+	return compat.AnthropicMessagesResponse{}
+}
+
+func waitForV2GeminiGenerateContent(t *testing.T, client *http.Client, baseURL string) compat.GeminiGenerateContentResponse {
+	t.Helper()
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"e2e gemini"}]}]}`)
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1beta/models/gemini-default:generateContent", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("x-request-id", "req_e2e_v2_gemini")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			var response compat.GeminiGenerateContentResponse
+			if err := json.Unmarshal(data, &response); err != nil {
+				t.Fatalf("decode Gemini response: %v body=%s", err, string(data))
+			}
+			return response
+		}
+		lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Gemini generateContent did not succeed: %v", lastErr)
+	return compat.GeminiGenerateContentResponse{}
+}
+
 func waitForV2ProviderUsage(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) v2router.ProviderUsageSnapshot {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -190,6 +277,49 @@ func waitForV2ProviderUsage(t *testing.T, client *http.Client, baseURL string, p
 	return v2router.ProviderUsageSnapshot{}
 }
 
+func routerV2E2ERegistration(now time.Time) provider.Registration {
+	account := provider.Account{ID: "acct-providersim", Display: "providersim@example.test"}
+	return provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderID:         "providersim-multi",
+			ProviderInstanceID: "providersim-multi-0001",
+			NodeID:             "providersim-node",
+			HostName:           "providersim-host",
+			Service:            provider.ServiceOpenAI,
+			Kind:               provider.KindAPICompatible,
+			Account:            account,
+		},
+		Capabilities: []provider.Capability{
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+			provider.CapabilityStreamSSE,
+			provider.CapabilityUsageRead,
+		},
+		Models: []provider.Model{
+			{ID: "gpt-5-sim", Aliases: []string{"providersim-default"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+			{ID: "claude-native-sim", Aliases: []string{"claude-default"}, Capabilities: []provider.Capability{provider.CapabilityAnthropicMessages}},
+			{ID: "gemini-native-sim", Aliases: []string{"gemini-default"}, Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent}},
+		},
+		Health: provider.Health{
+			Status:    provider.HealthReady,
+			CheckedAt: now,
+		},
+		Auth: provider.AuthState{
+			Status:        provider.AuthHealthy,
+			Account:       account,
+			ExpiresAt:     now.Add(time.Hour),
+			Refreshable:   true,
+			LastRefreshAt: now,
+		},
+		Limits: provider.LimitState{
+			MaxConcurrency: 8,
+			QueueDepth:     0,
+		},
+		RegisteredAt: now,
+	}
+}
+
 func httpURLToWS(raw string) string {
 	if strings.HasPrefix(raw, "https://") {
 		return "wss://" + strings.TrimPrefix(raw, "https://")
@@ -204,13 +334,47 @@ model_aliases:
     canonical_model: gpt-5-sim
     required_capabilities:
       - api.openai.chat
+  claude-default:
+    canonical_model: claude-native-sim
+    required_capabilities:
+      - api.anthropic.messages
+  gemini-default:
+    canonical_model: gemini-native-sim
+    required_capabilities:
+      - api.gemini.generateContent
 routes:
   - id: providersim-openai
     match:
       models: [providersim-default]
       api_dialects: [openai]
     candidates:
-      - provider: providersim-openai
+      - provider: providersim-multi
+        account: providersim@example.test
+        host_name: providersim-host
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      max_queue_depth: 4
+  - id: providersim-anthropic
+    match:
+      models: [claude-default]
+      api_dialects: [anthropic]
+    candidates:
+      - provider: providersim-multi
+        account: providersim@example.test
+        host_name: providersim-host
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      max_queue_depth: 4
+  - id: providersim-gemini
+    match:
+      models: [gemini-default]
+      api_dialects: [gemini]
+    candidates:
+      - provider: providersim-multi
         account: providersim@example.test
         host_name: providersim-host
         weight: 100
