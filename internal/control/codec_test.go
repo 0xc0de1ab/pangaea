@@ -11,9 +11,10 @@ import (
 
 func TestUnmarshalEnvelopeValidation(t *testing.T) {
 	cases := []struct {
-		name    string
-		raw     string
-		wantErr error
+		name     string
+		raw      string
+		wantType MessageType
+		wantErr  error
 	}{
 		{
 			name: "valid envelope with unknown optional fields",
@@ -64,7 +65,7 @@ func TestUnmarshalEnvelopeValidation(t *testing.T) {
 			wantErr: ErrInvalidEnvelope,
 		},
 		{
-			name: "unknown type",
+			name: "unknown type is forward-compatible",
 			raw: `{
 				"version":"provider-protocol/v1",
 				"type":"made.up",
@@ -72,7 +73,7 @@ func TestUnmarshalEnvelopeValidation(t *testing.T) {
 				"sent_at":"2026-05-05T00:00:00Z",
 				"payload":{}
 			}`,
-			wantErr: ErrInvalidMessageType,
+			wantType: MessageType("made.up"),
 		},
 		{
 			name: "missing id",
@@ -116,8 +117,12 @@ func TestUnmarshalEnvelopeValidation(t *testing.T) {
 				if env.Version != ProtocolVersion {
 					t.Fatalf("version got %q want %q", env.Version, ProtocolVersion)
 				}
-				if env.Type != MessageTypeNodeHeartbeat {
-					t.Fatalf("type got %q want %q", env.Type, MessageTypeNodeHeartbeat)
+				wantType := tc.wantType
+				if wantType == "" {
+					wantType = MessageTypeNodeHeartbeat
+				}
+				if env.Type != wantType {
+					t.Fatalf("type got %q want %q", env.Type, wantType)
 				}
 				return
 			}

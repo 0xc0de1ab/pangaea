@@ -86,9 +86,6 @@ func (e Envelope) Validate() error {
 	if strings.TrimSpace(string(e.Type)) == "" {
 		return fmt.Errorf("%w: missing type", ErrInvalidEnvelope)
 	}
-	if !e.Type.Valid() {
-		return fmt.Errorf("%w: %q", ErrInvalidMessageType, e.Type)
-	}
 	if strings.TrimSpace(e.ID) == "" {
 		return fmt.Errorf("%w: missing id", ErrInvalidEnvelope)
 	}

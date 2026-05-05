@@ -130,7 +130,7 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		}
 		return engine.UpdateNodeHeartbeat(heartbeat)
 	default:
-		return control.ErrInvalidMessageType
+		return nil
 	}
 }
 

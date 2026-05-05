@@ -306,6 +306,15 @@ func TestControlWSNodeHelloHeartbeatAndInventory(t *testing.T) {
 	}
 }
 
+func TestControlWSIgnoresUnknownMessageType(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+	defer conn.Close()
+
+	writeControlEnvelope(t, conn, control.MessageType("provider.future.command"), "msg_future", map[string]any{"optional": true})
+	readControlAck(t, conn, "msg_future")
+}
+
 func TestControlWSUnknownProviderReportsError(t *testing.T) {
 	engine, _ := testEngine(t)
 	conn := dialControlWS(t, engine)
