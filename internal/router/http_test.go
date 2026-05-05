@@ -535,6 +535,88 @@ func TestHTTPAPIKeyAdminCreatesListsAndDeletesKey(t *testing.T) {
 	}
 }
 
+func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
+	engine, _ := testEngine(t)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/router/v1/api-keys", bytes.NewReader([]byte(`{"tenant_id":"team-a","user_id":"usr_1"}`)))
+	createReq.Header.Set("content-type", "application/json")
+	createReq.Header.Set("x-pangaea-user-id", "admin_1")
+	createReq.Header.Set("x-request-id", "req_admin_create")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create 201, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created apiKeyCreateResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created key: %v", err)
+	}
+
+	quotaReq := httptest.NewRequest(http.MethodPut, "/router/v1/quotas/limits", bytes.NewReader([]byte(`{
+		"scope":{"tenant_id":"team-a","user_id":"usr_1","api_key_id":"key_1","model":"gpt-5-codex"},
+		"limit":{"max_tokens":123,"max_requests":7}
+	}`)))
+	quotaReq.Header.Set("content-type", "application/json")
+	quotaReq.Header.Set("x-pangaea-user-id", "admin_1")
+	quotaRec := httptest.NewRecorder()
+	handler.ServeHTTP(quotaRec, quotaReq)
+	if quotaRec.Code != http.StatusOK {
+		t.Fatalf("expected quota 200, got %d body=%s", quotaRec.Code, quotaRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/router/v1/api-keys/"+created.APIKey.ID, nil)
+	deleteReq.Header.Set("x-pangaea-user-id", "admin_1")
+	deleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("expected delete 204, got %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-samtest-a1/auth/refresh", bytes.NewReader([]byte(`{"reason":"manual test","timeout_seconds":1}`)))
+	refreshReq.Header.Set("content-type", "application/json")
+	refreshReq.Header.Set("x-pangaea-user-id", "admin_1")
+	refreshRec := httptest.NewRecorder()
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusConflict {
+		t.Fatalf("expected refresh conflict without control session, got %d body=%s", refreshRec.Code, refreshRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/audit/events?limit=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected audit 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte(created.RawKey)) {
+		t.Fatalf("audit events leaked raw api key: %s", rec.Body.String())
+	}
+	var out struct {
+		Events []AuditEvent `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode audit events: %v", err)
+	}
+	if len(out.Events) != 4 {
+		t.Fatalf("expected four audit events, got %#v", out.Events)
+	}
+	if out.Events[0].Type != AuditEventProviderAuthRefresh || out.Events[0].Outcome != AuditOutcomeFailed {
+		t.Fatalf("expected newest failed refresh event, got %#v", out.Events[0])
+	}
+	if out.Events[0].Target.ProviderInstanceID != "codex-samtest-a1" || out.Events[0].Reason != "manual test" {
+		t.Fatalf("unexpected refresh audit target: %#v", out.Events[0])
+	}
+	if out.Events[1].Type != AuditEventAPIKeyDelete || out.Events[1].Target.APIKeyID != created.APIKey.ID {
+		t.Fatalf("expected api key delete event, got %#v", out.Events[1])
+	}
+	if out.Events[2].Type != AuditEventQuotaLimitSet || out.Events[2].Target.Model != "gpt-5-codex" {
+		t.Fatalf("expected quota audit event, got %#v", out.Events[2])
+	}
+	if out.Events[3].Type != AuditEventAPIKeyCreate || out.Events[3].Actor.UserID != "admin_1" {
+		t.Fatalf("expected api key create audit event with actor, got %#v", out.Events[3])
+	}
+}
+
 var _ = compat.APIDialectOpenAI
 
 func testDialectEngine(t *testing.T, dialect compat.APIDialect, capability provider.Capability, service provider.Service, publicModel string, canonicalModel string) (*Engine, *providersim.Simulator) {

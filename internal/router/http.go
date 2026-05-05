@@ -182,6 +182,7 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		if !ok {
 			return
 		}
+		providerInstanceID := c.Param("provider_instance_id")
 		var request authRefreshHTTPRequest
 		if c.Request.Body != nil && c.Request.ContentLength != 0 {
 			if err := c.ShouldBindJSON(&request); err != nil {
@@ -201,13 +202,40 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		defer cancel()
 		result, err := engine.RequestAuthRefresh(ctx, control.AuthRefreshRequest{
 			RefreshID:          request.RefreshID,
-			ProviderInstanceID: c.Param("provider_instance_id"),
+			ProviderInstanceID: providerInstanceID,
 			Reason:             request.Reason,
 		})
 		if err != nil {
+			recordHTTPAuditEvent(engine, c, AuditEvent{
+				Type:    AuditEventProviderAuthRefresh,
+				Target:  auditProviderTarget(engine, providerInstanceID),
+				Reason:  request.Reason,
+				Outcome: AuditOutcomeFailed,
+				Error:   err.Error(),
+			})
 			writeControlCommandError(c, err)
 			return
 		}
+		outcome := AuditOutcomeSucceeded
+		errorMessage := ""
+		if !result.OK {
+			outcome = AuditOutcomeFailed
+			errorMessage = "auth refresh failed"
+			if result.Error != nil && result.Error.Message != "" {
+				errorMessage = result.Error.Message
+			}
+		}
+		recordHTTPAuditEvent(engine, c, AuditEvent{
+			Type:    AuditEventProviderAuthRefresh,
+			Target:  auditProviderTarget(engine, providerInstanceID),
+			Reason:  request.Reason,
+			Outcome: outcome,
+			Error:   errorMessage,
+			Metadata: map[string]string{
+				"refresh_id":  result.RefreshID,
+				"auth_status": string(result.Auth.Status),
+			},
+		})
 		c.JSON(http.StatusOK, result)
 	})
 	r.POST("/router/v1/providers/:provider_instance_id/drain", func(c *gin.Context) {
@@ -215,6 +243,7 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		if !ok {
 			return
 		}
+		providerInstanceID := c.Param("provider_instance_id")
 		var request providerDrainHTTPRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -231,14 +260,27 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 		defer cancel()
 		command := control.ProviderDrain{
-			ProviderInstanceID: c.Param("provider_instance_id"),
+			ProviderInstanceID: providerInstanceID,
 			Reason:             request.Reason,
 			Drain:              request.Drain,
 		}
 		if err := engine.SendProviderDrain(ctx, command); err != nil {
+			recordHTTPAuditEvent(engine, c, AuditEvent{
+				Type:    providerDrainAuditType(request.Drain),
+				Target:  auditProviderTarget(engine, providerInstanceID),
+				Reason:  request.Reason,
+				Outcome: AuditOutcomeFailed,
+				Error:   err.Error(),
+			})
 			writeControlCommandError(c, err)
 			return
 		}
+		recordHTTPAuditEvent(engine, c, AuditEvent{
+			Type:    providerDrainAuditType(request.Drain),
+			Target:  auditProviderTarget(engine, providerInstanceID),
+			Reason:  request.Reason,
+			Outcome: AuditOutcomeSucceeded,
+		})
 		c.JSON(http.StatusAccepted, command)
 	})
 	r.GET("/router/v1/nodes", func(c *gin.Context) {
@@ -268,6 +310,22 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"sessions": opts.DataBroker.Sessions()})
+	})
+	r.GET("/router/v1/audit/events", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		limit := 0
+		if raw := c.Query("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a non-negative integer"})
+				return
+			}
+			limit = parsed
+		}
+		c.JSON(http.StatusOK, gin.H{"events": engine.AuditEvents(limit)})
 	})
 	r.GET("/router/v1/usage/providers", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -322,14 +380,35 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		if err := engine.SetQuotaLimit(request.Scope, request.Limit); err != nil {
+			recordHTTPAuditEvent(engine, c, AuditEvent{
+				Type:    AuditEventQuotaLimitSet,
+				Target:  quotaAuditTarget(request.Scope),
+				Outcome: AuditOutcomeFailed,
+				Error:   err.Error(),
+			})
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		snapshot, err := engine.QuotaSnapshot(request.Scope)
 		if err != nil {
+			recordHTTPAuditEvent(engine, c, AuditEvent{
+				Type:    AuditEventQuotaLimitSet,
+				Target:  quotaAuditTarget(request.Scope),
+				Outcome: AuditOutcomeFailed,
+				Error:   err.Error(),
+			})
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		recordHTTPAuditEvent(engine, c, AuditEvent{
+			Type:    AuditEventQuotaLimitSet,
+			Target:  quotaAuditTarget(request.Scope),
+			Outcome: AuditOutcomeSucceeded,
+			Metadata: map[string]string{
+				"max_tokens":   strconv.FormatInt(request.Limit.MaxTokens, 10),
+				"max_requests": strconv.FormatInt(request.Limit.MaxRequests, 10),
+			},
+		})
 		c.JSON(http.StatusOK, snapshot)
 	})
 	r.POST("/router/v1/quotas/snapshot", func(c *gin.Context) {
@@ -361,9 +440,20 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		if request.RawKey == "" {
 			raw, principal, err := opts.APIKeys.CreateKey(request.TenantID, request.UserID)
 			if err != nil {
+				recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
+					Type:    AuditEventAPIKeyCreate,
+					Target:  apiKeyAuditTarget(security.APIKeyPrincipal{TenantID: request.TenantID, UserID: request.UserID}),
+					Outcome: AuditOutcomeFailed,
+					Error:   err.Error(),
+				})
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
+			recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
+				Type:    AuditEventAPIKeyCreate,
+				Target:  apiKeyAuditTarget(principal),
+				Outcome: AuditOutcomeSucceeded,
+			})
 			c.JSON(http.StatusCreated, apiKeyCreateResponse{APIKey: principal, RawKey: raw})
 			return
 		}
@@ -373,16 +463,39 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		principal, err := opts.APIKeys.AddRawKey(request.ID, request.RawKey, request.TenantID, request.UserID)
 		if err != nil {
+			recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
+				Type:    AuditEventAPIKeyCreate,
+				Target:  apiKeyAuditTarget(security.APIKeyPrincipal{ID: request.ID, TenantID: request.TenantID, UserID: request.UserID}),
+				Outcome: AuditOutcomeFailed,
+				Error:   err.Error(),
+			})
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
+			Type:    AuditEventAPIKeyCreate,
+			Target:  apiKeyAuditTarget(principal),
+			Outcome: AuditOutcomeSucceeded,
+		})
 		c.JSON(http.StatusCreated, apiKeyCreateResponse{APIKey: principal})
 	})
 	r.DELETE("/router/v1/api-keys/:id", func(c *gin.Context) {
-		if !opts.APIKeys.Remove(c.Param("id")) {
+		id := c.Param("id")
+		if !opts.APIKeys.Remove(id) {
+			recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
+				Type:    AuditEventAPIKeyDelete,
+				Target:  AuditTarget{APIKeyID: id},
+				Outcome: AuditOutcomeFailed,
+				Error:   "api key not found",
+			})
 			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
 			return
 		}
+		recordHTTPAuditEvent(opts.Engine, c, AuditEvent{
+			Type:    AuditEventAPIKeyDelete,
+			Target:  AuditTarget{APIKeyID: id},
+			Outcome: AuditOutcomeSucceeded,
+		})
 		c.Status(http.StatusNoContent)
 	})
 	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine))
@@ -614,6 +727,62 @@ func applyPublicPrincipal(principal security.APIKeyPrincipal, routeRequest Route
 	routeRequest.UserID = principal.UserID
 	routeRequest.APIKeyID = principal.ID
 	return routeRequest
+}
+
+func recordHTTPAuditEvent(engine *Engine, c *gin.Context, event AuditEvent) AuditEvent {
+	if engine == nil {
+		return AuditEvent{}
+	}
+	event.Actor = httpAuditActor(c)
+	return engine.RecordAuditEvent(event)
+}
+
+func httpAuditActor(c *gin.Context) AuditActor {
+	actor := AuditActor{
+		TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+		UserID:     c.GetHeader("x-pangaea-user-id"),
+		APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+		Source:     c.GetHeader("x-pangaea-actor-source"),
+		RemoteAddr: c.ClientIP(),
+		RequestID:  c.GetHeader("x-request-id"),
+	}
+	if actor.Source == "" {
+		actor.Source = "admin-api"
+	}
+	return actor
+}
+
+func auditProviderTarget(engine *Engine, providerInstanceID string) AuditTarget {
+	if engine != nil && engine.registry != nil {
+		if registration, ok := engine.registry.Get(providerInstanceID); ok {
+			return providerAuditTarget(registration)
+		}
+	}
+	return AuditTarget{ProviderInstanceID: providerInstanceID}
+}
+
+func providerDrainAuditType(drain bool) AuditEventType {
+	if drain {
+		return AuditEventProviderDrain
+	}
+	return AuditEventProviderDrainRelease
+}
+
+func quotaAuditTarget(scope quota.Scope) AuditTarget {
+	return AuditTarget{
+		TenantID: scope.TenantID,
+		UserID:   scope.UserID,
+		APIKeyID: scope.APIKeyID,
+		Model:    scope.Model,
+	}
+}
+
+func apiKeyAuditTarget(principal security.APIKeyPrincipal) AuditTarget {
+	return AuditTarget{
+		APIKeyID: principal.ID,
+		TenantID: principal.TenantID,
+		UserID:   principal.UserID,
+	}
 }
 
 func authenticatePublicRequest(c *gin.Context, store *security.APIKeyStore) (security.APIKeyPrincipal, bool) {

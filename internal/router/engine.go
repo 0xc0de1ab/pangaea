@@ -26,6 +26,10 @@ type Engine struct {
 	traceMu            sync.RWMutex
 	traces             map[string]RequestTrace
 	traceIDs           []string
+	auditMu            sync.RWMutex
+	auditEvents        map[string]AuditEvent
+	auditIDs           []string
+	auditSeq           uint64
 	nodeMu             sync.RWMutex
 	nodes              map[string]NodeSnapshot
 	containers         map[string]ContainerSnapshot
@@ -72,6 +76,7 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 		ledger:             ledger,
 		usages:             make(map[string]ProviderUsageSnapshot),
 		traces:             make(map[string]RequestTrace),
+		auditEvents:        make(map[string]AuditEvent),
 		nodes:              make(map[string]NodeSnapshot),
 		containers:         make(map[string]ContainerSnapshot),
 		controlSessions:    make(map[string]*controlSession),
