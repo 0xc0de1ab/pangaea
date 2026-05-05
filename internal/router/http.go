@@ -205,10 +205,41 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			Reason:             request.Reason,
 		})
 		if err != nil {
-			writeAuthRefreshError(c, err)
+			writeControlCommandError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, result)
+	})
+	r.POST("/router/v1/providers/:provider_instance_id/drain", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request providerDrainHTTPRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		timeout := 5 * time.Second
+		if request.TimeoutSeconds < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "timeout_seconds must be non-negative"})
+			return
+		}
+		if request.TimeoutSeconds > 0 {
+			timeout = time.Duration(request.TimeoutSeconds) * time.Second
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+		defer cancel()
+		command := control.ProviderDrain{
+			ProviderInstanceID: c.Param("provider_instance_id"),
+			Reason:             request.Reason,
+			Drain:              request.Drain,
+		}
+		if err := engine.SendProviderDrain(ctx, command); err != nil {
+			writeControlCommandError(c, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, command)
 	})
 	r.GET("/router/v1/nodes", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -400,6 +431,12 @@ type authRefreshHTTPRequest struct {
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
+type providerDrainHTTPRequest struct {
+	Drain          bool   `json:"drain"`
+	Reason         string `json:"reason,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
 type openAIChatStreamChoice struct {
 	Index        int                   `json:"index"`
 	Delta        openAIChatStreamDelta `json:"delta"`
@@ -457,7 +494,7 @@ func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
 	flushSSE(c)
 }
 
-func writeAuthRefreshError(c *gin.Context, err error) {
+func writeControlCommandError(c *gin.Context, err error) {
 	status := http.StatusConflict
 	switch {
 	case errors.Is(err, provider.ErrProviderNotFound):

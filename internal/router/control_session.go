@@ -89,6 +89,35 @@ func (e *Engine) RequestAuthRefresh(ctx context.Context, request control.AuthRef
 	}
 }
 
+func (e *Engine) SendProviderDrain(ctx context.Context, request control.ProviderDrain) error {
+	if e == nil || e.registry == nil {
+		return ErrRouterNotReady
+	}
+	request.ProviderInstanceID = strings.TrimSpace(request.ProviderInstanceID)
+	if request.ProviderInstanceID == "" {
+		return control.ErrInvalidPayload
+	}
+	if _, ok := e.registry.Get(request.ProviderInstanceID); !ok {
+		return provider.ErrProviderNotFound
+	}
+	e.controlMu.RLock()
+	session := e.controlSessions[request.ProviderInstanceID]
+	e.controlMu.RUnlock()
+	if session == nil {
+		return fmt.Errorf("%w: %s", ErrProviderControlSessionNotFound, request.ProviderInstanceID)
+	}
+	if err := e.markProviderDrainState(request.ProviderInstanceID, request.Drain, request.Reason); err != nil {
+		return err
+	}
+	id := newControlRequestID("drain", request.ProviderInstanceID)
+	if request.DeadlineAt.IsZero() {
+		if deadline, ok := ctx.Deadline(); ok {
+			request.DeadlineAt = deadline.UTC()
+		}
+	}
+	return session.write(control.MessageTypeProviderDrain, id, request)
+}
+
 func (e *Engine) bindProviderControlSession(providerInstanceID string, session *controlSession) {
 	if e == nil || session == nil || strings.TrimSpace(providerInstanceID) == "" {
 		return
@@ -145,6 +174,21 @@ func (e *Engine) markProviderAuthRefreshing(providerInstanceID string) error {
 	auth.Status = provider.AuthRefreshing
 	auth.LastRefreshErr = ""
 	registration.Auth = auth
+	return e.registry.Upsert(registration)
+}
+
+func (e *Engine) markProviderDrainState(providerInstanceID string, drain bool, reason string) error {
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return provider.ErrProviderNotFound
+	}
+	if drain {
+		registration.Health.Status = provider.HealthDraining
+	} else {
+		registration.Health.Status = provider.HealthReady
+	}
+	registration.Health.Reason = reason
+	registration.Health.CheckedAt = time.Now().UTC()
 	return e.registry.Upsert(registration)
 }
 

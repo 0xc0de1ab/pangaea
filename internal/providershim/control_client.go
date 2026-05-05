@@ -332,6 +332,12 @@ func handleSimulatorControlRequest(ctx context.Context, client *controlClientCon
 			return err
 		}
 		return handleSimulatorAuthRefreshRequest(ctx, client, sim, request)
+	case control.MessageTypeProviderDrain:
+		request, err := control.Decode[control.ProviderDrain](env, control.MessageTypeProviderDrain)
+		if err != nil {
+			return err
+		}
+		return handleSimulatorProviderDrain(ctx, client, sim, request)
 	default:
 		return fmt.Errorf("%w: unsupported control request type %q", ErrShimConfig, env.Type)
 	}
@@ -362,4 +368,28 @@ func handleSimulatorAuthRefreshRequest(ctx context.Context, client *controlClien
 		result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: "simulator auth refresh did not produce healthy auth"}
 	}
 	return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
+}
+
+func handleSimulatorProviderDrain(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, request control.ProviderDrain) error {
+	registration, err := sim.Registration()
+	if err != nil {
+		return err
+	}
+	if request.ProviderInstanceID != registration.Identity.ProviderInstanceID {
+		return fmt.Errorf("%w: drain request provider_instance_id does not match this shim", ErrShimConfig)
+	}
+	if request.Drain {
+		sim.SetHealth(provider.HealthDraining, request.Reason)
+	} else {
+		sim.SetHealth(provider.HealthReady, request.Reason)
+	}
+	heartbeat := sim.Heartbeat()
+	auth := sim.Auth()
+	return client.sendAndWaitAck(ctx, control.MessageTypeProviderHeartbeat, "provider_heartbeat_drain_"+time.Now().UTC().Format("20060102150405.000000000"), control.ProviderHeartbeat{
+		ProviderInstanceID: heartbeat.Identity.ProviderInstanceID,
+		Health:             heartbeat.Health,
+		Auth:               auth.Auth,
+		Limits:             heartbeat.Limits,
+		ReportedAt:         heartbeat.ReportedAt,
+	})
 }

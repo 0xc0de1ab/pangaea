@@ -109,3 +109,63 @@ func TestHTTPAuthRefreshWithoutControlSessionReturnsConflict(t *testing.T) {
 		t.Fatalf("expected 409, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHTTPProviderDrainRoutesCommandToControlSession(t *testing.T) {
+	engine, _ := testEngine(t)
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/control/ws", nil)
+	if err != nil {
+		t.Fatalf("dial control ws: %v", err)
+	}
+	defer conn.Close()
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+
+	body := bytes.NewBufferString(`{"drain":true,"reason":"maintenance","timeout_seconds":1}`)
+	resp, err := http.Post(server.URL+"/router/v1/providers/codex-control-a1/drain", "application/json", body)
+	if err != nil {
+		t.Fatalf("post drain: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected drain 202, got %d", resp.StatusCode)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read drain command: %v", err)
+	}
+	env, err := control.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("unmarshal drain command: %v", err)
+	}
+	if env.Type != control.MessageTypeProviderDrain {
+		t.Fatalf("expected provider drain command, got %s", env.Type)
+	}
+	command, err := control.Decode[control.ProviderDrain](env, control.MessageTypeProviderDrain)
+	if err != nil {
+		t.Fatalf("decode drain command: %v", err)
+	}
+	if !command.Drain || command.Reason != "maintenance" || command.ProviderInstanceID != "codex-control-a1" {
+		t.Fatalf("unexpected drain command: %#v", command)
+	}
+
+	writeControlEnvelope(t, conn, control.MessageTypeProviderHeartbeat, "msg_draining", control.ProviderHeartbeat{
+		ProviderInstanceID: "codex-control-a1",
+		Health:             provider.Health{Status: provider.HealthDraining, Reason: "maintenance", CheckedAt: time.Now().UTC()},
+	})
+	readControlAck(t, conn, "msg_draining")
+	for _, registration := range engine.Providers() {
+		if registration.Identity.ProviderInstanceID == "codex-control-a1" {
+			if registration.Health.Status != provider.HealthDraining {
+				t.Fatalf("expected draining provider, got %#v", registration.Health)
+			}
+			return
+		}
+	}
+	t.Fatalf("registered provider missing")
+}

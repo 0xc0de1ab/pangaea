@@ -212,6 +212,54 @@ func TestRunSimulatorControlClientHandlesAuthRefreshRequest(t *testing.T) {
 	}
 }
 
+func TestRunSimulatorControlClientHandlesProviderDrain(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunSimulatorControlClient(ctx, ControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: time.Second,
+			Simulator:         sim,
+		})
+	}()
+
+	waitForProvider(t, engine, "providersim-openai-0001")
+	body := bytes.NewBufferString(`{"drain":true,"reason":"maintenance","timeout_seconds":1}`)
+	resp, err := http.Post(server.URL+"/router/v1/providers/providersim-openai-0001/drain", "application/json", body)
+	if err != nil {
+		t.Fatalf("post drain: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, registration := range engine.Providers() {
+			if registration.Identity.ProviderInstanceID == "providersim-openai-0001" && registration.Health.Status == provider.HealthDraining {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("provider drain command did not update provider health")
+}
+
 func controlURL(serverURL string) string {
 	return "ws" + strings.TrimPrefix(serverURL, "http") + "/router/v1/control/ws"
 }
