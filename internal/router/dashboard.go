@@ -213,6 +213,14 @@ const routerDashboardHTML = `<!doctype html>
       align-items: end;
       border-bottom: 1px solid var(--line);
     }
+    .quota-form {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(110px, 1fr)) repeat(2, minmax(90px, 0.6fr)) auto;
+      gap: 8px;
+      padding: 12px;
+      align-items: end;
+      border-bottom: 1px solid var(--line);
+    }
     .result {
       padding: 12px;
     }
@@ -245,7 +253,7 @@ const routerDashboardHTML = `<!doctype html>
       .metric .value { font-size: 21px; }
       .toolbar { width: 100%; justify-content: space-between; flex-wrap: wrap; }
       .auth-token { width: 100%; }
-      .inline-form, .control-form { grid-template-columns: 1fr; }
+      .inline-form, .control-form, .quota-form { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -324,6 +332,16 @@ const routerDashboardHTML = `<!doctype html>
         </section>
         <section>
           <h2>Quotas</h2>
+          <form id="quota-form" class="quota-form">
+            <label>Tenant<input id="quota-tenant" name="tenant_id" autocomplete="off"></label>
+            <label>User<input id="quota-user" name="user_id" autocomplete="off"></label>
+            <label>API Key<input id="quota-api-key" name="api_key_id" autocomplete="off"></label>
+            <label>Model<input id="quota-model" name="model" value="providersim-default" autocomplete="off"></label>
+            <label>Tokens<input id="quota-tokens" name="max_tokens" type="number" min="0" step="1"></label>
+            <label>Requests<input id="quota-requests" name="max_requests" type="number" min="0" step="1"></label>
+            <button type="submit">Set</button>
+          </form>
+          <div id="quota-result" class="result"><div class="empty">No quota change</div></div>
           <div id="quotas" class="table-wrap"></div>
         </section>
         <section>
@@ -628,6 +646,46 @@ const routerDashboardHTML = `<!doctype html>
         usage.requests ? usage.requests + " requests" : "0 requests"
       ].join(" / ");
     }
+    async function setQuotaLimit(event) {
+      event.preventDefault();
+      $("error").style.display = "none";
+      const maxTokens = parseInt($("quota-tokens").value || "0", 10);
+      const maxRequests = parseInt($("quota-requests").value || "0", 10);
+      const request = {
+        scope: {
+          tenant_id: $("quota-tenant").value.trim(),
+          user_id: $("quota-user").value.trim(),
+          api_key_id: $("quota-api-key").value.trim(),
+          model: $("quota-model").value.trim()
+        },
+        limit: {
+          max_tokens: Number.isFinite(maxTokens) ? maxTokens : 0,
+          max_requests: Number.isFinite(maxRequests) ? maxRequests : 0
+        }
+      };
+      try {
+        const res = await fetch("/router/v1/quotas/limits", {
+          method: "PUT",
+          headers: authHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify(request)
+        });
+        const payload = await res.json().catch(() => ({}));
+        renderQuotaResult(payload, res.status);
+        if (res.ok) await refresh();
+      } catch (err) {
+        renderQuotaResult({ error: err.message }, 0);
+      }
+    }
+    function renderQuotaResult(payload, status) {
+      const ok = status >= 200 && status < 300;
+      let html = '<div class="kv">';
+      html += '<div class="key">Status</div><div>' + statusPill(ok ? "set" : "failed") + (status ? ' <code>' + esc(status) + '</code>' : '') + '</div>';
+      html += '<div class="key">Scope</div><div><code>' + esc(fmtScope(payload.scope || {})) + '</code></div>';
+      html += '<div class="key">Limit</div><div>' + esc(fmtLimit(payload.limit || {})) + '</div>';
+      html += '<div class="key">Result</div><div>' + esc(payload.error || "") + '</div>';
+      html += '</div>';
+      $("quota-result").innerHTML = html;
+    }
     function renderSessions(controlRows, dataRows) {
       const rows = [
         ...controlRows.map((r) => ({ type: "control", ...r })),
@@ -773,6 +831,7 @@ const routerDashboardHTML = `<!doctype html>
     $("dry-run-form").addEventListener("submit", runDryRun);
     $("control-form").addEventListener("submit", sendProviderControl);
     $("api-key-form").addEventListener("submit", createAPIKey);
+    $("quota-form").addEventListener("submit", setQuotaLimit);
     loadToken();
     refresh();
     setInterval(refresh, 10000);
