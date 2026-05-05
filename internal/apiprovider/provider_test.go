@@ -180,6 +180,54 @@ func TestProviderInvokeDisablesUpstreamStreamingForWrappedSSE(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeStreamOpenAICompatibleUpstreamSSE(t *testing.T) {
+	var sawStream bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request compat.OpenAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		sawStream = request.Stream
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stream\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	events := []compat.Event{}
+	request := testOpenAIRequest("hello")
+	request.Stream = true
+	response, err := client.InvokeStream(context.Background(), mustRegistration(t, client), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if !sawStream {
+		t.Fatalf("expected upstream request stream=true")
+	}
+	if response.ID != "chatcmpl-stream" || response.Model != "gpt-upstream" || response.Message.Content[0].Text != "hello stream" || response.Usage.TotalTokens != 5 {
+		t.Fatalf("unexpected stream response: %#v", response)
+	}
+	if len(events) != 5 || events[0].Type != compat.EventMessageStart || events[1].ContentDelta.Text != "hello " || events[2].ContentDelta.Text != "stream" || events[3].UsageDelta.TotalTokens != 5 || events[4].DoneReason != "stop" {
+		t.Fatalf("unexpected stream events: %#v", events)
+	}
+	usage, err := client.Usage()
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if usage.Requests != 1 || usage.TotalTokens != 5 {
+		t.Fatalf("unexpected accumulated usage: %#v", usage)
+	}
+}
+
 func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)

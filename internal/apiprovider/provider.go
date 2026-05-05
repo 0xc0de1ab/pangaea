@@ -2,6 +2,7 @@
 package apiprovider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -127,6 +128,43 @@ func (p *Provider) Invoke(ctx context.Context, registration provider.Registratio
 	}
 }
 
+func (p *Provider) InvokeStream(ctx context.Context, registration provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	if p == nil || p.client == nil {
+		return compat.Response{}, ErrAPIProviderConfig
+	}
+	if registration.Identity.ProviderInstanceID != p.registration.Identity.ProviderInstanceID {
+		return compat.Response{}, fmt.Errorf("%w: provider instance mismatch", ErrAPIProviderConfig)
+	}
+	if emit == nil {
+		return compat.Response{}, fmt.Errorf("%w: stream emit callback is required", ErrAPIProviderConfig)
+	}
+	if err := request.Validate(); err != nil {
+		return compat.Response{}, err
+	}
+	switch p.dialect {
+	case compat.APIDialectOpenAI:
+		response, err := p.invokeOpenAIStream(ctx, request, emit)
+		p.recordUsage(response.Usage, err)
+		return response, err
+	case compat.APIDialectAnthropic:
+		response, err := p.invokeAnthropic(ctx, request)
+		if err == nil {
+			err = emitEventsFromResponse(response, emit)
+		}
+		p.recordUsage(response.Usage, err)
+		return response, err
+	case compat.APIDialectGemini:
+		response, err := p.invokeGemini(ctx, request)
+		if err == nil {
+			err = emitEventsFromResponse(response, emit)
+		}
+		p.recordUsage(response.Usage, err)
+		return response, err
+	default:
+		return compat.Response{}, fmt.Errorf("%w: unsupported dialect %q", ErrAPIProviderConfig, p.dialect)
+	}
+}
+
 func (p *Provider) Usage() (provider.UsageReport, error) {
 	if p == nil {
 		return provider.UsageReport{}, ErrAPIProviderConfig
@@ -162,6 +200,173 @@ func (p *Provider) invokeOpenAI(ctx context.Context, request compat.Request) (co
 	}
 	response.Dialect = request.Dialect
 	return response, nil
+}
+
+type openAIChatStreamChunk struct {
+	ID      string                     `json:"id,omitempty"`
+	Model   string                     `json:"model,omitempty"`
+	Choices []openAIChatStreamChoice   `json:"choices,omitempty"`
+	Usage   *compat.OpenAIUsage        `json:"usage,omitempty"`
+	Error   *openAIChatStreamErrorBody `json:"error,omitempty"`
+}
+
+type openAIChatStreamChoice struct {
+	Index        int                   `json:"index"`
+	Delta        openAIChatStreamDelta `json:"delta"`
+	FinishReason string                `json:"finish_reason,omitempty"`
+}
+
+type openAIChatStreamDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+type openAIChatStreamErrorBody struct {
+	Message string `json:"message,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Code    any    `json:"code,omitempty"`
+}
+
+func (p *Provider) invokeOpenAIStream(ctx context.Context, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	upstreamRequest, err := compat.OpenAIChatRequestFromCanonical(request)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	upstreamRequest.Stream = true
+	resp, err := p.doRequest(ctx, http.MethodPost, "/v1/chat/completions", upstreamRequest, "text/event-stream")
+	if err != nil {
+		return compat.Response{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return compat.Response{}, readErr
+		}
+		return compat.Response{}, fmt.Errorf("%w: upstream status=%d body=%s", ErrAPIProviderConfig, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	response := compat.Response{
+		ID:      request.ID,
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{Role: compat.MessageRoleAssistant},
+	}
+	started := false
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+	var dataLines []string
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r")
+		if line == "" {
+			if len(dataLines) > 0 {
+				if done, err := applyOpenAIStreamPayload(&response, &started, strings.Join(dataLines, "\n"), emit); err != nil {
+					return compat.Response{}, err
+				} else if done {
+					break
+				}
+				dataLines = dataLines[:0]
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return compat.Response{}, err
+	}
+	if len(dataLines) > 0 {
+		if _, err := applyOpenAIStreamPayload(&response, &started, strings.Join(dataLines, "\n"), emit); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	if !started {
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	if response.StopReason == "" {
+		response.StopReason = "stop"
+	}
+	if err := response.Validate(); err != nil {
+		return compat.Response{}, err
+	}
+	return response, nil
+}
+
+func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload string, emit func(compat.Event) error) (bool, error) {
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return false, nil
+	}
+	if payload == "[DONE]" {
+		return true, nil
+	}
+	var chunk openAIChatStreamChunk
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return false, err
+	}
+	if chunk.Error != nil && strings.TrimSpace(chunk.Error.Message) != "" {
+		errEvent := compat.Event{
+			ResponseID: response.ID,
+			Dialect:    response.Dialect,
+			Model:      response.Model,
+			Type:       compat.EventError,
+			Error:      &compat.EventErrorPayload{Message: chunk.Error.Message, Code: stringFromAny(chunk.Error.Code)},
+		}
+		if err := emit(errEvent); err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("%w: upstream stream error: %s", ErrAPIProviderConfig, chunk.Error.Message)
+	}
+	if chunk.ID != "" {
+		response.ID = chunk.ID
+	}
+	if chunk.Model != "" {
+		response.Model = chunk.Model
+	}
+	if !*started {
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
+			return false, err
+		}
+		*started = true
+	}
+	for _, choice := range chunk.Choices {
+		if choice.Delta.Content != "" {
+			part := compat.ContentPart{Type: compat.ContentPartText, Text: choice.Delta.Content}
+			if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventContentDelta, ContentDelta: &part}); err != nil {
+				return false, err
+			}
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventContentDelta, ContentDelta: &part}); err != nil {
+				return false, err
+			}
+		}
+		if choice.FinishReason != "" {
+			response.StopReason = choice.FinishReason
+		}
+	}
+	if chunk.Usage != nil {
+		usage := compat.Usage{
+			InputTokens:  chunk.Usage.PromptTokens,
+			OutputTokens: chunk.Usage.CompletionTokens,
+			TotalTokens:  chunk.Usage.TotalTokens,
+		}
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+		}
+		if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
+			return false, err
+		}
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
+			return false, err
+		}
+	}
+	if response.StopReason != "" {
+		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventDone, DoneReason: response.StopReason}); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func (p *Provider) invokeAnthropic(ctx context.Context, request compat.Request) (compat.Response, error) {
@@ -207,27 +412,7 @@ func (p *Provider) invokeGemini(ctx context.Context, request compat.Request) (co
 }
 
 func (p *Provider) doJSON(ctx context.Context, method string, path string, body any, out any) error {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	apiKey, err := p.apiKeyForRequest()
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, method, p.endpoint(path, apiKey), bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("accept", "application/json")
-	if err := p.applyAPIKeyHeader(req, apiKey); err != nil {
-		return err
-	}
-	for key, value := range p.headers {
-		req.Header.Set(key, value)
-	}
-	resp, err := p.client.Do(req)
+	resp, err := p.doRequest(ctx, method, path, body, "application/json")
 	if err != nil {
 		return err
 	}
@@ -246,6 +431,32 @@ func (p *Provider) doJSON(ctx context.Context, method string, path string, body 
 		return err
 	}
 	return nil
+}
+
+func (p *Provider) doRequest(ctx context.Context, method string, path string, body any, accept string) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	apiKey, err := p.apiKeyForRequest()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, p.endpoint(path, apiKey), bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("content-type", "application/json")
+	if accept != "" {
+		req.Header.Set("accept", accept)
+	}
+	if err := p.applyAPIKeyHeader(req, apiKey); err != nil {
+		return nil, err
+	}
+	for key, value := range p.headers {
+		req.Header.Set(key, value)
+	}
+	return p.client.Do(req)
 }
 
 func (p *Provider) apiKeyForRequest() (string, error) {
@@ -346,4 +557,28 @@ func (p *Provider) recordUsage(usage compat.Usage, invokeErr error) {
 	}
 	p.usage.TotalTokens += total
 	p.usage.ObservedAt = time.Now().UTC()
+}
+
+func emitEventsFromResponse(response compat.Response, emit func(compat.Event) error) error {
+	events, err := compat.EventsFromResponse(response)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err := emit(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func stringFromAny(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(v)
+	}
 }

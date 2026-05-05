@@ -296,7 +296,17 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 			t.Fatalf("decode upstream request: %v", err)
 		}
 		if request.Model != "deepseek-chat" || len(request.Messages) != 1 || request.Messages[0].Content != "api provider hello" {
-			t.Fatalf("unexpected upstream request: %#v", request)
+			if request.Model != "deepseek-chat" || len(request.Messages) != 1 || request.Messages[0].Content != "api provider stream" {
+				t.Fatalf("unexpected upstream request: %#v", request)
+			}
+		}
+		if request.Stream {
+			w.Header().Set("content-type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-api-provider-stream\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-api-provider-stream\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"api-compatible: \"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-api-provider-stream\",\"model\":\"deepseek-chat\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stream\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":13,\"completion_tokens\":5,\"total_tokens\":18}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
 		}
 		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
 			ID:     "chatcmpl-api-provider",
@@ -370,8 +380,12 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 	if response.Choices[0].Message.Content != "api-compatible: ok" || response.Usage == nil || response.Usage.TotalTokens != 18 {
 		t.Fatalf("unexpected api-compatible response: %#v", response)
 	}
+	streamBody := waitForV2OpenAIChatStreamModel(t, client, server.URL, "deepseek-default", "api provider stream", "req_e2e_v2_api_provider_stream")
+	if !strings.Contains(streamBody, "api-compatible: ") || !strings.Contains(streamBody, "stream") || !strings.Contains(streamBody, "data: [DONE]") {
+		t.Fatalf("unexpected api-compatible stream body: %s", streamBody)
+	}
 	usage := waitForV2ProviderUsage(t, client, server.URL, registration.Identity.ProviderInstanceID)
-	if usage.HostName != "api-host" || usage.Usage.TotalTokens != 18 || usage.Usage.Requests != 1 {
+	if usage.HostName != "api-host" || usage.Usage.TotalTokens != 36 || usage.Usage.Requests != 2 {
 		t.Fatalf("unexpected api-compatible usage: %#v", usage)
 	}
 	trace := waitForV2Trace(t, client, server.URL, "req_e2e_v2_api_provider")
@@ -766,7 +780,19 @@ func waitForV2OpenAIChatModel(t *testing.T, client *http.Client, baseURL string,
 
 func waitForV2OpenAIChatStream(t *testing.T, client *http.Client, baseURL string) string {
 	t.Helper()
-	body := []byte(`{"model":"providersim-default","stream":true,"messages":[{"role":"user","content":"e2e stream"}]}`)
+	return waitForV2OpenAIChatStreamModel(t, client, baseURL, "providersim-default", "e2e stream", "req_e2e_v2_stream")
+}
+
+func waitForV2OpenAIChatStreamModel(t *testing.T, client *http.Client, baseURL string, model string, content string, requestID string) string {
+	t.Helper()
+	body, err := json.Marshal(compat.OpenAIChatRequest{
+		Model:    model,
+		Stream:   true,
+		Messages: []compat.OpenAIChatMessage{{Role: "user", Content: content}},
+	})
+	if err != nil {
+		t.Fatalf("marshal OpenAI chat stream request: %v", err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -775,7 +801,7 @@ func waitForV2OpenAIChatStream(t *testing.T, client *http.Client, baseURL string
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("content-type", "application/json")
-		req.Header.Set("x-request-id", "req_e2e_v2_stream")
+		req.Header.Set("x-request-id", requestID)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -1162,13 +1188,14 @@ func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
 		},
 		Capabilities: []provider.Capability{
 			provider.CapabilityOpenAIChat,
+			provider.CapabilityStreamSSE,
 			provider.CapabilityUsageRead,
 			provider.CapabilityModelsRead,
 		},
 		Models: []provider.Model{{
 			ID:           "deepseek-chat",
 			Aliases:      []string{"deepseek-default"},
-			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
 		}},
 		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
 		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},
