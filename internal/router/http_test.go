@@ -699,6 +699,45 @@ func TestHTTPOpenAIChatCompletionsRequiresAPIKeyWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestHTTPRouterAdminRequiresAPIKeyWhenConfigured(t *testing.T) {
+	engine, _ := testEngine(t)
+	store := security.NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKey("admin_key", "pk_admin_router", "ops", "admin_1"); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine, APIKeys: store})
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without bearer token, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+	req.Header.Set("authorization", "Bearer pk_admin_router")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with bearer token, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := []byte(`{"scope":{"tenant_id":"ops","user_id":"admin_1","api_key_id":"admin_key","model":"gpt-5-codex"},"limit":{"max_tokens":50,"max_requests":5}}`)
+	req = httptest.NewRequest(http.MethodPut, "/router/v1/quotas/limits", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer pk_admin_router")
+	req.Header.Set("x-request-id", "req_admin_auth_quota")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected quota update 200 with bearer token, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	events := engine.AuditEvents(1)
+	if len(events) != 1 || events[0].Actor.APIKeyID != "admin_key" || events[0].Actor.UserID != "admin_1" || events[0].Actor.TenantID != "ops" {
+		t.Fatalf("audit actor did not use authenticated admin principal: %#v", events)
+	}
+}
+
 func TestHTTPAPIKeyAdminCreatesListsAndDeletesKey(t *testing.T) {
 	engine, _ := testEngine(t)
 	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
@@ -719,6 +758,7 @@ func TestHTTPAPIKeyAdminCreatesListsAndDeletesKey(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/router/v1/api-keys", nil)
+	req.Header.Set("authorization", "Bearer "+created.RawKey)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -740,6 +780,7 @@ func TestHTTPAPIKeyAdminCreatesListsAndDeletesKey(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/router/v1/api-keys/"+created.APIKey.ID, nil)
+	req.Header.Set("authorization", "Bearer "+created.RawKey)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
@@ -808,6 +849,7 @@ func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
 		"limit":{"max_tokens":123,"max_requests":7}
 	}`)))
 	quotaReq.Header.Set("content-type", "application/json")
+	quotaReq.Header.Set("authorization", "Bearer "+created.RawKey)
 	quotaReq.Header.Set("x-pangaea-user-id", "admin_1")
 	quotaRec := httptest.NewRecorder()
 	handler.ServeHTTP(quotaRec, quotaReq)
@@ -816,6 +858,7 @@ func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/router/v1/api-keys/"+created.APIKey.ID, nil)
+	deleteReq.Header.Set("authorization", "Bearer "+created.RawKey)
 	deleteReq.Header.Set("x-pangaea-user-id", "admin_1")
 	deleteRec := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRec, deleteReq)

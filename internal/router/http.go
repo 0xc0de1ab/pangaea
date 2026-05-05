@@ -76,6 +76,7 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	})
 	r.GET("/router/ui", serveRouterDashboard)
 	r.GET("/router/ui/", serveRouterDashboard)
+	r.Use(routerAdminAuthMiddleware(opts.APIKeys))
 	r.GET("/v1/models", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
 			return
@@ -630,6 +631,25 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 
 func serveRouterDashboard(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(routerDashboardHTML))
+}
+
+func routerAdminAuthMiddleware(store *security.APIKeyStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if !strings.HasPrefix(path, "/router/v1/") || path == "/router/v1/control/ws" || path == "/router/v1/data/ws" {
+			c.Next()
+			return
+		}
+		principal, ok := authenticatePublicRequest(c, store)
+		if !ok {
+			c.Abort()
+			return
+		}
+		if principal.ID != "" {
+			c.Set("router_admin_principal", principal)
+		}
+		c.Next()
+	}
 }
 
 func wantsAnthropicModels(c *gin.Context) bool {
@@ -1443,6 +1463,18 @@ func recordHTTPAuditEvent(engine *Engine, c *gin.Context, event AuditEvent) Audi
 }
 
 func httpAuditActor(c *gin.Context) AuditActor {
+	if value, ok := c.Get("router_admin_principal"); ok {
+		if principal, ok := value.(security.APIKeyPrincipal); ok && principal.ID != "" {
+			return AuditActor{
+				TenantID:   principal.TenantID,
+				UserID:     principal.UserID,
+				APIKeyID:   principal.ID,
+				Source:     "admin-api",
+				RemoteAddr: c.ClientIP(),
+				RequestID:  c.GetHeader("x-request-id"),
+			}
+		}
+	}
 	actor := AuditActor{
 		TenantID:   c.GetHeader("x-pangaea-tenant-id"),
 		UserID:     c.GetHeader("x-pangaea-user-id"),
