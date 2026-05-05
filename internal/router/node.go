@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/provider"
 )
 
 type NodeSnapshot struct {
@@ -106,6 +107,9 @@ func (e *Engine) ApplyProviderInventoryReport(report control.ProviderInventoryRe
 		return ErrRouterNotReady
 	}
 	for _, registration := range report.Providers {
+		if existing, ok := e.registry.Get(registration.Identity.ProviderInstanceID); ok {
+			registration = mergeInventoryRegistration(existing, registration)
+		}
 		if err := e.UpsertProvider(registration); err != nil {
 			return err
 		}
@@ -143,6 +147,25 @@ func (e *Engine) ApplyProviderInventoryReport(report control.ProviderInventoryRe
 		e.removeContainersMissingFromFullInventory(report.NodeID, containerKeys)
 	}
 	return nil
+}
+
+func mergeInventoryRegistration(existing provider.Registration, incoming provider.Registration) provider.Registration {
+	if incoming.Identity.ContainerID == "" {
+		incoming.Identity.ContainerID = existing.Identity.ContainerID
+	}
+	if incoming.Health.Status == "" || incoming.Health.Status == provider.HealthUnknown {
+		incoming.Health = existing.Health
+	}
+	if incoming.Auth.Status == "" || incoming.Auth.Status == provider.AuthUnknown {
+		incoming.Auth = existing.Auth
+	}
+	if incoming.Limits == (provider.LimitState{}) {
+		incoming.Limits = existing.Limits
+	}
+	if incoming.RegisteredAt.IsZero() {
+		incoming.RegisteredAt = existing.RegisteredAt
+	}
+	return incoming
 }
 
 func (e *Engine) Nodes() []NodeSnapshot {
