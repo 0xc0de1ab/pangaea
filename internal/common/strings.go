@@ -35,4 +35,5 @@ const (
 	CLIShortInspect = "inspect a credentials file with the registered format"
 	CLIShortStatus  = "show the local daemon status"
 	CLIShortVersion = "print build version"
+	CLIShortRouter  = "run v2 router APIs"
 )

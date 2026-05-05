@@ -3,11 +3,13 @@
 package providersim
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 )
 
@@ -294,6 +296,61 @@ func (s *Simulator) Registration() (provider.Registration, error) {
 		return provider.Registration{}, ErrRegistrationRejected
 	}
 	return s.effectiveRegistrationLocked(s.clock.Now()), nil
+}
+
+func (s *Simulator) Invoke(_ context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
+	if err := request.Validate(); err != nil {
+		return compat.Response{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.failures[FailureStreamOpenTimeout] {
+		return compat.Response{}, ErrStreamOpenTimeout
+	}
+	if s.failures[FailureMalformedStream] {
+		return compat.Response{}, ErrMalformedStream
+	}
+	if s.failures[FailureLocalServerCrash] {
+		return compat.Response{}, ErrLocalServerCrash
+	}
+	if registration.Identity.ProviderInstanceID != s.registration.Identity.ProviderInstanceID {
+		return compat.Response{}, fmt.Errorf("providersim: provider instance mismatch")
+	}
+
+	inputTokens := int64(0)
+	lastUserText := ""
+	for _, message := range request.Messages {
+		for _, part := range message.Content {
+			inputTokens += int64(len(part.Text) / 4)
+			if message.Role == compat.MessageRoleUser && part.Text != "" {
+				lastUserText = part.Text
+			}
+		}
+	}
+	if inputTokens == 0 {
+		inputTokens = 1
+	}
+	text := "providersim: ok"
+	if lastUserText != "" {
+		text = "providersim: " + lastUserText
+	}
+	outputTokens := int64(len(text)/4 + 1)
+	return compat.Response{
+		ID:      "providersim-response",
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role:    compat.MessageRoleAssistant,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: text}},
+		},
+		StopReason: "stop",
+		Usage: compat.Usage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+	}, nil
 }
 
 // Heartbeat returns the current heartbeat snapshot.

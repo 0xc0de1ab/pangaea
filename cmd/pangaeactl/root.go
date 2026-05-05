@@ -47,5 +47,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newInspectCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newRouterCmd())
 	return root
 }
