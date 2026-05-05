@@ -352,6 +352,10 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 	if response.Choices[0].Message.Content != "api-compatible: ok" || response.Usage == nil || response.Usage.TotalTokens != 18 {
 		t.Fatalf("unexpected api-compatible response: %#v", response)
 	}
+	usage := waitForV2ProviderUsage(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	if usage.HostName != "api-host" || usage.Usage.TotalTokens != 18 || usage.Usage.Requests != 1 {
+		t.Fatalf("unexpected api-compatible usage: %#v", usage)
+	}
 	trace := waitForV2Trace(t, client, server.URL, "req_e2e_v2_api_provider")
 	if trace.Provider == nil || trace.Provider.ProviderInstanceID != registration.Identity.ProviderInstanceID {
 		t.Fatalf("unexpected api-compatible trace: %#v", trace)

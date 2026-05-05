@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
@@ -35,6 +36,8 @@ type Provider struct {
 	apiKey       string
 	headers      map[string]string
 	client       *http.Client
+	usageMu      sync.Mutex
+	usage        provider.UsageReport
 }
 
 func New(opts Options) (*Provider, error) {
@@ -65,6 +68,10 @@ func New(opts Options) (*Provider, error) {
 		apiKey:       opts.APIKey,
 		headers:      cloneHeaders(opts.Headers),
 		client:       client,
+		usage: provider.UsageReport{
+			ObservedAt: time.Now().UTC(),
+			Source:     "api-compatible",
+		},
 	}, nil
 }
 
@@ -87,14 +94,36 @@ func (p *Provider) Invoke(ctx context.Context, registration provider.Registratio
 	}
 	switch p.dialect {
 	case compat.APIDialectOpenAI:
-		return p.invokeOpenAI(ctx, request)
+		response, err := p.invokeOpenAI(ctx, request)
+		p.recordUsage(response.Usage, err)
+		return response, err
 	case compat.APIDialectAnthropic:
-		return p.invokeAnthropic(ctx, request)
+		response, err := p.invokeAnthropic(ctx, request)
+		p.recordUsage(response.Usage, err)
+		return response, err
 	case compat.APIDialectGemini:
-		return p.invokeGemini(ctx, request)
+		response, err := p.invokeGemini(ctx, request)
+		p.recordUsage(response.Usage, err)
+		return response, err
 	default:
 		return compat.Response{}, fmt.Errorf("%w: unsupported dialect %q", ErrAPIProviderConfig, p.dialect)
 	}
+}
+
+func (p *Provider) Usage() (provider.UsageReport, error) {
+	if p == nil {
+		return provider.UsageReport{}, ErrAPIProviderConfig
+	}
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	usage := p.usage
+	if usage.ObservedAt.IsZero() {
+		usage.ObservedAt = time.Now().UTC()
+	}
+	if usage.Source == "" {
+		usage.Source = "api-compatible"
+	}
+	return usage, nil
 }
 
 func (p *Provider) invokeOpenAI(ctx context.Context, request compat.Request) (compat.Response, error) {
@@ -216,4 +245,24 @@ func cloneHeaders(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func (p *Provider) recordUsage(usage compat.Usage, invokeErr error) {
+	if p == nil || invokeErr != nil {
+		return
+	}
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	if p.usage.Source == "" {
+		p.usage.Source = "api-compatible"
+	}
+	p.usage.Requests++
+	p.usage.InputTokens += usage.InputTokens
+	p.usage.OutputTokens += usage.OutputTokens
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.InputTokens + usage.OutputTokens
+	}
+	p.usage.TotalTokens += total
+	p.usage.ObservedAt = time.Now().UTC()
 }

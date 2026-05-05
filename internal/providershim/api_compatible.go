@@ -46,6 +46,7 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 			ControlURL:        opts.ControlURL,
 			HeartbeatInterval: opts.HeartbeatInterval,
 			Registration:      registration,
+			UsageReporter:     opts.Provider,
 		})
 	})
 	eg.Go(func() error {
@@ -62,6 +63,11 @@ type StaticControlClientOptions struct {
 	ControlURL        string
 	HeartbeatInterval time.Duration
 	Registration      provider.Registration
+	UsageReporter     usageReporter
+}
+
+type usageReporter interface {
+	Usage() (provider.UsageReport, error)
 }
 
 func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions) error {
@@ -93,6 +99,9 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 	if err := writeStaticAuthReport(ctx, client, state, "provider_auth_initial"); err != nil {
 		return err
 	}
+	if err := writeStaticUsageReport(ctx, client, state, opts.UsageReporter, "provider_usage_initial"); err != nil {
+		return err
+	}
 
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
@@ -114,6 +123,12 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 			}
 		case <-ticker.C:
 			if err := writeStaticHeartbeat(ctx, client, state, "provider_heartbeat_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+			if err := writeStaticUsageReport(ctx, client, state, opts.UsageReporter, "provider_usage_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
@@ -182,6 +197,22 @@ func writeStaticHeartbeat(ctx context.Context, client *controlClientConn, state 
 		Health:             registration.Health,
 		Auth:               registration.Auth,
 		Limits:             registration.Limits,
+		ReportedAt:         time.Now().UTC(),
+	})
+}
+
+func writeStaticUsageReport(ctx context.Context, client *controlClientConn, state *staticControlState, reporter usageReporter, id string) error {
+	if reporter == nil {
+		return nil
+	}
+	usage, err := reporter.Usage()
+	if err != nil {
+		return nil
+	}
+	registration := state.registrationSnapshot()
+	return client.sendAndWaitAck(ctx, control.MessageTypeProviderUsageReport, id, control.ProviderUsageReport{
+		ProviderInstanceID: registration.Identity.ProviderInstanceID,
+		Usage:              usage,
 		ReportedAt:         time.Now().UTC(),
 	})
 }

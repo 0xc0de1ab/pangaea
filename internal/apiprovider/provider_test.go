@@ -61,6 +61,13 @@ func TestProviderInvokeOpenAICompatibleUpstream(t *testing.T) {
 	if response.Message.Content[0].Text != "world" || response.Usage.TotalTokens != 7 {
 		t.Fatalf("unexpected response: %#v", response)
 	}
+	usage, err := client.Usage()
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if usage.Requests != 1 || usage.TotalTokens != 7 {
+		t.Fatalf("unexpected accumulated usage: %#v", usage)
+	}
 }
 
 func TestProviderInvokeAnthropicCompatibleUpstream(t *testing.T) {
