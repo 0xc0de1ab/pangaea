@@ -196,6 +196,14 @@ const routerDashboardHTML = `<!doctype html>
       white-space: nowrap;
     }
     .checkline input { width: auto; min-height: auto; }
+    .control-form {
+      display: grid;
+      grid-template-columns: minmax(180px, 1.3fr) minmax(120px, 0.6fr) minmax(180px, 1fr) auto auto;
+      gap: 8px;
+      padding: 12px;
+      align-items: end;
+      border-bottom: 1px solid var(--line);
+    }
     .result {
       padding: 12px;
     }
@@ -227,7 +235,7 @@ const routerDashboardHTML = `<!doctype html>
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .metric .value { font-size: 21px; }
       .toolbar { width: 100%; justify-content: space-between; }
-      .inline-form { grid-template-columns: 1fr; }
+      .inline-form, .control-form { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -276,6 +284,17 @@ const routerDashboardHTML = `<!doctype html>
           <div id="dry-run-result" class="result"><div class="empty">No dry run yet</div></div>
         </section>
         <section>
+          <h2>Provider Controls</h2>
+          <form id="control-form" class="control-form">
+            <label>Provider<select id="control-provider" name="provider_instance_id"></select></label>
+            <label>Action<select id="control-action" name="action"><option value="refresh">refresh auth</option><option value="drain">drain</option><option value="resume">resume</option></select></label>
+            <label>Reason<input id="control-reason" name="reason" autocomplete="off"></label>
+            <label class="checkline"><input id="control-confirm" name="confirm" type="checkbox"> Confirm</label>
+            <button type="submit">Send</button>
+          </form>
+          <div id="control-result" class="result"><div class="empty">No command sent</div></div>
+        </section>
+        <section>
           <h2>Usage</h2>
           <div id="usage" class="table-wrap"></div>
         </section>
@@ -306,7 +325,8 @@ const routerDashboardHTML = `<!doctype html>
       data: "/router/v1/data/sessions",
       audit: "/router/v1/audit/events?limit=8",
       traces: "/router/v1/traces?limit=8",
-      dryRun: "/router/v1/routes/dry-run"
+      dryRun: "/router/v1/routes/dry-run",
+      providerBase: "/router/v1/providers"
     };
     const state = {};
     const $ = (id) => document.getElementById(id);
@@ -382,6 +402,7 @@ const routerDashboardHTML = `<!doctype html>
       $("metric-tokens").textContent = usage.reduce((n, u) => n + ((u.usage && u.usage.total_tokens) || 0), 0).toLocaleString();
       $("updated-at").textContent = new Date().toLocaleTimeString();
       renderProviders(providers);
+      renderProviderControlOptions(providers);
       renderNodes(state.nodes || []);
       renderContainers(state.containers || []);
       renderUsage(usage);
@@ -399,6 +420,20 @@ const routerDashboardHTML = `<!doctype html>
         { label: "Auth", render: (r) => statusPill(r.auth && r.auth.status) },
         { label: "Queue", render: (r) => esc(r.limits && r.limits.queue_depth) }
       ], "No providers registered");
+    }
+    function renderProviderControlOptions(rows) {
+      const select = $("control-provider");
+      const current = select.value;
+      select.innerHTML = (rows || []).map((r) => {
+        const id = text(r.identity && r.identity.provider_instance_id);
+        const host = text(r.identity && r.identity.host_name);
+        const account = text(r.identity && r.identity.account && r.identity.account.display);
+        const label = [id, host, account].filter(Boolean).join(" / ");
+        return '<option value="' + esc(id) + '">' + esc(label || id) + '</option>';
+      }).join("");
+      if ([...select.options].some((option) => option.value === current)) {
+        select.value = current;
+      }
     }
     function renderNodes(rows) {
       $("nodes").innerHTML = table(rows, [
@@ -503,8 +538,58 @@ const routerDashboardHTML = `<!doctype html>
       }
       $("dry-run-result").innerHTML = html;
     }
+    async function sendProviderControl(event) {
+      event.preventDefault();
+      $("error").style.display = "none";
+      const providerID = $("control-provider").value.trim();
+      const action = $("control-action").value;
+      const reason = $("control-reason").value.trim();
+      const confirm = $("control-confirm").checked;
+      if (!providerID) {
+        renderControlResult({ error: "provider is required" }, 0);
+        return;
+      }
+      if (!reason || !confirm) {
+        renderControlResult({ error: "reason and confirm are required" }, 0);
+        return;
+      }
+      const base = endpoints.providerBase + "/" + encodeURIComponent(providerID);
+      const path = action === "refresh" ? base + "/auth/refresh" : base + "/drain";
+      const body = action === "refresh"
+        ? { reason, confirm, timeout_seconds: 30 }
+        : { drain: action === "drain", reason, confirm, timeout_seconds: 5 };
+      try {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const payload = await res.json().catch(() => ({}));
+        renderControlResult(payload, res.status);
+        $("control-confirm").checked = false;
+        await refresh();
+      } catch (err) {
+        renderControlResult({ error: err.message }, 0);
+      }
+    }
+    function renderControlResult(payload, status) {
+      const ok = status >= 200 && status < 300;
+      let html = '<div class="kv">';
+      html += '<div class="key">Status</div><div>' + statusPill(ok ? "accepted" : "failed") + (status ? ' <code>' + esc(status) + '</code>' : '') + '</div>';
+      html += '<div class="key">Provider</div><div><code>' + esc(payload.provider_instance_id || $("control-provider").value) + '</code></div>';
+      html += '<div class="key">Result</div><div>' + esc(payload.error || payload.reason || (payload.ok === false ? "failed" : "sent")) + '</div>';
+      if (payload.refresh_id) {
+        html += '<div class="key">Refresh</div><div><code>' + esc(payload.refresh_id) + '</code></div>';
+      }
+      if (payload.auth && payload.auth.status) {
+        html += '<div class="key">Auth</div><div>' + statusPill(payload.auth.status) + '</div>';
+      }
+      html += '</div>';
+      $("control-result").innerHTML = html;
+    }
     $("refresh").addEventListener("click", refresh);
     $("dry-run-form").addEventListener("submit", runDryRun);
+    $("control-form").addEventListener("submit", sendProviderControl);
     refresh();
     setInterval(refresh, 10000);
   </script>

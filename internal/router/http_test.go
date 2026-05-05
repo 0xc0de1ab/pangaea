@@ -56,7 +56,10 @@ func TestHTTPRouterDashboard(t *testing.T) {
 	if !bytes.Contains(rec.Body.Bytes(), []byte("Pangaea Router")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/providers")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("Route Dry Run")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/routes/dry-run")) {
+		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/routes/dry-run")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("Provider Controls")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("/auth/refresh")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("/drain")) {
 		t.Fatalf("dashboard body missing expected content: %s", rec.Body.String())
 	}
 }
