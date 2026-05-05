@@ -318,6 +318,71 @@ func TestRunStaticControlClientHandlesAuthRefreshWithRefresher(t *testing.T) {
 	}
 }
 
+func TestRunStaticControlClientAutoRefreshesNearExpiry(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	registration, err := sim.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	registration.Auth.Status = provider.AuthRefreshSoon
+	registration.Auth.Refreshable = true
+	registration.Auth.ExpiresAt = time.Now().UTC().Add(time.Minute)
+	called := make(chan control.AuthRefreshRequest, 1)
+	refresher := AuthRefresherFunc(func(_ context.Context, request control.AuthRefreshRequest, registration provider.Registration) (provider.AuthState, error) {
+		called <- request
+		auth := registration.Auth
+		auth.Status = provider.AuthHealthy
+		auth.ExpiresAt = time.Now().UTC().Add(time.Hour)
+		auth.LastRefreshAt = time.Now().UTC()
+		return auth, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunStaticControlClient(ctx, StaticControlClientOptions{
+			ControlURL:           controlURL(server.URL),
+			HeartbeatInterval:    10 * time.Millisecond,
+			Registration:         registration,
+			AuthRefresher:        refresher,
+			AutoRefreshThreshold: 5 * time.Minute,
+			AutoRefreshCooldown:  time.Hour,
+		})
+	}()
+
+	waitForProvider(t, engine, registration.Identity.ProviderInstanceID)
+	select {
+	case request := <-called:
+		if !strings.HasPrefix(request.RefreshID, "auto_refresh_") || request.Reason != "auto refresh threshold reached" {
+			t.Fatalf("unexpected auto refresh request: %#v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("auto refresh was not triggered")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, got := range engine.Providers() {
+			if got.Identity.ProviderInstanceID == registration.Identity.ProviderInstanceID && got.Auth.Status == provider.AuthHealthy && got.Auth.ExpiresAt.After(time.Now().UTC().Add(30*time.Minute)) {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("static control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("auto refresh result did not update router auth")
+}
+
 func controlURL(serverURL string) string {
 	return "ws" + strings.TrimPrefix(serverURL, "http") + "/router/v1/control/ws"
 }

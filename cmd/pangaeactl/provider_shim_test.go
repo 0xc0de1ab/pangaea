@@ -44,6 +44,8 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_REFRESH_COMMAND", "codex exec ping")
 	t.Setenv("PANGAEA_REFRESH_LOGIN_SHELL", "false")
 	t.Setenv("PANGAEA_REFRESH_TIMEOUT", "45s")
+	t.Setenv("PANGAEA_REFRESH_THRESHOLD", "5m")
+	t.Setenv("PANGAEA_REFRESH_COOLDOWN", "90s")
 
 	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true})
 	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.ProviderID != "codex-samtest" {
@@ -55,7 +57,7 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	if opts.AuthPath != "/var/lib/pangaea/auth/codex/auth.json" || opts.AuthFormat != "codex-auth-json-format" || opts.RefreshCommand != "codex exec ping" {
 		t.Fatalf("env defaults did not populate auth config: %#v", opts)
 	}
-	if opts.RefreshLoginShell || opts.RefreshTimeout != 45*time.Second {
+	if opts.RefreshLoginShell || opts.RefreshTimeout != 45*time.Second || opts.RefreshThreshold != 5*time.Minute || opts.RefreshCooldown != 90*time.Second {
 		t.Fatalf("env defaults did not populate refresh options: %#v", opts)
 	}
 }
@@ -78,7 +80,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "model", "model-alias", "auth-path", "auth-format", "refresh-command", "refresh-login-shell", "refresh-timeout"} {
+	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "model", "model-alias", "auth-path", "auth-format", "refresh-command", "refresh-login-shell", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}

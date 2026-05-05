@@ -14,12 +14,14 @@ import (
 )
 
 type APICompatibleShimOptions struct {
-	ControlURL        string
-	DataURL           string
-	HeartbeatInterval time.Duration
-	TokenKey          []byte
-	Provider          *apiprovider.Provider
-	AuthRefresher     AuthRefresher
+	ControlURL           string
+	DataURL              string
+	HeartbeatInterval    time.Duration
+	TokenKey             []byte
+	Provider             *apiprovider.Provider
+	AuthRefresher        AuthRefresher
+	AutoRefreshThreshold time.Duration
+	AutoRefreshCooldown  time.Duration
 }
 
 func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) error {
@@ -44,11 +46,13 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 	eg, ctx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
 		return RunStaticControlClient(ctx, StaticControlClientOptions{
-			ControlURL:        opts.ControlURL,
-			HeartbeatInterval: opts.HeartbeatInterval,
-			Registration:      registration,
-			UsageReporter:     opts.Provider,
-			AuthRefresher:     opts.AuthRefresher,
+			ControlURL:           opts.ControlURL,
+			HeartbeatInterval:    opts.HeartbeatInterval,
+			Registration:         registration,
+			UsageReporter:        opts.Provider,
+			AuthRefresher:        opts.AuthRefresher,
+			AutoRefreshThreshold: opts.AutoRefreshThreshold,
+			AutoRefreshCooldown:  opts.AutoRefreshCooldown,
 		})
 	})
 	eg.Go(func() error {
@@ -62,11 +66,13 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 }
 
 type StaticControlClientOptions struct {
-	ControlURL        string
-	HeartbeatInterval time.Duration
-	Registration      provider.Registration
-	UsageReporter     usageReporter
-	AuthRefresher     AuthRefresher
+	ControlURL           string
+	HeartbeatInterval    time.Duration
+	Registration         provider.Registration
+	UsageReporter        usageReporter
+	AuthRefresher        AuthRefresher
+	AutoRefreshThreshold time.Duration
+	AutoRefreshCooldown  time.Duration
 }
 
 type usageReporter interface {
@@ -137,13 +143,20 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 				}
 				return err
 			}
+			if err := maybeStaticAutoAuthRefresh(ctx, client, state, opts.AuthRefresher, opts.AutoRefreshThreshold, opts.AutoRefreshCooldown); err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
 		}
 	}
 }
 
 type staticControlState struct {
-	mu           sync.RWMutex
-	registration provider.Registration
+	mu                sync.RWMutex
+	registration      provider.Registration
+	lastAutoRefreshAt time.Time
 }
 
 func newStaticControlState(registration provider.Registration) *staticControlState {
@@ -177,6 +190,16 @@ func (s *staticControlState) setAuth(auth provider.AuthState) provider.Registrat
 	defer s.mu.Unlock()
 	s.registration.Auth = auth
 	return s.registration
+}
+
+func (s *staticControlState) claimAutoRefresh(now time.Time, cooldown time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cooldown > 0 && !s.lastAutoRefreshAt.IsZero() && now.Sub(s.lastAutoRefreshAt) < cooldown {
+		return false
+	}
+	s.lastAutoRefreshAt = now
+	return true
 }
 
 func writeStaticInventoryReport(ctx context.Context, client *controlClientConn, state *staticControlState, id string) error {
@@ -247,48 +270,93 @@ func handleStaticControlRequest(ctx context.Context, client *controlClientConn, 
 		if err != nil {
 			return err
 		}
-		registration := state.registrationSnapshot()
-		auth := registration.Auth
-		ok := false
-		var refreshErr error
-		if request.ProviderInstanceID != "" && request.ProviderInstanceID != registration.Identity.ProviderInstanceID {
-			auth.Status = provider.AuthUnavailable
-			auth.LastRefreshErr = "refresh request provider_instance_id does not match this shim"
-			refreshErr = fmt.Errorf("%w: %s", ErrShimConfig, auth.LastRefreshErr)
-		} else if refresher == nil {
-			auth.Status = provider.AuthUnavailable
-			auth.LastRefreshErr = "auth refresh unsupported for this provider"
-			refreshErr = fmt.Errorf("%w: %s", ErrShimConfig, auth.LastRefreshErr)
-		} else {
-			auth.Status = provider.AuthRefreshing
-			state.setAuth(auth)
-			auth, refreshErr = refresher.RefreshAuth(ctx, request, registration)
-			if refreshErr != nil {
-				if auth.Status == "" || auth.Status == provider.AuthRefreshing {
-					auth.Status = provider.AuthUnavailable
-				}
-				auth.LastRefreshErr = refreshErr.Error()
-			} else {
-				if auth.Status == "" || auth.Status == provider.AuthRefreshing {
-					auth.Status = provider.AuthHealthy
-				}
-				auth.LastRefreshErr = ""
-				ok = true
-			}
-		}
-		state.setAuth(auth)
-		result := control.AuthRefreshResult{
-			RefreshID:          request.RefreshID,
-			ProviderInstanceID: registration.Identity.ProviderInstanceID,
-			Auth:               auth,
-			OK:                 ok,
-			ReportedAt:         time.Now().UTC(),
-		}
-		if refreshErr != nil {
-			result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: refreshErr.Error()}
-		}
+		result := executeStaticAuthRefresh(ctx, state, refresher, request)
 		return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
 	default:
 		return fmt.Errorf("%w: unsupported control request type %q", ErrShimConfig, env.Type)
 	}
+}
+
+func maybeStaticAutoAuthRefresh(ctx context.Context, client *controlClientConn, state *staticControlState, refresher AuthRefresher, threshold time.Duration, cooldown time.Duration) error {
+	if refresher == nil || threshold <= 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	registration := state.registrationSnapshot()
+	if !shouldAutoRefreshAuth(registration.Auth, threshold, now) {
+		return nil
+	}
+	if !state.claimAutoRefresh(now, cooldown) {
+		return nil
+	}
+	refreshID := "auto_refresh_" + registration.Identity.ProviderInstanceID + "_" + now.Format("20060102150405.000000000")
+	result := executeStaticAuthRefresh(ctx, state, refresher, control.AuthRefreshRequest{
+		RefreshID:          refreshID,
+		ProviderInstanceID: registration.Identity.ProviderInstanceID,
+		Reason:             "auto refresh threshold reached",
+	})
+	return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+refreshID, result)
+}
+
+func shouldAutoRefreshAuth(auth provider.AuthState, threshold time.Duration, now time.Time) bool {
+	if !auth.Refreshable {
+		return false
+	}
+	switch auth.Status {
+	case provider.AuthExpired, provider.AuthRevoked, provider.AuthRefreshSoon:
+		return true
+	case provider.AuthRefreshing:
+		return false
+	}
+	if auth.ExpiresAt.IsZero() {
+		return false
+	}
+	if !auth.ExpiresAt.After(now) {
+		return true
+	}
+	return !auth.ExpiresAt.After(now.Add(threshold))
+}
+
+func executeStaticAuthRefresh(ctx context.Context, state *staticControlState, refresher AuthRefresher, request control.AuthRefreshRequest) control.AuthRefreshResult {
+	registration := state.registrationSnapshot()
+	auth := registration.Auth
+	ok := false
+	var refreshErr error
+	if request.ProviderInstanceID != "" && request.ProviderInstanceID != registration.Identity.ProviderInstanceID {
+		auth.Status = provider.AuthUnavailable
+		auth.LastRefreshErr = "refresh request provider_instance_id does not match this shim"
+		refreshErr = fmt.Errorf("%w: %s", ErrShimConfig, auth.LastRefreshErr)
+	} else if refresher == nil {
+		auth.Status = provider.AuthUnavailable
+		auth.LastRefreshErr = "auth refresh unsupported for this provider"
+		refreshErr = fmt.Errorf("%w: %s", ErrShimConfig, auth.LastRefreshErr)
+	} else {
+		auth.Status = provider.AuthRefreshing
+		state.setAuth(auth)
+		auth, refreshErr = refresher.RefreshAuth(ctx, request, registration)
+		if refreshErr != nil {
+			if auth.Status == "" || auth.Status == provider.AuthRefreshing {
+				auth.Status = provider.AuthUnavailable
+			}
+			auth.LastRefreshErr = refreshErr.Error()
+		} else {
+			if auth.Status == "" || auth.Status == provider.AuthRefreshing {
+				auth.Status = provider.AuthHealthy
+			}
+			auth.LastRefreshErr = ""
+			ok = true
+		}
+	}
+	state.setAuth(auth)
+	result := control.AuthRefreshResult{
+		RefreshID:          request.RefreshID,
+		ProviderInstanceID: registration.Identity.ProviderInstanceID,
+		Auth:               auth,
+		OK:                 ok,
+		ReportedAt:         time.Now().UTC(),
+	}
+	if refreshErr != nil {
+		result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: refreshErr.Error()}
+	}
+	return result
 }

@@ -107,7 +107,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 			OwnerGID:      &gid,
 			FileMode:      "0600",
 		},
-		Refresh: RefreshSpec{Command: []string{"codex", "exec", "Reply with OK only."}, Timeout: "90s"},
+		Refresh: RefreshSpec{Command: []string{"codex", "exec", "Reply with OK only."}, Threshold: "5m", Cooldown: "90s", Timeout: "2m"},
 		Shim:    ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 		Upstream: UpstreamSpec{
 			BaseURL: "http://127.0.0.1:8080",
@@ -131,7 +131,9 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 		"PANGAEA_MODEL_ALIAS":          "codex-default",
 		"PANGAEA_AUTH_FORMAT":          "codex-auth-json-format",
 		"PANGAEA_REFRESH_COMMAND":      "'codex' 'exec' 'Reply with OK only.'",
-		"PANGAEA_REFRESH_TIMEOUT":      "90s",
+		"PANGAEA_REFRESH_THRESHOLD":    "5m",
+		"PANGAEA_REFRESH_COOLDOWN":     "90s",
+		"PANGAEA_REFRESH_TIMEOUT":      "2m",
 		"PANGAEA_PROVIDER_INSTANCE_ID": "codex-samtest-a1",
 	} {
 		if spec.Env[key] != want {

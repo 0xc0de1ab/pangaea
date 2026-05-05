@@ -42,6 +42,8 @@ type providerShimRunOptions struct {
 	RefreshCommand     string
 	RefreshLoginShell  bool
 	RefreshTimeout     time.Duration
+	RefreshThreshold   time.Duration
+	RefreshCooldown    time.Duration
 }
 
 func newProviderShimCmd() *cobra.Command {
@@ -90,6 +92,8 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.RefreshCommand, "refresh-command", "", "oneshot auth refresh command for --cli-container")
 	cmd.Flags().BoolVar(&opts.RefreshLoginShell, "refresh-login-shell", true, "run --refresh-command through bash with ~/.bashrc sourced")
 	cmd.Flags().DurationVar(&opts.RefreshTimeout, "refresh-timeout", 2*time.Minute, "maximum duration for --refresh-command")
+	cmd.Flags().DurationVar(&opts.RefreshThreshold, "refresh-threshold", 5*time.Minute, "auth expiry window that triggers automatic --refresh-command for --cli-container")
+	cmd.Flags().DurationVar(&opts.RefreshCooldown, "refresh-cooldown", 5*time.Minute, "minimum interval between automatic auth refresh attempts for --cli-container")
 	return cmd
 }
 
@@ -131,12 +135,14 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 			return err
 		}
 		return providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
-			ControlURL:        opts.RouterControlURL,
-			DataURL:           opts.RouterDataURL,
-			HeartbeatInterval: opts.HeartbeatInterval,
-			TokenKey:          []byte(opts.StreamTokenKey),
-			Provider:          apiProvider,
-			AuthRefresher:     refresher,
+			ControlURL:           opts.RouterControlURL,
+			DataURL:              opts.RouterDataURL,
+			HeartbeatInterval:    opts.HeartbeatInterval,
+			TokenKey:             []byte(opts.StreamTokenKey),
+			Provider:             apiProvider,
+			AuthRefresher:        refresher,
+			AutoRefreshThreshold: defaultRefreshThreshold(opts.RefreshThreshold),
+			AutoRefreshCooldown:  defaultRefreshCooldown(opts.RefreshCooldown),
 		})
 	default:
 		return fmt.Errorf("one of --simulator, --api-compatible, or --cli-container is required")
@@ -182,6 +188,16 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 			opts.RefreshTimeout = parsed
 		}
 	}
+	if raw, ok := os.LookupEnv("PANGAEA_REFRESH_THRESHOLD"); ok {
+		if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil {
+			opts.RefreshThreshold = parsed
+		}
+	}
+	if raw, ok := os.LookupEnv("PANGAEA_REFRESH_COOLDOWN"); ok {
+		if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil {
+			opts.RefreshCooldown = parsed
+		}
+	}
 	return opts
 }
 
@@ -201,6 +217,20 @@ func parseEnvBool(raw string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func defaultRefreshThreshold(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return 5 * time.Minute
+}
+
+func defaultRefreshCooldown(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return 5 * time.Minute
 }
 
 func buildAPICompatibleProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {

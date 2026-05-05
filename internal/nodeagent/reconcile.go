@@ -188,6 +188,12 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	if len(spec.Refresh.Command) > 0 {
 		env["PANGAEA_REFRESH_COMMAND"] = shellJoin(spec.Refresh.Command)
 	}
+	if spec.Refresh.Threshold != "" {
+		env["PANGAEA_REFRESH_THRESHOLD"] = spec.Refresh.Threshold
+	}
+	if spec.Refresh.Cooldown != "" {
+		env["PANGAEA_REFRESH_COOLDOWN"] = spec.Refresh.Cooldown
+	}
 	if spec.Refresh.Timeout != "" {
 		env["PANGAEA_REFRESH_TIMEOUT"] = spec.Refresh.Timeout
 	}
