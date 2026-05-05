@@ -60,6 +60,7 @@ func (c Capability) Valid() bool {
 	switch c {
 	case CapabilityOpenAIChat, CapabilityOpenAIResponses, CapabilityAnthropicMessages,
 		CapabilityGeminiGenerateContent, CapabilityStreamSSE, CapabilityUsageRead,
+		CapabilityModelsRead,
 		CapabilityAuthFile, CapabilityAuthRefreshOneshot, CapabilityAgentWorkspaceRead,
 		CapabilityAgentWorkspaceWrite, CapabilityAgentTerminal, CapabilityCodeCompletion:
 		return true

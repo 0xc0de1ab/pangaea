@@ -951,6 +951,7 @@ func routerV2E2ERegistration(now time.Time) provider.Registration {
 			provider.CapabilityGeminiGenerateContent,
 			provider.CapabilityStreamSSE,
 			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
 			provider.CapabilityAuthRefreshOneshot,
 		},
 		Models: []provider.Model{
@@ -992,6 +993,7 @@ func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
 		Capabilities: []provider.Capability{
 			provider.CapabilityOpenAIChat,
 			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
 		},
 		Models: []provider.Model{{
 			ID:           "deepseek-chat",
@@ -1019,6 +1021,7 @@ func cliContainerE2ERegistration(now time.Time) provider.Registration {
 		Capabilities: []provider.Capability{
 			provider.CapabilityOpenAIChat,
 			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
 			provider.CapabilityAuthFile,
 			provider.CapabilityAuthRefreshOneshot,
 		},

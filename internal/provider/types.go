@@ -38,6 +38,7 @@ const (
 	CapabilityGeminiGenerateContent Capability = "api.gemini.generateContent"
 	CapabilityStreamSSE             Capability = "stream.sse"
 	CapabilityUsageRead             Capability = "usage.read"
+	CapabilityModelsRead            Capability = "models.read"
 	CapabilityAuthFile              Capability = "auth.file"
 	CapabilityAuthRefreshOneshot    Capability = "auth.refresh.oneshot"
 	CapabilityAgentWorkspaceRead    Capability = "agent.workspace.read"

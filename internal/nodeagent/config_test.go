@@ -38,7 +38,7 @@ providers:
       timeout: 90s
     shim:
       protocols: [openai]
-      capabilities: [api.openai.chat, auth.refresh.oneshot]
+      capabilities: [api.openai.chat, models.read, auth.refresh.oneshot]
   - id: codex-nullcode
     kind: cli-container
     account_hint: nullcode@gmail.com
@@ -65,6 +65,16 @@ providers:
 	}
 	if !registration.Auth.Refreshable {
 		t.Fatalf("expected refreshable registration")
+	}
+	foundModelsRead := false
+	for _, capability := range registration.Capabilities {
+		if capability == provider.CapabilityModelsRead {
+			foundModelsRead = true
+			break
+		}
+	}
+	if !foundModelsRead {
+		t.Fatalf("expected models.read capability in registration: %#v", registration.Capabilities)
 	}
 }
 

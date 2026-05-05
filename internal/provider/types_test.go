@@ -40,6 +40,7 @@ func TestRegistrationValidate(t *testing.T) {
 			CapabilityOpenAIChat,
 			CapabilityStreamSSE,
 			CapabilityUsageRead,
+			CapabilityModelsRead,
 		},
 		Models: []Model{
 			{ID: "gpt-5.3-codex-spark", Aliases: []string{"codex-spark"}},

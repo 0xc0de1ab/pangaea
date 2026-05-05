@@ -238,7 +238,7 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 	if opts.ModelAlias != "" {
 		aliases = []string{opts.ModelAlias}
 	}
-	capabilities := append([]provider.Capability{capability, provider.CapabilityUsageRead}, extraCapabilities...)
+	capabilities := append([]provider.Capability{capability, provider.CapabilityUsageRead, provider.CapabilityModelsRead}, extraCapabilities...)
 	return apiprovider.New(apiprovider.Options{
 		Registration: provider.Registration{
 			Identity: provider.ProviderIdentity{
