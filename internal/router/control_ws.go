@@ -87,6 +87,29 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 			return control.ErrInvalidPayload
 		}
 		return engine.UpdateProviderUsage(report.ProviderInstanceID, report.Usage, report.ReportedAt)
+	case control.MessageTypeAuthRefreshResult:
+		result, err := control.Decode[control.AuthRefreshResult](env, control.MessageTypeAuthRefreshResult)
+		if err != nil {
+			return err
+		}
+		if result.ProviderInstanceID == "" {
+			return control.ErrInvalidPayload
+		}
+		auth := result.Auth
+		if auth.Status == "" {
+			if result.OK {
+				auth.Status = provider.AuthHealthy
+			} else {
+				auth.Status = provider.AuthUnavailable
+			}
+		}
+		if !result.OK && result.Error != nil && auth.LastRefreshErr == "" {
+			auth.LastRefreshErr = result.Error.Message
+		}
+		if !result.ReportedAt.IsZero() && auth.LastRefreshAt.IsZero() {
+			auth.LastRefreshAt = result.ReportedAt
+		}
+		return engine.UpdateProviderAuth(result.ProviderInstanceID, auth)
 	case control.MessageTypeNodeHello:
 		hello, err := control.Decode[control.NodeHello](env, control.MessageTypeNodeHello)
 		if err != nil {

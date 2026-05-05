@@ -139,6 +139,68 @@ func TestControlWSProviderUsageReportUpdatesUsage(t *testing.T) {
 	}
 }
 
+func TestControlWSAuthRefreshResultUpdatesAuth(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+	defer conn.Close()
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+
+	reportedAt := time.Now().UTC()
+	writeControlEnvelope(t, conn, control.MessageTypeAuthRefreshResult, "msg_refresh_result", control.AuthRefreshResult{
+		RefreshID:          "refresh_1",
+		ProviderInstanceID: "codex-control-a1",
+		Auth: provider.AuthState{
+			Status:      provider.AuthHealthy,
+			Refreshable: true,
+		},
+		OK:         true,
+		ReportedAt: reportedAt,
+	})
+	readControlAck(t, conn, "msg_refresh_result")
+
+	for _, registration := range engine.Providers() {
+		if registration.Identity.ProviderInstanceID == "codex-control-a1" {
+			if registration.Auth.Status != provider.AuthHealthy || registration.Auth.LastRefreshAt.IsZero() {
+				t.Fatalf("expected refresh result auth update, got %#v", registration.Auth)
+			}
+			return
+		}
+	}
+	t.Fatalf("registered provider missing")
+}
+
+func TestControlWSAuthRefreshResultRecordsError(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+	defer conn.Close()
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+
+	writeControlEnvelope(t, conn, control.MessageTypeAuthRefreshResult, "msg_refresh_failed", control.AuthRefreshResult{
+		RefreshID:          "refresh_1",
+		ProviderInstanceID: "codex-control-a1",
+		OK:                 false,
+		Error:              &control.ErrorPayload{Code: "refresh_failed", Message: "refresh token expired"},
+		ReportedAt:         time.Now().UTC(),
+	})
+	readControlAck(t, conn, "msg_refresh_failed")
+
+	for _, registration := range engine.Providers() {
+		if registration.Identity.ProviderInstanceID == "codex-control-a1" {
+			if registration.Auth.Status != provider.AuthUnavailable || registration.Auth.LastRefreshErr != "refresh token expired" {
+				t.Fatalf("expected failed refresh auth update, got %#v", registration.Auth)
+			}
+			return
+		}
+	}
+	t.Fatalf("registered provider missing")
+}
+
 func TestControlWSNodeHelloHeartbeatAndInventory(t *testing.T) {
 	engine, _ := testEngine(t)
 	conn := dialControlWS(t, engine)
