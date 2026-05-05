@@ -243,7 +243,7 @@ type dataSession struct {
 	writeMu            sync.Mutex
 	mu                 sync.Mutex
 	closed             bool
-	pending            map[string]chan tunnel.DataResponse
+	pending            map[string]*pendingResponse
 }
 
 func newDataSession(providerInstanceID string, conn *websocket.Conn) *dataSession {
@@ -251,18 +251,43 @@ func newDataSession(providerInstanceID string, conn *websocket.Conn) *dataSessio
 		providerInstanceID: providerInstanceID,
 		conn:               conn,
 		connectedAt:        time.Now().UTC(),
-		pending:            make(map[string]chan tunnel.DataResponse),
+		pending:            make(map[string]*pendingResponse),
 	}
 }
 
+type pendingResponse struct {
+	ch        chan tunnel.DataResponse
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newPendingResponse(buffer int) *pendingResponse {
+	if buffer <= 0 {
+		buffer = 1
+	}
+	return &pendingResponse{
+		ch:   make(chan tunnel.DataResponse, buffer),
+		done: make(chan struct{}),
+	}
+}
+
+func (p *pendingResponse) close() {
+	if p == nil {
+		return
+	}
+	p.closeOnce.Do(func() {
+		close(p.done)
+	})
+}
+
 func (s *dataSession) invoke(ctx context.Context, request tunnel.DataRequest) (tunnel.DataResponse, error) {
-	responseCh := make(chan tunnel.DataResponse, 1)
+	pending := newPendingResponse(1)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return tunnel.DataResponse{}, ErrNoDataSession
 	}
-	s.pending[request.RequestID] = responseCh
+	s.pending[request.RequestID] = pending
 	s.mu.Unlock()
 	defer s.deletePending(request.RequestID)
 
@@ -276,19 +301,21 @@ func (s *dataSession) invoke(ctx context.Context, request tunnel.DataRequest) (t
 	case <-ctx.Done():
 		s.sendCancel(request)
 		return tunnel.DataResponse{}, ctx.Err()
-	case response := <-responseCh:
+	case response := <-pending.ch:
 		return response, nil
+	case <-pending.done:
+		return tunnel.DataResponse{}, ErrNoDataSession
 	}
 }
 
 func (s *dataSession) invokeStream(ctx context.Context, request tunnel.DataRequest, emit func(compat.Event) error) (compat.Response, error) {
-	responseCh := make(chan tunnel.DataResponse, 32)
+	pending := newPendingResponse(32)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return compat.Response{}, ErrNoDataSession
 	}
-	s.pending[request.RequestID] = responseCh
+	s.pending[request.RequestID] = pending
 	s.mu.Unlock()
 	defer s.deletePending(request.RequestID)
 
@@ -303,7 +330,7 @@ func (s *dataSession) invokeStream(ctx context.Context, request tunnel.DataReque
 		case <-ctx.Done():
 			s.sendCancel(request)
 			return compat.Response{}, ctx.Err()
-		case response := <-responseCh:
+		case response := <-pending.ch:
 			if response.Error != "" {
 				return compat.Response{}, fmt.Errorf("%w: %s", ErrDataRequestFailed, response.Error)
 			}
@@ -324,6 +351,8 @@ func (s *dataSession) invokeStream(ctx context.Context, request tunnel.DataReque
 			default:
 				return compat.Response{}, fmt.Errorf("%w: unsupported data frame type %q", ErrDataRequestFailed, response.Type)
 			}
+		case <-pending.done:
+			return compat.Response{}, ErrNoDataSession
 		}
 	}
 }
@@ -359,21 +388,23 @@ func (s *dataSession) readLoop() {
 
 func (s *dataSession) dispatch(response tunnel.DataResponse) {
 	s.mu.Lock()
-	ch := s.pending[response.RequestID]
+	pending := s.pending[response.RequestID]
 	s.mu.Unlock()
-	if ch == nil {
+	if pending == nil {
 		return
 	}
 	select {
-	case ch <- response:
-	default:
+	case pending.ch <- response:
+	case <-pending.done:
 	}
 }
 
 func (s *dataSession) deletePending(requestID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	pending := s.pending[requestID]
 	delete(s.pending, requestID)
+	s.mu.Unlock()
+	pending.close()
 }
 
 func (s *dataSession) closeWithError(err error) {
@@ -384,7 +415,7 @@ func (s *dataSession) closeWithError(err error) {
 	}
 	s.closed = true
 	pending := s.pending
-	s.pending = make(map[string]chan tunnel.DataResponse)
+	s.pending = make(map[string]*pendingResponse)
 	s.mu.Unlock()
 
 	message := ""
@@ -392,10 +423,12 @@ func (s *dataSession) closeWithError(err error) {
 		message = err.Error()
 	}
 	for requestID, ch := range pending {
+		response := tunnel.DataResponse{Type: tunnel.DataFrameResponse, RequestID: requestID, Error: message}
 		select {
-		case ch <- tunnel.DataResponse{Type: tunnel.DataFrameResponse, RequestID: requestID, Error: message}:
+		case ch.ch <- response:
 		default:
 		}
+		ch.close()
 	}
 	_ = s.conn.Close()
 }

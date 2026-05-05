@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -264,5 +266,143 @@ func TestDataBrokerInvokeStreamReceivesEventFrames(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("invoke stream did not finish")
+	}
+}
+
+func TestDataBrokerInvokeStreamAppliesBackpressureWithoutDroppingEvents(t *testing.T) {
+	broker, err := NewDataBroker([]byte("test-data-stream-backpressure-key"))
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{DataBroker: broker}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/data/ws?provider_instance_id=provider-a1", nil)
+	if err != nil {
+		t.Fatalf("dial data ws: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	firstEmit := make(chan struct{}, 1)
+	releaseEmit := make(chan struct{})
+	var mu sync.Mutex
+	received := []string{}
+	done := make(chan struct {
+		response compat.Response
+		err      error
+	}, 1)
+	go func() {
+		response, err := broker.InvokeStream(ctx, provider.Registration{
+			Identity: provider.ProviderIdentity{ProviderInstanceID: "provider-a1"},
+		}, compat.Request{
+			ID:      "req_stream_backpressure_1",
+			Dialect: compat.APIDialectOpenAI,
+			Model:   "gpt-5-sim",
+			Stream:  true,
+			Messages: []compat.Message{{
+				Role:    compat.MessageRoleUser,
+				Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+			}},
+		}, func(event compat.Event) error {
+			if event.Type == compat.EventContentDelta {
+				if event.ContentDelta.Text == "chunk-000" {
+					select {
+					case firstEmit <- struct{}{}:
+					default:
+					}
+					<-releaseEmit
+				}
+				mu.Lock()
+				received = append(received, event.ContentDelta.Text)
+				mu.Unlock()
+			}
+			return nil
+		})
+		done <- struct {
+			response compat.Response
+			err      error
+		}{response: response, err: err}
+	}()
+
+	var request tunnel.DataRequest
+	if err := conn.ReadJSON(&request); err != nil {
+		t.Fatalf("read request frame: %v", err)
+	}
+	if request.Type != tunnel.DataFrameRequest || request.RequestID != "req_stream_backpressure_1" || !request.Request.Stream {
+		t.Fatalf("unexpected request frame: %#v", request)
+	}
+
+	const eventCount = 80
+	writeDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < eventCount; i++ {
+			text := fmt.Sprintf("chunk-%03d", i)
+			if err := conn.WriteJSON(tunnel.DataResponse{
+				Type:      tunnel.DataFrameEvent,
+				RequestID: request.RequestID,
+				StreamID:  request.Descriptor.StreamID,
+				Event: compat.Event{
+					Type:         compat.EventContentDelta,
+					ContentDelta: &compat.ContentPart{Type: compat.ContentPartText, Text: text},
+				},
+			}); err != nil {
+				writeDone <- err
+				return
+			}
+		}
+		writeDone <- conn.WriteJSON(tunnel.DataResponse{
+			Type:      tunnel.DataFrameResponse,
+			RequestID: request.RequestID,
+			StreamID:  request.Descriptor.StreamID,
+			Response: compat.Response{
+				Dialect: compat.APIDialectOpenAI,
+				Model:   "gpt-5-sim",
+				Message: compat.Message{
+					Role:    compat.MessageRoleAssistant,
+					Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "complete"}},
+				},
+				StopReason: "stop",
+				Usage:      compat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+			},
+		})
+	}()
+
+	select {
+	case <-firstEmit:
+	case <-time.After(time.Second):
+		t.Fatalf("first stream event was not emitted")
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(releaseEmit)
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("write stream frames: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("provider stream frame writer did not finish")
+	}
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("invoke stream: %v", result.err)
+		}
+		if result.response.Message.Content[0].Text != "complete" {
+			t.Fatalf("unexpected response: %#v", result.response)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("invoke stream did not finish")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != eventCount {
+		t.Fatalf("received %d stream events, want %d: %#v", len(received), eventCount, received)
+	}
+	if received[0] != "chunk-000" || received[eventCount-1] != "chunk-079" {
+		t.Fatalf("unexpected event ordering: first=%q last=%q", received[0], received[eventCount-1])
 	}
 }
