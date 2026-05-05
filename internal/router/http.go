@@ -35,6 +35,34 @@ type openAIModel struct {
 	OwnedBy string `json:"owned_by"`
 }
 
+type anthropicModelList struct {
+	Data    []anthropicModel `json:"data"`
+	HasMore bool             `json:"has_more"`
+	FirstID string           `json:"first_id,omitempty"`
+	LastID  string           `json:"last_id,omitempty"`
+}
+
+type anthropicModel struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+}
+
+type geminiModelList struct {
+	Models []geminiModel `json:"models"`
+}
+
+type geminiModel struct {
+	Name                       string   `json:"name"`
+	Version                    string   `json:"version,omitempty"`
+	DisplayName                string   `json:"displayName,omitempty"`
+	Description                string   `json:"description,omitempty"`
+	InputTokenLimit            int      `json:"inputTokenLimit,omitempty"`
+	OutputTokenLimit           int      `json:"outputTokenLimit,omitempty"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods,omitempty"`
+}
+
 func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	if opts.APIKeys == nil {
@@ -56,6 +84,10 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		if !ok {
 			return
 		}
+		if wantsAnthropicModels(c) {
+			c.JSON(http.StatusOK, anthropicModelsFromEngine(engine))
+			return
+		}
 		models := engine.Models()
 		now := time.Now().Unix()
 		out := openAIModelList{
@@ -71,6 +103,32 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			})
 		}
 		c.JSON(http.StatusOK, out)
+	})
+	r.GET("/v1beta/models", func(c *gin.Context) {
+		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, geminiModelsFromEngine(engine))
+	})
+	r.GET("/v1beta/models/*modelName", func(c *gin.Context) {
+		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		name := strings.TrimPrefix(c.Param("modelName"), "/")
+		model, ok := geminiModelFromEngine(engine, name)
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "model not found"})
+			return
+		}
+		c.JSON(http.StatusOK, model)
 	})
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
 		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
@@ -570,6 +628,74 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 
 func serveRouterDashboard(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(routerDashboardHTML))
+}
+
+func wantsAnthropicModels(c *gin.Context) bool {
+	return c.GetHeader("anthropic-version") != "" || strings.EqualFold(c.GetHeader("x-api-dialect"), string(compat.APIDialectAnthropic))
+}
+
+func anthropicModelsFromEngine(engine *Engine) anthropicModelList {
+	models := engine.Models()
+	out := anthropicModelList{
+		Data:    make([]anthropicModel, 0, len(models)),
+		HasMore: false,
+	}
+	for _, model := range models {
+		if !hasCapability(model.Capabilities, provider.CapabilityAnthropicMessages) {
+			continue
+		}
+		out.Data = append(out.Data, anthropicModel{
+			ID:          model.ID,
+			Type:        "model",
+			DisplayName: model.ID,
+		})
+	}
+	if len(out.Data) > 0 {
+		out.FirstID = out.Data[0].ID
+		out.LastID = out.Data[len(out.Data)-1].ID
+	}
+	return out
+}
+
+func geminiModelsFromEngine(engine *Engine) geminiModelList {
+	models := engine.Models()
+	out := geminiModelList{Models: make([]geminiModel, 0, len(models))}
+	for _, model := range models {
+		if !hasCapability(model.Capabilities, provider.CapabilityGeminiGenerateContent) {
+			continue
+		}
+		out.Models = append(out.Models, geminiModelFromModelInfo(model))
+	}
+	return out
+}
+
+func geminiModelFromEngine(engine *Engine, name string) (geminiModel, bool) {
+	name = strings.TrimPrefix(strings.TrimSpace(name), "models/")
+	if name == "" {
+		return geminiModel{}, false
+	}
+	for _, model := range engine.Models() {
+		if !hasCapability(model.Capabilities, provider.CapabilityGeminiGenerateContent) {
+			continue
+		}
+		if model.ID == name || model.CanonicalModel == name {
+			return geminiModelFromModelInfo(model), true
+		}
+	}
+	return geminiModel{}, false
+}
+
+func geminiModelFromModelInfo(model ModelInfo) geminiModel {
+	methods := []string{"generateContent"}
+	if hasCapability(model.Capabilities, provider.CapabilityStreamSSE) {
+		methods = append(methods, "streamGenerateContent")
+	}
+	return geminiModel{
+		Name:                       "models/" + model.ID,
+		Version:                    model.CanonicalModel,
+		DisplayName:                model.ID,
+		SupportedGenerationMethods: methods,
+	}
 }
 
 type openAIChatStreamChunk struct {

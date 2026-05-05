@@ -80,6 +80,14 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	if node.HostName != "providersim-host" {
 		t.Fatalf("unexpected node snapshot: %#v", node)
 	}
+	geminiModels := waitForV2GeminiModels(t, client, server.URL)
+	if len(geminiModels) != 1 || geminiModels[0].Name != "models/gemini-default" {
+		t.Fatalf("unexpected Gemini models response: %#v", geminiModels)
+	}
+	anthropicModels := waitForV2AnthropicModels(t, client, server.URL)
+	if len(anthropicModels) != 1 || anthropicModels[0].ID != "claude-default" || anthropicModels[0].Type != "model" {
+		t.Fatalf("unexpected Anthropic models response: %#v", anthropicModels)
+	}
 	sim.SetAuthStatus(provider.AuthRefreshSoon)
 	waitForV2ProviderAuth(t, client, server.URL, registration.Identity.ProviderInstanceID, provider.AuthRefreshSoon)
 	refresh := requestV2AuthRefresh(t, client, server.URL, registration.Identity.ProviderInstanceID)
@@ -937,6 +945,90 @@ func waitForV2GeminiGenerateContentStream(t *testing.T, client *http.Client, bas
 	}
 	t.Fatalf("Gemini streamGenerateContent did not succeed: %v", lastErr)
 	return ""
+}
+
+type e2eGeminiModel struct {
+	Name                       string   `json:"name"`
+	Version                    string   `json:"version,omitempty"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods,omitempty"`
+}
+
+func waitForV2GeminiModels(t *testing.T, client *http.Client, baseURL string) []e2eGeminiModel {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL + "/v1beta/models")
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			var out struct {
+				Models []e2eGeminiModel `json:"models"`
+			}
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatalf("decode Gemini models response: %v body=%s", err, string(data))
+			}
+			return out.Models
+		}
+		lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Gemini models did not succeed: %v", lastErr)
+	return nil
+}
+
+type e2eAnthropicModel struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+func waitForV2AnthropicModels(t *testing.T, client *http.Client, baseURL string) []e2eAnthropicModel {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/models", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("anthropic-version", "2023-06-01")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			var out struct {
+				Data []e2eAnthropicModel `json:"data"`
+			}
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatalf("decode Anthropic models response: %v body=%s", err, string(data))
+			}
+			return out.Data
+		}
+		lastErr = fmt.Errorf("status=%d body=%s", resp.StatusCode, string(data))
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Anthropic models did not succeed: %v", lastErr)
+	return nil
 }
 
 func waitForV2ProviderUsage(t *testing.T, client *http.Client, baseURL string, providerInstanceID string) v2router.ProviderUsageSnapshot {

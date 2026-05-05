@@ -41,6 +41,62 @@ func TestHTTPModels(t *testing.T) {
 	}
 }
 
+func TestHTTPAnthropicModels(t *testing.T) {
+	engine, _ := testDialectEngine(t, compat.APIDialectAnthropic, provider.CapabilityAnthropicMessages, provider.ServiceAnthropic, "claude-default", "claude-native")
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out anthropicModelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Data) != 1 || out.Data[0].ID != "claude-default" || out.Data[0].Type != "model" || out.FirstID != "claude-default" || out.LastID != "claude-default" {
+		t.Fatalf("unexpected Anthropic model list: %#v", out)
+	}
+}
+
+func TestHTTPGeminiModels(t *testing.T) {
+	engine, _ := testGeminiModelsEngine(t)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out geminiModelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Models) != 1 || out.Models[0].Name != "models/gemini-default" || out.Models[0].Version != "gemini-native" {
+		t.Fatalf("unexpected Gemini model list: %#v", out)
+	}
+	if len(out.Models[0].SupportedGenerationMethods) != 2 || out.Models[0].SupportedGenerationMethods[1] != "streamGenerateContent" {
+		t.Fatalf("unexpected Gemini generation methods: %#v", out.Models[0].SupportedGenerationMethods)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1beta/models/gemini-default", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected model get 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var model geminiModel
+	if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+		t.Fatalf("decode model response: %v", err)
+	}
+	if model.Name != "models/gemini-default" || model.Version != "gemini-native" {
+		t.Fatalf("unexpected Gemini model: %#v", model)
+	}
+}
+
 func TestHTTPRouterDashboard(t *testing.T) {
 	handler := NewHTTPHandler(HTTPOptions{})
 	req := httptest.NewRequest(http.MethodGet, "/router/ui", nil)
@@ -810,6 +866,54 @@ routes:
       auth_status: [healthy, refresh_soon]
       health_state: [ready]
 `, publicModel, canonicalModel, capability, dialect, publicModel, dialect, reg.Identity.ProviderID, dialect)))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	registry := provider.NewRegistry()
+	if err := registry.Upsert(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	engine, err := NewEngine(policy, registry, nil)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	sim, err := providersim.New(providersim.Options{Registration: reg})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	return engine, sim
+}
+
+func testGeminiModelsEngine(t *testing.T) (*Engine, *providersim.Simulator) {
+	t.Helper()
+	reg := registration("providersim-gemini-0001", "providersim-gemini", "gemini@example.test", 10, 0)
+	reg.Identity.Service = provider.ServiceGemini
+	reg.Identity.Kind = provider.KindAPICompatible
+	reg.Capabilities = []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE, provider.CapabilityUsageRead}
+	reg.Models = []provider.Model{{
+		ID:           "gemini-native",
+		Aliases:      []string{"gemini-default"},
+		Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE},
+	}}
+	policy, err := ParseRoutingPolicyYAML([]byte(`
+version: routing-policy/v1
+model_aliases:
+  gemini-default:
+    canonical_model: gemini-native
+    required_capabilities: [api.gemini.generateContent, stream.sse]
+routes:
+  - id: providersim-gemini
+    match:
+      models: [gemini-default]
+      api_dialects: [gemini]
+    candidates:
+      - provider: providersim-gemini
+        account: gemini@example.test
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+`))
 	if err != nil {
 		t.Fatalf("parse policy: %v", err)
 	}
