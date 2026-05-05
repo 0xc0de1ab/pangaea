@@ -268,6 +268,31 @@ func (e *Engine) Release(requestID string) (quota.Reservation, error) {
 	return e.ledger.Release(requestID)
 }
 
+func (e *Engine) SetQuotaLimit(scope quota.Scope, limit quota.Limit) error {
+	if e == nil || e.ledger == nil {
+		return ErrRouterNotReady
+	}
+	return e.ledger.SetLimit(scope, limit)
+}
+
+func (e *Engine) QuotaSnapshot(scope quota.Scope) (quota.SnapshotRecord, error) {
+	if e == nil || e.ledger == nil {
+		return quota.SnapshotRecord{}, ErrRouterNotReady
+	}
+	limit, committed, reserved, err := e.ledger.Snapshot(scope)
+	if err != nil {
+		return quota.SnapshotRecord{}, err
+	}
+	return quota.SnapshotRecord{Scope: scope, Limit: limit, Committed: committed, Reserved: reserved}, nil
+}
+
+func (e *Engine) QuotaSnapshots() []quota.SnapshotRecord {
+	if e == nil || e.ledger == nil {
+		return nil
+	}
+	return e.ledger.Snapshots()
+}
+
 func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, request compat.Request) (compat.Response, RouteExecution, error) {
 	if e == nil || e.invoker == nil {
 		err := fmt.Errorf("%w: provider invoker is nil", ErrRouterNotReady)

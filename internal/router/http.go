@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/quota"
 	"github.com/0xc0de1ab/pangaea/internal/security"
 	"github.com/gin-gonic/gin"
 )
@@ -204,6 +205,51 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		c.JSON(http.StatusOK, trace)
 	})
+	r.GET("/router/v1/quotas", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"quotas": engine.QuotaSnapshots()})
+	})
+	r.PUT("/router/v1/quotas/limits", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request quotaLimitRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := engine.SetQuotaLimit(request.Scope, request.Limit); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		snapshot, err := engine.QuotaSnapshot(request.Scope)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, snapshot)
+	})
+	r.POST("/router/v1/quotas/snapshot", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var scope quota.Scope
+		if err := c.ShouldBindJSON(&scope); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		snapshot, err := engine.QuotaSnapshot(scope)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, snapshot)
+	})
 	r.GET("/router/v1/control/ws", handleControlWS(opts.Engine))
 	r.GET("/router/v1/data/ws", func(c *gin.Context) {
 		if opts.DataBroker == nil {
@@ -239,6 +285,11 @@ type openAIChatStreamChunk struct {
 	Model   string                   `json:"model"`
 	Choices []openAIChatStreamChoice `json:"choices"`
 	Usage   *compat.OpenAIUsage      `json:"usage,omitempty"`
+}
+
+type quotaLimitRequest struct {
+	Scope quota.Scope `json:"scope"`
+	Limit quota.Limit `json:"limit"`
 }
 
 type openAIChatStreamChoice struct {

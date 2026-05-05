@@ -103,6 +103,38 @@ func TestLedgerCommitIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestLedgerSnapshotsReturnsLimitsAndUsage(t *testing.T) {
+	ledger := NewLedger()
+	scope := testScope()
+	otherScope := Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1", Model: "claude-default"}
+	if err := ledger.SetLimit(scope, Limit{MaxTokens: 100, MaxRequests: 10}); err != nil {
+		t.Fatalf("set limit: %v", err)
+	}
+	if _, err := ledger.Reserve(ReservationRequest{RequestID: "req_1", Scope: scope, Estimate: Usage{Tokens: 10, Requests: 1}}); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if _, err := ledger.Commit("req_1", Usage{Tokens: 8, Requests: 1}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := ledger.SetLimit(otherScope, Limit{MaxTokens: 50, MaxRequests: 5}); err != nil {
+		t.Fatalf("set other limit: %v", err)
+	}
+
+	snapshots := ledger.Snapshots()
+	if len(snapshots) != 2 {
+		t.Fatalf("expected two snapshots, got %#v", snapshots)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.Scope == scope {
+			if snapshot.Limit.MaxTokens != 100 || snapshot.Committed.Tokens != 8 || snapshot.Reserved.Tokens != 0 {
+				t.Fatalf("unexpected primary snapshot: %#v", snapshot)
+			}
+			return
+		}
+	}
+	t.Fatalf("primary snapshot missing: %#v", snapshots)
+}
+
 func TestLedgerConcurrentReservationsDoNotOverrunQuota(t *testing.T) {
 	ledger := NewLedger()
 	scope := testScope()

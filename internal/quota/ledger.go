@@ -6,6 +6,7 @@ package quota
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -56,6 +57,13 @@ type Reservation struct {
 	Status    ReservationStatus `json:"status"`
 	CreatedAt time.Time         `json:"created_at"`
 	ClosedAt  time.Time         `json:"closed_at,omitempty"`
+}
+
+type SnapshotRecord struct {
+	Scope     Scope `json:"scope"`
+	Limit     Limit `json:"limit,omitempty"`
+	Committed Usage `json:"committed,omitempty"`
+	Reserved  Usage `json:"reserved,omitempty"`
 }
 
 type Ledger struct {
@@ -187,6 +195,45 @@ func (l *Ledger) Snapshot(scope Scope) (Limit, Usage, Usage, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.limits[scope], l.committed[scope], l.reserved[scope], nil
+}
+
+func (l *Ledger) Snapshots() []SnapshotRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	scopes := make(map[Scope]struct{}, len(l.limits)+len(l.committed)+len(l.reserved))
+	for scope := range l.limits {
+		scopes[scope] = struct{}{}
+	}
+	for scope := range l.committed {
+		scopes[scope] = struct{}{}
+	}
+	for scope := range l.reserved {
+		scopes[scope] = struct{}{}
+	}
+	out := make([]SnapshotRecord, 0, len(scopes))
+	for scope := range scopes {
+		out = append(out, SnapshotRecord{
+			Scope:     scope,
+			Limit:     l.limits[scope],
+			Committed: l.committed[scope],
+			Reserved:  l.reserved[scope],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a := out[i].Scope
+		b := out[j].Scope
+		switch {
+		case a.TenantID != b.TenantID:
+			return a.TenantID < b.TenantID
+		case a.UserID != b.UserID:
+			return a.UserID < b.UserID
+		case a.APIKeyID != b.APIKeyID:
+			return a.APIKeyID < b.APIKeyID
+		default:
+			return a.Model < b.Model
+		}
+	})
+	return out
 }
 
 func (l *Ledger) canReserveLocked(scope Scope, estimate Usage) error {

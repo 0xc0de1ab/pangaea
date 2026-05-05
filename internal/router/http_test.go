@@ -12,6 +12,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
+	"github.com/0xc0de1ab/pangaea/internal/quota"
 	"github.com/0xc0de1ab/pangaea/internal/security"
 )
 
@@ -128,6 +129,60 @@ func TestHTTPProviderUsage(t *testing.T) {
 	}
 	if got.Usage.TotalTokens != 30 {
 		t.Fatalf("unexpected usage: %#v", got.Usage)
+	}
+}
+
+func TestHTTPQuotaAdmin(t *testing.T) {
+	engine, _ := testEngine(t)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+	body := []byte(`{
+		"scope":{"tenant_id":"team-a","user_id":"usr_1","api_key_id":"key_1","model":"gpt-5-codex"},
+		"limit":{"max_tokens":123,"max_requests":7}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPut, "/router/v1/quotas/limits", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var snapshot quota.SnapshotRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatalf("decode set limit response: %v", err)
+	}
+	if snapshot.Limit.MaxTokens != 123 || snapshot.Limit.MaxRequests != 7 {
+		t.Fatalf("unexpected snapshot: %#v", snapshot)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/router/v1/quotas/snapshot", bytes.NewReader([]byte(`{"tenant_id":"team-a","user_id":"usr_1","api_key_id":"key_1","model":"gpt-5-codex"}`)))
+	req.Header.Set("content-type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 snapshot, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if snapshot.Limit.MaxTokens != 123 {
+		t.Fatalf("unexpected snapshot after query: %#v", snapshot)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/quotas", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 list, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Quotas []quota.SnapshotRecord `json:"quotas"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode quota list: %v", err)
+	}
+	if len(out.Quotas) == 0 {
+		t.Fatalf("expected quota list")
 	}
 }
 

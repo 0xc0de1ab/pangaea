@@ -71,6 +71,7 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	waitForV2Provider(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	setV2QuotaLimit(t, client, server.URL, quota.Scope{APIKeyID: "req_e2e_v2_data", Model: "providersim-default"}, quota.Limit{MaxTokens: 1000, MaxRequests: 10})
 	response := waitForV2OpenAIChat(t, client, server.URL)
 	if len(response.Choices) != 1 || response.Choices[0].Message.Content != "providersim: e2e hello" {
 		t.Fatalf("unexpected chat response: %#v", response)
@@ -84,6 +85,10 @@ func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
 	trace := waitForV2Trace(t, client, server.URL, "req_e2e_v2_data")
 	if trace.Status != "completed" || trace.Provider == nil || trace.Provider.HostName != "providersim-host" {
 		t.Fatalf("unexpected request trace: %#v", trace)
+	}
+	snapshot := getV2QuotaSnapshot(t, client, server.URL, quota.Scope{APIKeyID: "req_e2e_v2_data", Model: "providersim-default"})
+	if snapshot.Committed.Tokens == 0 || snapshot.Limit.MaxTokens != 1000 {
+		t.Fatalf("unexpected quota snapshot: %#v", snapshot)
 	}
 	streamBody := waitForV2OpenAIChatStream(t, client, server.URL)
 	if !strings.Contains(streamBody, "providersim: e2e stream") || !strings.Contains(streamBody, "data: [DONE]") {
@@ -126,6 +131,61 @@ func waitForV2Provider(t *testing.T, client *http.Client, baseURL string, provid
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("provider %q did not register", providerInstanceID)
+}
+
+func setV2QuotaLimit(t *testing.T, client *http.Client, baseURL string, scope quota.Scope, limit quota.Limit) {
+	t.Helper()
+	body, err := json.Marshal(struct {
+		Scope quota.Scope `json:"scope"`
+		Limit quota.Limit `json:"limit"`
+	}{Scope: scope, Limit: limit})
+	if err != nil {
+		t.Fatalf("marshal quota limit: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/router/v1/quotas/limits", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new quota request: %v", err)
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("set quota limit: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("set quota limit status=%d body=%s", resp.StatusCode, string(data))
+	}
+}
+
+func getV2QuotaSnapshot(t *testing.T, client *http.Client, baseURL string, scope quota.Scope) quota.SnapshotRecord {
+	t.Helper()
+	body, err := json.Marshal(scope)
+	if err != nil {
+		t.Fatalf("marshal quota scope: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/router/v1/quotas/snapshot", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new quota snapshot request: %v", err)
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("get quota snapshot: %v", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read quota snapshot: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("quota snapshot status=%d body=%s", resp.StatusCode, string(data))
+	}
+	var snapshot quota.SnapshotRecord
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("decode quota snapshot: %v body=%s", err, string(data))
+	}
+	return snapshot
 }
 
 func waitForV2OpenAIChat(t *testing.T, client *http.Client, baseURL string) compat.OpenAIChatResponse {
