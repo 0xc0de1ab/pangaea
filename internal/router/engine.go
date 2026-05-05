@@ -54,6 +54,10 @@ type Invoker interface {
 	Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error)
 }
 
+type StreamInvoker interface {
+	InvokeStream(context.Context, provider.Registration, compat.Request, func(compat.Event) error) (compat.Response, error)
+}
+
 type ModelInfo struct {
 	ID             string                `json:"id"`
 	CanonicalModel string                `json:"canonical_model,omitempty"`
@@ -357,6 +361,114 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 			Reason:             "invoke failed: " + invokeErr.Error(),
 		})
 		if ctx.Err() != nil {
+			break
+		}
+	}
+	if invokeErr != nil {
+		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+			finalExecution.Reservation = released
+		}
+		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+		e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", invokeErr, startedAt, time.Now().UTC()))
+		return compat.Response{}, finalExecution, invokeErr
+	}
+	if len(invokeRejections) > 0 {
+		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+		finalExecution.Decision.Reason = "fallback selected after provider invoke failure"
+	}
+	actualUsage := quota.Usage{
+		Tokens:   response.Usage.TotalTokens,
+		Requests: 1,
+	}
+	committed, err := e.Commit(execution.RequestID, actualUsage)
+	if err != nil {
+		e.recordRequestTrace(newRequestTrace(execution, finalExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
+		return compat.Response{}, finalExecution, err
+	}
+	traceExecution := finalExecution
+	traceExecution.Reservation = committed
+	e.recordRequestTrace(newRequestTrace(execution, traceExecution, actualUsage, "completed", nil, startedAt, time.Now().UTC()))
+	return response, finalExecution, nil
+}
+
+func (e *Engine) InvokeStream(ctx context.Context, execution RouteExecutionRequest, request compat.Request, emit func(compat.Event) error) (compat.Response, RouteExecution, error) {
+	if e == nil || e.invoker == nil {
+		err := fmt.Errorf("%w: provider invoker is nil", ErrRouterNotReady)
+		if e != nil {
+			e.recordRequestTrace(newRequestTrace(execution, RouteExecution{}, quota.Usage{}, "failed", err, time.Now().UTC(), time.Now().UTC()))
+		}
+		return compat.Response{}, RouteExecution{}, err
+	}
+	if emit == nil {
+		err := fmt.Errorf("%w: stream emit callback is nil", ErrRouterNotReady)
+		if e != nil {
+			e.recordRequestTrace(newRequestTrace(execution, RouteExecution{}, quota.Usage{}, "failed", err, time.Now().UTC(), time.Now().UTC()))
+		}
+		return compat.Response{}, RouteExecution{}, err
+	}
+	streamInvoker, ok := e.invoker.(StreamInvoker)
+	if !ok {
+		response, routeExecution, err := e.Invoke(ctx, execution, request)
+		if err != nil {
+			return compat.Response{}, routeExecution, err
+		}
+		events, err := compat.EventsFromResponse(response)
+		if err != nil {
+			return compat.Response{}, routeExecution, err
+		}
+		for _, event := range events {
+			if err := emit(event); err != nil {
+				return compat.Response{}, routeExecution, err
+			}
+		}
+		return response, routeExecution, nil
+	}
+	startedAt := time.Now().UTC()
+	routeExecution, err := e.ReserveRoute(execution)
+	if err != nil {
+		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", err, startedAt, time.Now().UTC()))
+		return compat.Response{}, routeExecution, err
+	}
+	if routeExecution.Decision.SelectedProvider == nil {
+		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+			routeExecution.Reservation = released
+		}
+		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", ErrNoProvider, startedAt, time.Now().UTC()))
+		return compat.Response{}, routeExecution, ErrNoProvider
+	}
+	if routeExecution.Decision.CanonicalModel != "" {
+		request.Model = routeExecution.Decision.CanonicalModel
+	}
+	if request.ID == "" {
+		request.ID = execution.RequestID
+	}
+	request.Stream = true
+	candidates := e.executionCandidates(routeExecution.Decision)
+	var response compat.Response
+	var invokeErr error
+	var invokeRejections []RouteRejection
+	finalExecution := routeExecution
+	emitted := false
+	wrappedEmit := func(event compat.Event) error {
+		emitted = true
+		return emit(event)
+	}
+	for _, candidate := range candidates {
+		candidateExecution := routeExecution
+		candidateExecution.Decision.Selected = candidate.Identity.ProviderInstanceID
+		candidateExecution.Decision.SelectedProvider = &candidate
+		candidateExecution.Decision.Reason = "selected provider"
+		response, invokeErr = streamInvoker.InvokeStream(ctx, candidate, request, wrappedEmit)
+		if invokeErr == nil {
+			finalExecution = candidateExecution
+			break
+		}
+		invokeRejections = append(invokeRejections, RouteRejection{
+			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
+			ProviderID:         candidate.Identity.ProviderID,
+			Reason:             "invoke failed: " + invokeErr.Error(),
+		})
+		if ctx.Err() != nil || emitted {
 			break
 		}
 	}

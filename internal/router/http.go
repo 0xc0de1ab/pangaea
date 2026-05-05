@@ -158,18 +158,19 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			APIDialect: compat.APIDialectOpenAI,
 			Stream:     openaiRequest.Stream,
 		})
-		response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
+		execution := RouteExecutionRequest{
 			RequestID:     requestID,
 			RouteRequest:  routeRequest,
 			QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
 			QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
-		}, canonicalRequest)
-		if err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
 		}
 		if openaiRequest.Stream {
-			writeOpenAIChatStream(c, response)
+			writeOpenAIChatEventStream(c, engine, execution, canonicalRequest)
+			return
+		}
+		response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
 		openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
@@ -749,6 +750,138 @@ type openAIChatStreamChoice struct {
 type openAIChatStreamDelta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
+}
+
+type openAIChatEventStreamWriter struct {
+	id      string
+	model   string
+	created int64
+	wrote   bool
+	done    bool
+	usage   compat.Usage
+}
+
+func writeOpenAIChatEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
+	writer := &openAIChatEventStreamWriter{
+		id:      execution.RequestID,
+		model:   request.Model,
+		created: time.Now().Unix(),
+	}
+	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+		return writer.write(c, event)
+	})
+	if err != nil {
+		if !writer.wrote {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		writer.writeError(c, err)
+		return
+	}
+	if !writer.done {
+		writer.writeDone(c, "stop")
+	}
+}
+
+func (w *openAIChatEventStreamWriter) ensure(c *gin.Context) {
+	if w.wrote {
+		return
+	}
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache")
+	c.Header("connection", "keep-alive")
+	c.Status(http.StatusOK)
+	w.wrote = true
+}
+
+func (w *openAIChatEventStreamWriter) write(c *gin.Context, event compat.Event) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	w.ensure(c)
+	switch event.Type {
+	case compat.EventMessageStart:
+		writeSSEData(c, openAIChatStreamChunk{
+			ID:      w.id,
+			Object:  "chat.completion.chunk",
+			Created: w.created,
+			Model:   w.model,
+			Choices: []openAIChatStreamChoice{{
+				Index: 0,
+				Delta: openAIChatStreamDelta{Role: "assistant"},
+			}},
+		})
+	case compat.EventContentDelta:
+		writeSSEData(c, openAIChatStreamChunk{
+			ID:      w.id,
+			Object:  "chat.completion.chunk",
+			Created: w.created,
+			Model:   w.model,
+			Choices: []openAIChatStreamChoice{{
+				Index: 0,
+				Delta: openAIChatStreamDelta{Content: event.ContentDelta.Text},
+			}},
+		})
+	case compat.EventUsageDelta:
+		w.usage.InputTokens += event.UsageDelta.InputTokens
+		w.usage.OutputTokens += event.UsageDelta.OutputTokens
+		w.usage.TotalTokens += event.UsageDelta.TotalTokens
+	case compat.EventDone:
+		w.writeDone(c, event.DoneReason)
+	case compat.EventError:
+		w.writeErrorMessage(c, event.Error.Message)
+	}
+	return nil
+}
+
+func (w *openAIChatEventStreamWriter) writeDone(c *gin.Context, finishReason string) {
+	if w.done {
+		return
+	}
+	w.ensure(c)
+	usage := (*compat.OpenAIUsage)(nil)
+	if w.usage != (compat.Usage{}) {
+		total := w.usage.TotalTokens
+		if total == 0 {
+			total = w.usage.InputTokens + w.usage.OutputTokens
+		}
+		usage = &compat.OpenAIUsage{
+			PromptTokens:     w.usage.InputTokens,
+			CompletionTokens: w.usage.OutputTokens,
+			TotalTokens:      total,
+		}
+	}
+	writeSSEData(c, openAIChatStreamChunk{
+		ID:      w.id,
+		Object:  "chat.completion.chunk",
+		Created: w.created,
+		Model:   w.model,
+		Choices: []openAIChatStreamChoice{{
+			Index:        0,
+			Delta:        openAIChatStreamDelta{},
+			FinishReason: finishReason,
+		}},
+		Usage: usage,
+	})
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flushSSE(c)
+	w.done = true
+}
+
+func (w *openAIChatEventStreamWriter) writeError(c *gin.Context, err error) {
+	message := "stream failed"
+	if err != nil {
+		message = err.Error()
+	}
+	w.writeErrorMessage(c, message)
+}
+
+func (w *openAIChatEventStreamWriter) writeErrorMessage(c *gin.Context, message string) {
+	w.ensure(c)
+	writeSSEData(c, gin.H{"error": gin.H{"message": message}})
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flushSSE(c)
+	w.done = true
 }
 
 func writeOpenAIChatStream(c *gin.Context, response compat.Response) {

@@ -195,6 +195,48 @@ func TestEngineInvokeRecordsRequestTrace(t *testing.T) {
 	}
 }
 
+func TestEngineInvokeStreamUsesStreamInvokerAndCommits(t *testing.T) {
+	engine, ledger := testEngine(t)
+	engine.SetInvoker(fakeStreamInvoker{})
+	events := []compat.Event{}
+
+	response, execution, err := engine.InvokeStream(context.Background(), RouteExecutionRequest{
+		RequestID: "req_stream_engine_1",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5.3-codex-spark",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	}, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if len(events) == 0 || events[0].Type != compat.EventMessageStart {
+		t.Fatalf("expected stream events, got %#v", events)
+	}
+	if response.Message.Content[0].Text != "stream ok" || execution.Decision.Selected != "codex-samtest-a1" {
+		t.Fatalf("unexpected stream response/execution: response=%#v execution=%#v", response, execution)
+	}
+	_, committed, reserved, err := ledger.Snapshot(quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1", Model: "gpt-5.3-codex-spark"})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if committed.Tokens != 5 || reserved.Tokens != 0 {
+		t.Fatalf("expected committed stream usage and no reserved usage, committed=%#v reserved=%#v", committed, reserved)
+	}
+}
+
 func TestEngineInvokeFallsBackAfterProviderFailure(t *testing.T) {
 	registry := provider.NewRegistry()
 	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
@@ -286,6 +328,35 @@ func (fakeInvoker) Invoke(_ context.Context, _ provider.Registration, request co
 		},
 		Usage: compat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
 	}, nil
+}
+
+type fakeStreamInvoker struct{}
+
+func (fakeStreamInvoker) Invoke(_ context.Context, _ provider.Registration, request compat.Request) (compat.Response, error) {
+	return fakeInvoker{}.Invoke(context.Background(), provider.Registration{}, request)
+}
+
+func (fakeStreamInvoker) InvokeStream(_ context.Context, _ provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	response := compat.Response{
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role:    compat.MessageRoleAssistant,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "stream ok"}},
+		},
+		StopReason: "stop",
+		Usage:      compat.Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5},
+	}
+	events, err := compat.EventsFromResponse(response)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	for _, event := range events {
+		if err := emit(event); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	return response, nil
 }
 
 type fallbackInvoker struct {
