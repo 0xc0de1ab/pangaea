@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
 	"github.com/0xc0de1ab/pangaea/internal/quota"
 	v2router "github.com/0xc0de1ab/pangaea/internal/router"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 func TestE2E_V2RouterShimDataPlanePublicDialects(t *testing.T) {
@@ -359,6 +361,115 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 	trace := waitForV2Trace(t, client, server.URL, "req_e2e_v2_api_provider")
 	if trace.Provider == nil || trace.Provider.ProviderInstanceID != registration.Identity.ProviderInstanceID {
 		t.Fatalf("unexpected api-compatible trace: %#v", trace)
+	}
+}
+
+func TestE2E_V2CLIContainerProviderShimAuthRefreshAndRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		var request compat.OpenAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if request.Model != "gpt-5-codex" || len(request.Messages) != 1 || request.Messages[0].Content != "cli provider hello" {
+			t.Fatalf("unexpected upstream request: %#v", request)
+		}
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-cli-provider",
+			Object: "chat.completion",
+			Model:  "gpt-5-codex",
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "cli-container: ok"},
+				FinishReason: "stop",
+			}},
+			Usage: &compat.OpenAIUsage{PromptTokens: 13, CompletionTokens: 5, TotalTokens: 18},
+		})
+	}))
+	defer upstream.Close()
+
+	tokenKey := []byte("test-v2-cli-container-token-key")
+	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2CLIContainerPolicy))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	engine, err := v2router.NewEngine(policy, provider.NewRegistry(), quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	dataBroker, err := v2router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	engine.SetInvoker(dataBroker)
+	server := httptest.NewServer(v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, DataBroker: dataBroker}))
+	defer server.Close()
+
+	authPath := t.TempDir() + "/auth.txt"
+	if err := os.WriteFile(authPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale auth: %v", err)
+	}
+	authRefresher, err := providershim.NewCommandAuthRefresher(providershim.CommandAuthRefresherOptions{
+		Command:  []string{"sh", "-c", `printf fresh > "$AUTH_PATH"`},
+		Env:      map[string]string{"AUTH_PATH": authPath},
+		Timeout:  time.Second,
+		AuthPath: authPath,
+		Format:   cliContainerE2EFormat{},
+	})
+	if err != nil {
+		t.Fatalf("new auth refresher: %v", err)
+	}
+	apiProvider, err := apiprovider.New(apiprovider.Options{
+		Registration: cliContainerE2ERegistration(time.Now()),
+		BaseURL:      upstream.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new cli-container provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("cli-container registration: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
+			ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
+			HeartbeatInterval: 20 * time.Millisecond,
+			TokenKey:          tokenKey,
+			Provider:          apiProvider,
+			AuthRefresher:     authRefresher,
+		})
+	}()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("cli-container shim exited with error: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("cli-container shim did not stop")
+		}
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitForV2ProviderAuth(t, client, server.URL, registration.Identity.ProviderInstanceID, provider.AuthRefreshSoon)
+	refresh := requestV2AuthRefresh(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	if !refresh.OK || refresh.Auth.Status != provider.AuthHealthy || refresh.Auth.Account.Display != "codex-cli@example.test" {
+		t.Fatalf("unexpected cli-container refresh result: %#v", refresh)
+	}
+	waitForV2ProviderAuth(t, client, server.URL, registration.Identity.ProviderInstanceID, provider.AuthHealthy)
+	response := waitForV2OpenAIChatModel(t, client, server.URL, "codex-default", "cli provider hello", "req_e2e_v2_cli_provider")
+	if response.Choices[0].Message.Content != "cli-container: ok" || response.Usage == nil || response.Usage.TotalTokens != 18 {
+		t.Fatalf("unexpected cli-container response: %#v", response)
+	}
+	usage := waitForV2ProviderUsage(t, client, server.URL, registration.Identity.ProviderInstanceID)
+	if usage.HostName != "cli-host" || usage.Account.Display != "codex-cli@example.test" {
+		t.Fatalf("unexpected cli-container usage: %#v", usage)
 	}
 }
 
@@ -893,6 +1004,87 @@ func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
 	}
 }
 
+func cliContainerE2ERegistration(now time.Time) provider.Registration {
+	account := provider.Account{ID: "acct-codex-cli", Display: "codex-cli@example.test"}
+	return provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderID:         "codex-cli",
+			ProviderInstanceID: "codex-cli-0001",
+			NodeID:             "cli-node",
+			HostName:           "cli-host",
+			Service:            provider.ServiceCodex,
+			Kind:               provider.KindCLIContainer,
+			Account:            account,
+		},
+		Capabilities: []provider.Capability{
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityUsageRead,
+			provider.CapabilityAuthFile,
+			provider.CapabilityAuthRefreshOneshot,
+		},
+		Models: []provider.Model{{
+			ID:           "gpt-5-codex",
+			Aliases:      []string{"codex-default"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		}},
+		Health: provider.Health{Status: provider.HealthReady, CheckedAt: now},
+		Auth: provider.AuthState{
+			Status:        provider.AuthRefreshSoon,
+			Account:       account,
+			ExpiresAt:     now.Add(2 * time.Minute),
+			Refreshable:   true,
+			LastRefreshAt: now.Add(-time.Hour),
+		},
+		RegisteredAt: now,
+	}
+}
+
+type cliContainerE2EFormat struct{}
+
+func (cliContainerE2EFormat) Name() string         { return "cli-container-e2e-format" }
+func (cliContainerE2EFormat) Strategies() []string { return []string{"default"} }
+func (cliContainerE2EFormat) Parse(raw []byte) (formats.Snapshot, error) {
+	status := formats.StatusExpired
+	if strings.TrimSpace(string(raw)) == "fresh" {
+		status = formats.StatusOK
+	}
+	return cliContainerE2ESnapshot{
+		raw:       append([]byte(nil), raw...),
+		expiresAt: time.Now().UTC().Add(time.Hour),
+		status:    status,
+	}, nil
+}
+func (cliContainerE2EFormat) Validate(_ context.Context, snapshot formats.Snapshot, _ formats.ValidateOpts) (formats.ValidationResult, error) {
+	status := formats.StatusExpired
+	if e2eSnapshot, ok := snapshot.(cliContainerE2ESnapshot); ok {
+		status = e2eSnapshot.status
+	}
+	return formats.ValidationResult{Status: status, CheckedAt: time.Now().UTC()}, nil
+}
+func (cliContainerE2EFormat) Compare(_ string, _ formats.Snapshot, _ formats.Snapshot) int {
+	return 0
+}
+func (cliContainerE2EFormat) Redact(_ formats.Snapshot) formats.Summary {
+	return formats.Summary{}
+}
+func (cliContainerE2EFormat) Account(context.Context, formats.Snapshot, string) (string, error) {
+	return "acct-codex-cli", nil
+}
+func (cliContainerE2EFormat) AccountDisplay(context.Context, formats.Snapshot, string) (string, error) {
+	return "codex-cli@example.test", nil
+}
+
+type cliContainerE2ESnapshot struct {
+	raw       []byte
+	expiresAt time.Time
+	status    formats.ValidationStatus
+}
+
+func (s cliContainerE2ESnapshot) Identity() string     { return "cli-container-e2e-snapshot" }
+func (s cliContainerE2ESnapshot) ExpiresAt() time.Time { return s.expiresAt }
+func (s cliContainerE2ESnapshot) Raw() []byte          { return append([]byte(nil), s.raw...) }
+func (s cliContainerE2ESnapshot) Fingerprint() string  { return "cli-container-e2e-fingerprint" }
+
 func httpURLToWS(raw string) string {
 	if strings.HasPrefix(raw, "https://") {
 		return "wss://" + strings.TrimPrefix(raw, "https://")
@@ -1000,6 +1192,28 @@ routes:
       - provider: deepseek-api
         account: deepseek-api@example.test
         host_name: api-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
+`
+
+const routerV2CLIContainerPolicy = `
+version: routing-policy/v1
+model_aliases:
+  codex-default:
+    canonical_model: gpt-5-codex
+    required_capabilities:
+      - api.openai.chat
+routes:
+  - id: codex-cli-openai
+    match:
+      models: [codex-default]
+      api_dialects: [openai]
+    candidates:
+      - provider: codex-cli
+        account: codex-cli@example.test
+        host_name: cli-host
         weight: 100
     constraints:
       auth_status: [healthy]
