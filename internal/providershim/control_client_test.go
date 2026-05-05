@@ -260,6 +260,64 @@ func TestRunSimulatorControlClientHandlesProviderDrain(t *testing.T) {
 	t.Fatalf("provider drain command did not update provider health")
 }
 
+func TestRunStaticControlClientHandlesAuthRefreshWithRefresher(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	registration, err := sim.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	registration.Auth.Status = provider.AuthRefreshSoon
+	refresher := AuthRefresherFunc(func(_ context.Context, request control.AuthRefreshRequest, registration provider.Registration) (provider.AuthState, error) {
+		if request.RefreshID != "refresh_static" {
+			t.Fatalf("unexpected refresh request: %#v", request)
+		}
+		auth := registration.Auth
+		auth.Status = provider.AuthHealthy
+		auth.LastRefreshAt = time.Now().UTC()
+		return auth, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunStaticControlClient(ctx, StaticControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: time.Second,
+			Registration:      registration,
+			AuthRefresher:     refresher,
+		})
+	}()
+
+	waitForProvider(t, engine, registration.Identity.ProviderInstanceID)
+	body := bytes.NewBufferString(`{"refresh_id":"refresh_static","reason":"manual","timeout_seconds":2}`)
+	resp, err := http.Post(server.URL+"/router/v1/providers/"+registration.Identity.ProviderInstanceID+"/auth/refresh", "application/json", body)
+	if err != nil {
+		t.Fatalf("post refresh: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result control.AuthRefreshResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode refresh result: %v", err)
+	}
+	if !result.OK || result.Auth.Status != provider.AuthHealthy {
+		t.Fatalf("unexpected refresh result: %#v", result)
+	}
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("static control client returned error: %v", err)
+	}
+}
+
 func controlURL(serverURL string) string {
 	return "ws" + strings.TrimPrefix(serverURL, "http") + "/router/v1/control/ws"
 }
