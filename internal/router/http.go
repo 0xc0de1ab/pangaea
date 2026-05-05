@@ -799,6 +799,7 @@ func (w *openAIChatEventStreamWriter) write(c *gin.Context, event compat.Event) 
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	w.applyEventMeta(event)
 	w.ensure(c)
 	switch event.Type {
 	case compat.EventMessageStart:
@@ -833,6 +834,15 @@ func (w *openAIChatEventStreamWriter) write(c *gin.Context, event compat.Event) 
 		w.writeErrorMessage(c, event.Error.Message)
 	}
 	return nil
+}
+
+func (w *openAIChatEventStreamWriter) applyEventMeta(event compat.Event) {
+	if event.ResponseID != "" {
+		w.id = event.ResponseID
+	}
+	if event.Model != "" {
+		w.model = event.Model
+	}
 }
 
 func (w *openAIChatEventStreamWriter) writeDone(c *gin.Context, finishReason string) {
@@ -1034,6 +1044,7 @@ func (w *anthropicMessagesEventStreamWriter) write(c *gin.Context, event compat.
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	w.applyEventMeta(event)
 	w.ensure(c)
 	switch event.Type {
 	case compat.EventMessageStart:
@@ -1075,6 +1086,15 @@ func (w *anthropicMessagesEventStreamWriter) write(c *gin.Context, event compat.
 		w.writeErrorMessage(c, event.Error.Message)
 	}
 	return nil
+}
+
+func (w *anthropicMessagesEventStreamWriter) applyEventMeta(event compat.Event) {
+	if event.ResponseID != "" {
+		w.id = event.ResponseID
+	}
+	if event.Model != "" {
+		w.model = event.Model
+	}
 }
 
 func (w *anthropicMessagesEventStreamWriter) writeDone(c *gin.Context, stopReason string) {
@@ -1138,6 +1158,113 @@ func writeGeminiGenerateContentStream(c *gin.Context, response compat.Response) 
 	c.Header("connection", "keep-alive")
 	c.Status(http.StatusOK)
 	writeSSEData(c, geminiResponse)
+}
+
+type geminiGenerateContentEventStreamWriter struct {
+	model string
+	wrote bool
+	done  bool
+	usage compat.Usage
+}
+
+func writeGeminiGenerateContentEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
+	writer := &geminiGenerateContentEventStreamWriter{model: request.Model}
+	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+		return writer.write(c, event)
+	})
+	if err != nil {
+		if !writer.wrote {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		writer.writeError(c, err)
+		return
+	}
+	if !writer.done {
+		writer.writeDone(c)
+	}
+}
+
+func (w *geminiGenerateContentEventStreamWriter) ensure(c *gin.Context) {
+	if w.wrote {
+		return
+	}
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache")
+	c.Header("connection", "keep-alive")
+	c.Status(http.StatusOK)
+	w.wrote = true
+}
+
+func (w *geminiGenerateContentEventStreamWriter) write(c *gin.Context, event compat.Event) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	if event.Model != "" {
+		w.model = event.Model
+	}
+	w.ensure(c)
+	switch event.Type {
+	case compat.EventContentDelta:
+		writeSSEData(c, compat.GeminiGenerateContentResponse{
+			ModelVersion: w.model,
+			Candidates: []compat.GeminiCandidate{{
+				Index:        0,
+				Content:      compat.GeminiContent{Role: "model", Parts: []compat.GeminiPart{{Text: event.ContentDelta.Text}}},
+				FinishReason: "",
+			}},
+		})
+	case compat.EventUsageDelta:
+		w.usage.InputTokens += event.UsageDelta.InputTokens
+		w.usage.OutputTokens += event.UsageDelta.OutputTokens
+		w.usage.TotalTokens += event.UsageDelta.TotalTokens
+	case compat.EventDone:
+		w.writeDone(c)
+	case compat.EventError:
+		w.writeErrorMessage(c, event.Error.Message)
+	}
+	return nil
+}
+
+func (w *geminiGenerateContentEventStreamWriter) writeDone(c *gin.Context) {
+	if w.done {
+		return
+	}
+	w.ensure(c)
+	if w.usage != (compat.Usage{}) {
+		total := w.usage.TotalTokens
+		if total == 0 {
+			total = w.usage.InputTokens + w.usage.OutputTokens
+		}
+		writeSSEData(c, compat.GeminiGenerateContentResponse{
+			ModelVersion: w.model,
+			Candidates: []compat.GeminiCandidate{{
+				Index:        0,
+				Content:      compat.GeminiContent{Role: "model", Parts: []compat.GeminiPart{{Text: ""}}},
+				FinishReason: "STOP",
+			}},
+			UsageMetadata: &compat.GeminiUsage{
+				PromptTokenCount:     w.usage.InputTokens,
+				CandidatesTokenCount: w.usage.OutputTokens,
+				TotalTokenCount:      total,
+			},
+		})
+	}
+	w.done = true
+}
+
+func (w *geminiGenerateContentEventStreamWriter) writeError(c *gin.Context, err error) {
+	message := "stream failed"
+	if err != nil {
+		message = err.Error()
+	}
+	w.writeErrorMessage(c, message)
+}
+
+func (w *geminiGenerateContentEventStreamWriter) writeErrorMessage(c *gin.Context, message string) {
+	w.ensure(c)
+	writeSSEData(c, gin.H{"error": gin.H{"message": message}})
+	w.done = true
 }
 
 func writeControlCommandError(c *gin.Context, err error) {
@@ -1216,18 +1343,19 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
 		APIDialect: compat.APIDialectGemini,
 		Stream:     stream,
 	})
-	response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
+	execution := RouteExecutionRequest{
 		RequestID:     requestID,
 		RouteRequest:  routeRequest,
 		QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
 		QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
-	}, canonicalRequest)
-	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		return
 	}
 	if stream {
-		writeGeminiGenerateContentStream(c, response)
+		writeGeminiGenerateContentEventStream(c, engine, execution, canonicalRequest)
+		return
+	}
+	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 	geminiResponse, err := compat.GeminiGenerateContentResponseFromCanonical(response)

@@ -7,26 +7,29 @@ func EventsFromResponse(response Response) ([]Event, error) {
 		return nil, err
 	}
 	events := []Event{{
-		Type: EventMessageStart,
+		ResponseID: response.ID,
+		Dialect:    response.Dialect,
+		Model:      response.Model,
+		Type:       EventMessageStart,
 		Message: &Message{
 			Role: MessageRoleAssistant,
 		},
 	}}
 	for _, part := range response.Message.Content {
-		events = append(events, Event{Type: EventContentDelta, ContentDelta: &ContentPart{
+		events = append(events, Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: EventContentDelta, ContentDelta: &ContentPart{
 			Type: part.Type,
 			Text: part.Text,
 		}})
 	}
 	for _, call := range response.Message.ToolCalls {
 		copied := call
-		events = append(events, Event{Type: EventToolCallDelta, ToolCallDelta: &copied})
+		events = append(events, Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: EventToolCallDelta, ToolCallDelta: &copied})
 	}
 	if response.Usage != (Usage{}) {
 		usage := response.Usage
-		events = append(events, Event{Type: EventUsageDelta, UsageDelta: &usage})
+		events = append(events, Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: EventUsageDelta, UsageDelta: &usage})
 	}
-	events = append(events, Event{Type: EventDone, DoneReason: response.StopReason})
+	events = append(events, Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: EventDone, DoneReason: response.StopReason})
 	return events, nil
 }
 
@@ -57,6 +60,15 @@ func ApplyEventToResponse(response *Response, event Event) error {
 	}
 	if response.Message.Role == "" {
 		response.Message.Role = MessageRoleAssistant
+	}
+	if event.ResponseID != "" {
+		response.ID = event.ResponseID
+	}
+	if event.Dialect != "" {
+		response.Dialect = event.Dialect
+	}
+	if event.Model != "" {
+		response.Model = event.Model
 	}
 	switch event.Type {
 	case EventMessageStart:

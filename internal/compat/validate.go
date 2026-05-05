@@ -52,6 +52,9 @@ func (e Event) Validate() error {
 	if !e.Type.Valid() {
 		return ErrInvalidEvent
 	}
+	if e.Dialect != "" && !e.Dialect.Valid() {
+		return ErrInvalidEvent
+	}
 	switch e.Type {
 	case EventMessageStart:
 		if e.Message == nil || e.Message.Role != MessageRoleAssistant {

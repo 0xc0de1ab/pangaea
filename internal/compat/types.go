@@ -99,6 +99,9 @@ const (
 )
 
 type Event struct {
+	ResponseID    string             `json:"response_id,omitempty"`
+	Dialect       APIDialect         `json:"dialect,omitempty"`
+	Model         string             `json:"model,omitempty"`
 	Type          EventType          `json:"type"`
 	Message       *Message           `json:"message,omitempty"`
 	ContentDelta  *ContentPart       `json:"content_delta,omitempty"`
