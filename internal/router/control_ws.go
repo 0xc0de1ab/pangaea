@@ -68,12 +68,7 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		if err != nil {
 			return err
 		}
-		for _, registration := range report.Providers {
-			if err := engine.UpsertProvider(registration); err != nil {
-				return err
-			}
-		}
-		return nil
+		return engine.ApplyProviderInventoryReport(report)
 	case control.MessageTypeProviderAuthReport:
 		report, err := control.Decode[control.ProviderAuthReport](env, control.MessageTypeProviderAuthReport)
 		if err != nil {
@@ -92,9 +87,18 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 			return control.ErrInvalidPayload
 		}
 		return engine.UpdateProviderUsage(report.ProviderInstanceID, report.Usage, report.ReportedAt)
-	case control.MessageTypeNodeHello, control.MessageTypeNodeHeartbeat:
-		_, err := control.DecodeKnownPayload(env)
-		return err
+	case control.MessageTypeNodeHello:
+		hello, err := control.Decode[control.NodeHello](env, control.MessageTypeNodeHello)
+		if err != nil {
+			return err
+		}
+		return engine.UpdateNodeHello(hello, env.SentAt)
+	case control.MessageTypeNodeHeartbeat:
+		heartbeat, err := control.Decode[control.NodeHeartbeat](env, control.MessageTypeNodeHeartbeat)
+		if err != nil {
+			return err
+		}
+		return engine.UpdateNodeHeartbeat(heartbeat)
 	default:
 		return control.ErrInvalidMessageType
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
 	"github.com/0xc0de1ab/pangaea/internal/quota"
@@ -89,6 +90,71 @@ func TestHTTPProviders(t *testing.T) {
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("codex-samtest-a1")) {
 		t.Fatalf("expected provider instance in body, got %s", rec.Body.String())
+	}
+}
+
+func TestHTTPNodesAndContainers(t *testing.T) {
+	engine, _ := testEngine(t)
+	if err := engine.UpdateNodeHello(control.NodeHello{
+		NodeID:       "node-a1",
+		AgentVersion: "test-agent",
+		OS:           "linux",
+		Arch:         "arm64",
+		Runtime:      control.RuntimeInfo{Kind: "docker"},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("update node hello: %v", err)
+	}
+	if err := engine.UpdateNodeHeartbeat(control.NodeHeartbeat{
+		NodeID:   "node-a1",
+		HostName: "snowbox",
+		Health:   control.HealthReport{Status: "ready"},
+	}); err != nil {
+		t.Fatalf("update node heartbeat: %v", err)
+	}
+	if err := engine.ApplyProviderInventoryReport(control.ProviderInventoryReport{
+		NodeID:   "node-a1",
+		HostName: "snowbox",
+		Containers: []control.ContainerReport{{
+			ContainerID:        "container-1",
+			ProviderID:         "codex-cli",
+			ProviderInstanceID: "codex-samtest-a1",
+			State:              "running",
+		}},
+	}); err != nil {
+		t.Fatalf("apply inventory: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/nodes", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected nodes 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var nodesOut struct {
+		Nodes []NodeSnapshot `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &nodesOut); err != nil {
+		t.Fatalf("decode nodes: %v", err)
+	}
+	if len(nodesOut.Nodes) != 1 || nodesOut.Nodes[0].HostName != "snowbox" {
+		t.Fatalf("unexpected nodes response: %#v", nodesOut)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/containers", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected containers 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var containersOut struct {
+		Containers []ContainerSnapshot `json:"containers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &containersOut); err != nil {
+		t.Fatalf("decode containers: %v", err)
+	}
+	if len(containersOut.Containers) != 1 || containersOut.Containers[0].ContainerID != "container-1" {
+		t.Fatalf("unexpected containers response: %#v", containersOut)
 	}
 }
 

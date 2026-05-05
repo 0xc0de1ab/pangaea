@@ -139,6 +139,82 @@ func TestControlWSProviderUsageReportUpdatesUsage(t *testing.T) {
 	}
 }
 
+func TestControlWSNodeHelloHeartbeatAndInventory(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+	defer conn.Close()
+
+	writeControlEnvelope(t, conn, control.MessageTypeNodeHello, "msg_node_hello", control.NodeHello{
+		NodeID:       "node-a1",
+		AgentVersion: "test-agent",
+		OS:           "linux",
+		Arch:         "arm64",
+		Runtime:      control.RuntimeInfo{Kind: "docker", Version: "26.1.0", Rootless: true},
+		Capabilities: []string{"container.create", "container.stats"},
+	})
+	readControlAck(t, conn, "msg_node_hello")
+
+	reportedAt := time.Now().UTC()
+	writeControlEnvelope(t, conn, control.MessageTypeNodeHeartbeat, "msg_node_heartbeat", control.NodeHeartbeat{
+		NodeID:   "node-a1",
+		HostName: "snowbox",
+		Health:   control.HealthReport{Status: "ready", CheckedAt: reportedAt},
+		Resources: control.ResourceUsage{
+			CPUPercent:  12.5,
+			MemoryBytes: 1024,
+		},
+		ReportedAt: reportedAt,
+	})
+	readControlAck(t, conn, "msg_node_heartbeat")
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderInventoryReport, "msg_inventory", control.ProviderInventoryReport{
+		Mode:     "full",
+		NodeID:   "node-a1",
+		HostName: "snowbox",
+		Providers: []provider.Registration{
+			reg,
+		},
+		Containers: []control.ContainerReport{{
+			ContainerID:        "container-1",
+			ProviderID:         "codex-cli",
+			ProviderInstanceID: "codex-control-a1",
+			Image:              "pangaea/codex:latest",
+			State:              "running",
+			Resources:          control.ResourceUsage{MemoryBytes: 2048},
+			Labels:             map[string]string{"pangaea.provider": "codex-cli"},
+		}},
+		Resources:  control.ResourceUsage{MemoryBytes: 4096},
+		ReportedAt: reportedAt,
+	})
+	readControlAck(t, conn, "msg_inventory")
+
+	nodes := engine.Nodes()
+	if len(nodes) != 1 {
+		t.Fatalf("expected one node, got %#v", nodes)
+	}
+	if nodes[0].NodeID != "node-a1" || nodes[0].HostName != "snowbox" || nodes[0].Runtime.Kind != "docker" {
+		t.Fatalf("unexpected node snapshot: %#v", nodes[0])
+	}
+	containers := engine.Containers()
+	if len(containers) != 1 {
+		t.Fatalf("expected one container, got %#v", containers)
+	}
+	if containers[0].ContainerID != "container-1" || containers[0].HostName != "snowbox" || containers[0].ProviderInstanceID != "codex-control-a1" {
+		t.Fatalf("unexpected container snapshot: %#v", containers[0])
+	}
+	found := false
+	for _, provider := range engine.Providers() {
+		if provider.Identity.ProviderInstanceID == "codex-control-a1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("inventory provider was not upserted")
+	}
+}
+
 func TestControlWSUnknownProviderReportsError(t *testing.T) {
 	engine, _ := testEngine(t)
 	conn := dialControlWS(t, engine)

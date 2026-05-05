@@ -16,15 +16,18 @@ import (
 var ErrRouterNotReady = errors.New("router not ready")
 
 type Engine struct {
-	policy   RoutingPolicy
-	registry *provider.Registry
-	ledger   *quota.Ledger
-	invoker  Invoker
-	usageMu  sync.RWMutex
-	usages   map[string]ProviderUsageSnapshot
-	traceMu  sync.RWMutex
-	traces   map[string]RequestTrace
-	traceIDs []string
+	policy     RoutingPolicy
+	registry   *provider.Registry
+	ledger     *quota.Ledger
+	invoker    Invoker
+	usageMu    sync.RWMutex
+	usages     map[string]ProviderUsageSnapshot
+	traceMu    sync.RWMutex
+	traces     map[string]RequestTrace
+	traceIDs   []string
+	nodeMu     sync.RWMutex
+	nodes      map[string]NodeSnapshot
+	containers map[string]ContainerSnapshot
 }
 
 type RouteExecutionRequest struct {
@@ -60,11 +63,13 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 		ledger = quota.NewLedger()
 	}
 	return &Engine{
-		policy:   policy,
-		registry: registry,
-		ledger:   ledger,
-		usages:   make(map[string]ProviderUsageSnapshot),
-		traces:   make(map[string]RequestTrace),
+		policy:     policy,
+		registry:   registry,
+		ledger:     ledger,
+		usages:     make(map[string]ProviderUsageSnapshot),
+		traces:     make(map[string]RequestTrace),
+		nodes:      make(map[string]NodeSnapshot),
+		containers: make(map[string]ContainerSnapshot),
 	}, nil
 }
 
