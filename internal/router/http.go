@@ -170,7 +170,7 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
 		if err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			writeRouteError(c, err)
 			return
 		}
 		openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
@@ -220,7 +220,7 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		}
 		response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
 		if err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			writeRouteError(c, err)
 			return
 		}
 		anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
@@ -773,7 +773,7 @@ func writeOpenAIChatEventStream(c *gin.Context, engine *Engine, execution RouteE
 	})
 	if err != nil {
 		if !writer.wrote {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			writeRouteError(c, err)
 			return
 		}
 		writer.writeError(c, err)
@@ -1018,7 +1018,7 @@ func writeAnthropicMessagesEventStream(c *gin.Context, engine *Engine, execution
 	})
 	if err != nil {
 		if !writer.wrote {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			writeRouteError(c, err)
 			return
 		}
 		writer.writeError(c, err)
@@ -1174,7 +1174,7 @@ func writeGeminiGenerateContentEventStream(c *gin.Context, engine *Engine, execu
 	})
 	if err != nil {
 		if !writer.wrote {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			writeRouteError(c, err)
 			return
 		}
 		writer.writeError(c, err)
@@ -1282,6 +1282,44 @@ func writeControlCommandError(c *gin.Context, err error) {
 	c.JSON(status, gin.H{"error": err.Error()})
 }
 
+func writeRouteError(c *gin.Context, err error) {
+	c.JSON(routeErrorStatus(err), routeErrorPayload(err))
+}
+
+func routeErrorStatus(err error) int {
+	var upstream *provider.UpstreamError
+	switch {
+	case errors.As(err, &upstream):
+		return upstream.RouterStatusCode()
+	case errors.Is(err, quota.ErrQuotaExceeded):
+		return http.StatusTooManyRequests
+	case errors.Is(err, ErrRouterNotReady):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return http.StatusGatewayTimeout
+	default:
+		return http.StatusConflict
+	}
+}
+
+func routeErrorPayload(err error) gin.H {
+	payload := gin.H{"error": err.Error()}
+	var upstream *provider.UpstreamError
+	if errors.As(err, &upstream) && upstream != nil {
+		payload["code"] = "upstream_error"
+		if upstream.Code != "" {
+			payload["upstream_code"] = upstream.Code
+		}
+		if upstream.StatusCode > 0 {
+			payload["upstream_status"] = upstream.StatusCode
+		}
+		if upstream.RetryAfter != "" {
+			payload["retry_after"] = upstream.RetryAfter
+		}
+	}
+	return payload
+}
+
 func writeSSEEvent(c *gin.Context, event string, payload any) {
 	_, _ = c.Writer.Write([]byte("event: "))
 	_, _ = c.Writer.Write([]byte(event))
@@ -1355,7 +1393,7 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
 	}
 	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		writeRouteError(c, err)
 		return
 	}
 	geminiResponse, err := compat.GeminiGenerateContentResponseFromCanonical(response)

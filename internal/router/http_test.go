@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -158,6 +159,35 @@ func TestHTTPDryRunDenied(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPRouteErrorMapsUpstreamRateLimit(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.SetInvoker(upstreamRateLimitInvoker{})
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+	body := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":"hello"}]}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Error          string `json:"error"`
+		Code           string `json:"code"`
+		UpstreamCode   string `json:"upstream_code"`
+		UpstreamStatus int    `json:"upstream_status"`
+		RetryAfter     string `json:"retry_after"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if out.Code != "upstream_error" || out.UpstreamCode != "rate_limit_exceeded" || out.UpstreamStatus != http.StatusTooManyRequests || out.RetryAfter != "8" || !strings.Contains(out.Error, "upstream quota exhausted") {
+		t.Fatalf("unexpected route error payload: %#v", out)
 	}
 }
 
@@ -835,6 +865,17 @@ func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
 }
 
 var _ = compat.APIDialectOpenAI
+
+type upstreamRateLimitInvoker struct{}
+
+func (upstreamRateLimitInvoker) Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error) {
+	return compat.Response{}, &provider.UpstreamError{
+		StatusCode: http.StatusTooManyRequests,
+		Code:       "rate_limit_exceeded",
+		Message:    "upstream quota exhausted",
+		RetryAfter: "8",
+	}
+}
 
 func testDialectEngine(t *testing.T, dialect compat.APIDialect, capability provider.Capability, service provider.Service, publicModel string, canonicalModel string) (*Engine, *providersim.Simulator) {
 	t.Helper()

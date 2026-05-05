@@ -3,6 +3,7 @@ package apiprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -354,7 +355,9 @@ func TestProviderInvokeStreamGeminiCompatibleUpstreamSSE(t *testing.T) {
 
 func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		w.Header().Set("retry-after", "12")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}`))
 	}))
 	defer server.Close()
 
@@ -369,6 +372,13 @@ func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("expected upstream error, got %v", err)
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("expected provider.UpstreamError, got %T %v", err, err)
+	}
+	if upstream.StatusCode != http.StatusTooManyRequests || upstream.Code != "rate_limit_exceeded" || upstream.Message != "rate limited" || upstream.RetryAfter != "12" {
+		t.Fatalf("unexpected upstream error details: %#v", upstream)
 	}
 }
 

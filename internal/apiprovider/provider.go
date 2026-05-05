@@ -237,7 +237,7 @@ func (p *Provider) invokeOpenAIStream(ctx context.Context, request compat.Reques
 		if readErr != nil {
 			return compat.Response{}, readErr
 		}
-		return compat.Response{}, fmt.Errorf("%w: upstream status=%d body=%s", ErrAPIProviderConfig, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return compat.Response{}, upstreamHTTPError(resp, responseBody)
 	}
 	response := compat.Response{
 		ID:      request.ID,
@@ -288,7 +288,7 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 		if err := emit(errEvent); err != nil {
 			return false, err
 		}
-		return false, fmt.Errorf("%w: upstream stream error: %s", ErrAPIProviderConfig, chunk.Error.Message)
+		return false, &provider.UpstreamError{Code: stringFromAny(chunk.Error.Code), Message: chunk.Error.Message}
 	}
 	if chunk.ID != "" {
 		response.ID = chunk.ID
@@ -376,7 +376,7 @@ func (p *Provider) invokeAnthropicStream(ctx context.Context, request compat.Req
 		if readErr != nil {
 			return compat.Response{}, readErr
 		}
-		return compat.Response{}, fmt.Errorf("%w: upstream status=%d body=%s", ErrAPIProviderConfig, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return compat.Response{}, upstreamHTTPError(resp, responseBody)
 	}
 	response := compat.Response{
 		ID:      request.ID,
@@ -424,7 +424,7 @@ func applyAnthropicStreamPayload(response *compat.Response, started *bool, paylo
 		if err := emit(errEvent); err != nil {
 			return false, err
 		}
-		return false, fmt.Errorf("%w: upstream stream error: %s", ErrAPIProviderConfig, event.Error.Message)
+		return false, &provider.UpstreamError{Code: event.Error.Type, Message: event.Error.Message}
 	}
 	switch event.Type {
 	case "message_start":
@@ -550,7 +550,7 @@ func (p *Provider) invokeGeminiStream(ctx context.Context, request compat.Reques
 		if readErr != nil {
 			return compat.Response{}, readErr
 		}
-		return compat.Response{}, fmt.Errorf("%w: upstream status=%d body=%s", ErrAPIProviderConfig, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return compat.Response{}, upstreamHTTPError(resp, responseBody)
 	}
 	response := compat.Response{
 		ID:      request.ID,
@@ -649,7 +649,7 @@ func (p *Provider) doJSON(ctx context.Context, method string, path string, body 
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%w: upstream status=%d body=%s", ErrAPIProviderConfig, resp.StatusCode, strings.TrimSpace(string(responseBody)))
+		return upstreamHTTPError(resp, responseBody)
 	}
 	if len(responseBody) == 0 {
 		return fmt.Errorf("%w: empty upstream response", ErrAPIProviderConfig)
@@ -683,7 +683,81 @@ func (p *Provider) doRequest(ctx context.Context, method string, path string, bo
 	for key, value := range p.headers {
 		req.Header.Set(key, value)
 	}
-	return p.client.Do(req)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, &provider.UpstreamError{Message: err.Error()}
+	}
+	return resp, nil
+}
+
+func upstreamHTTPError(resp *http.Response, body []byte) error {
+	bodyText := strings.TrimSpace(string(body))
+	message, code := upstreamErrorDetails(body)
+	if message == "" {
+		message = bodyText
+	}
+	if message == "" && resp != nil {
+		message = http.StatusText(resp.StatusCode)
+	}
+	statusCode := 0
+	retryAfter := ""
+	if resp != nil {
+		statusCode = resp.StatusCode
+		retryAfter = resp.Header.Get("retry-after")
+	}
+	return &provider.UpstreamError{
+		StatusCode: statusCode,
+		Code:       code,
+		Message:    message,
+		Body:       bodyText,
+		RetryAfter: retryAfter,
+	}
+}
+
+func upstreamErrorDetails(body []byte) (string, string) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", ""
+	}
+	if errPayload, ok := payload["error"]; ok {
+		switch errValue := errPayload.(type) {
+		case string:
+			return strings.TrimSpace(errValue), firstString(payload, "code", "type", "status")
+		case map[string]any:
+			message := firstString(errValue, "message", "error", "detail")
+			code := firstString(errValue, "code", "type", "status")
+			return message, code
+		}
+	}
+	message := firstString(payload, "message", "error", "detail")
+	code := firstString(payload, "code", "type", "status")
+	return message, code
+}
+
+func firstString(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		case float64, bool:
+			return fmt.Sprint(v)
+		default:
+			text := strings.TrimSpace(fmt.Sprint(v))
+			if text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func processSSEPayloads(body io.Reader, handle func(string) (bool, error)) error {
