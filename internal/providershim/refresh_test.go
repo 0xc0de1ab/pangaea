@@ -186,13 +186,13 @@ func TestCommandAuthRefresherRejectsExpiredAuthFile(t *testing.T) {
 
 func TestLoginShellRefreshCommandUsesLoginShell(t *testing.T) {
 	got := LoginShellRefreshCommand("gemini", "--prompt", "ping")
-	want := []string{"bash", "-lic", `exec 'gemini' "$@"`, "gemini-refresh", "--prompt", "ping"}
-	if len(got) != len(want) {
-		t.Fatalf("command length = %d, want %d: %v", len(got), len(want), got)
+	if len(got) != 6 {
+		t.Fatalf("command length = %d, want 6: %v", len(got), got)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("command[%d] = %q, want %q", i, got[i], want[i])
-		}
+	if got[0] != "bash" || got[1] != "-lc" || !strings.Contains(got[2], ".bashrc") || !strings.Contains(got[2], `exec 'gemini' "$@"`) {
+		t.Fatalf("unexpected shell command: %v", got)
+	}
+	if got[3] != "gemini-refresh" || got[4] != "--prompt" || got[5] != "ping" {
+		t.Fatalf("unexpected shell args: %v", got)
 	}
 }

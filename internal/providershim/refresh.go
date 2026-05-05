@@ -206,8 +206,8 @@ func LoginShellRefreshCommand(binary string, args ...string) []string {
 	if strings.TrimSpace(binary) == "" {
 		return nil
 	}
-	command := "exec " + shellQuote(binary) + ` "$@"`
-	out := []string{"bash", "-lic", command, binary + "-refresh"}
+	command := `if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi; exec ` + shellQuote(binary) + ` "$@"`
+	out := []string{"bash", "-lc", command, binary + "-refresh"}
 	out = append(out, args...)
 	return out
 }
