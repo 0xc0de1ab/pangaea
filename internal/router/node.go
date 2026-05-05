@@ -131,11 +131,16 @@ func (e *Engine) ApplyProviderInventoryReport(report control.ProviderInventoryRe
 		e.nodes[report.NodeID] = node
 		e.nodeMu.Unlock()
 	}
+	containerKeys := make(map[string]struct{}, len(report.Containers))
 	for _, container := range report.Containers {
 		if strings.TrimSpace(container.ContainerID) == "" {
 			return control.ErrInvalidPayload
 		}
+		containerKeys[containerKey(report.NodeID, container.ContainerID)] = struct{}{}
 		e.upsertContainer(report.NodeID, report.HostName, container, reportedAt, now)
+	}
+	if strings.EqualFold(report.Mode, "full") && report.NodeID != "" && report.Containers != nil {
+		e.removeContainersMissingFromFullInventory(report.NodeID, containerKeys)
 	}
 	return nil
 }
@@ -207,6 +212,20 @@ func (e *Engine) upsertContainer(nodeID string, hostName string, report control.
 		Extensions:         cloneAnyMap(report.Extensions),
 		ReportedAt:         reportedAt,
 		UpdatedAt:          now,
+	}
+}
+
+func (e *Engine) removeContainersMissingFromFullInventory(nodeID string, seen map[string]struct{}) {
+	e.nodeMu.Lock()
+	defer e.nodeMu.Unlock()
+	for key, container := range e.containers {
+		if container.NodeID != nodeID {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		delete(e.containers, key)
 	}
 }
 
