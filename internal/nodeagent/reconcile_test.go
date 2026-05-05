@@ -14,6 +14,7 @@ type fakeContainerRuntime struct {
 	created runtime.ContainerSpec
 	copied  *runtime.CopySpec
 	started runtime.ContainerID
+	stats   runtime.Stats
 }
 
 func (r *fakeContainerRuntime) Info(context.Context) (runtime.RuntimeInfo, error) {
@@ -53,7 +54,7 @@ func (r *fakeContainerRuntime) CopyFrom(context.Context, runtime.ContainerID, ru
 }
 
 func (r *fakeContainerRuntime) Stats(context.Context, runtime.ContainerID) (runtime.Stats, error) {
-	return runtime.Stats{}, nil
+	return r.stats, nil
 }
 
 func (r *fakeContainerRuntime) Logs(context.Context, runtime.ContainerID, runtime.LogSpec) (<-chan runtime.LogEvent, error) {
@@ -116,7 +117,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 
 func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T) {
 	uid := 10001
-	rt := &fakeContainerRuntime{}
+	rt := &fakeContainerRuntime{stats: runtime.Stats{CPUPercent: 12.5, MemoryBytes: 64 * 1024 * 1024, MemoryPeakBytes: 96 * 1024 * 1024, OOMCount: 1}}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
 		ID:         "gemini-nullcode",
 		InstanceID: "gemini-nullcode-a3",
@@ -140,6 +141,9 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	}
 	if result.Report.ProviderInstanceID != "gemini-nullcode-a3" || result.Report.State != "running" || result.Report.Labels["pangaea.service"] != "gemini" {
 		t.Fatalf("unexpected reconcile report: %#v", result.Report)
+	}
+	if result.Report.Resources.CPUPercent != 12.5 || result.Report.Resources.MemoryBytes != 64*1024*1024 || result.Report.Resources.OOMCount != 1 {
+		t.Fatalf("unexpected reconcile resources: %#v", result.Report.Resources)
 	}
 }
 

@@ -62,6 +62,7 @@ func ReconcileProviderContainer(ctx context.Context, rt runtime.Runtime, spec Pr
 			if report.Image == "" {
 				report.Image = containerSpec.Image.String()
 			}
+			populateContainerStats(ctx, rt, status.ID, &report)
 			return ReconcileResult{ContainerID: status.ID, Spec: containerSpec, Report: report}, nil
 		}
 	}
@@ -91,7 +92,32 @@ func ReconcileProviderContainer(ctx context.Context, rt runtime.Runtime, spec Pr
 		Labels:             cloneRuntimeLabels(containerSpec.Labels),
 		StartedAt:          now,
 	}
+	populateContainerStats(ctx, rt, containerID, &report)
 	return ReconcileResult{ContainerID: containerID, Spec: containerSpec, Report: report}, nil
+}
+
+func populateContainerStats(ctx context.Context, rt runtime.Runtime, id runtime.ContainerID, report *control.ContainerReport) {
+	stats, err := rt.Stats(ctx, id)
+	if err != nil {
+		if report.Extensions == nil {
+			report.Extensions = map[string]any{}
+		}
+		report.Extensions["stats_error"] = err.Error()
+		return
+	}
+	report.Resources = control.ResourceUsage{
+		CPUPercent:      stats.CPUPercent,
+		MemoryBytes:     uint64ToInt64(stats.MemoryBytes),
+		MemoryPeakBytes: uint64ToInt64(stats.MemoryPeakBytes),
+		OOMCount:        uint64ToInt64(stats.OOMCount),
+	}
+}
+
+func uint64ToInt64(value uint64) int64 {
+	if value > uint64(^uint64(0)>>1) {
+		return int64(^uint64(0) >> 1)
+	}
+	return int64(value)
 }
 
 func ContainerSpecFromProviderSpec(spec ProviderSpec, nodeID string, hostName string) (runtime.ContainerSpec, error) {
