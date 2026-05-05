@@ -583,6 +583,19 @@ func applyGeminiStreamPayload(response *compat.Response, started *bool, payload 
 	if payload == "" || payload == "[DONE]" {
 		return payload == "[DONE]", nil
 	}
+	if message, code := upstreamErrorDetails([]byte(payload)); message != "" {
+		errEvent := compat.Event{
+			ResponseID: response.ID,
+			Dialect:    response.Dialect,
+			Model:      response.Model,
+			Type:       compat.EventError,
+			Error:      &compat.EventErrorPayload{Message: message, Code: code},
+		}
+		if err := emit(errEvent); err != nil {
+			return false, err
+		}
+		return false, &provider.UpstreamError{Code: code, Message: message}
+	}
 	var chunk compat.GeminiGenerateContentResponse
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 		return false, err

@@ -353,6 +353,40 @@ func TestProviderInvokeStreamGeminiCompatibleUpstreamSSE(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeStreamGeminiCompatibleUpstreamSSEError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"error":{"code":429,"message":"quota exceeded","status":"RESOURCE_EXHAUSTED"}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectGemini, "")
+	events := []compat.Event{}
+	request := compat.Request{
+		Dialect: compat.APIDialectGemini,
+		Model:   "gemini-upstream",
+		Stream:  true,
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}
+	_, err := client.InvokeStream(context.Background(), mustRegistration(t, client), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) {
+		t.Fatalf("expected upstream error, got %T %v", err, err)
+	}
+	if upstream.Message != "quota exceeded" {
+		t.Fatalf("unexpected upstream error: %#v", upstream)
+	}
+	if len(events) != 1 || events[0].Type != compat.EventError || events[0].Error.Message != "quota exceeded" {
+		t.Fatalf("unexpected stream error events: %#v", events)
+	}
+}
+
 func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("retry-after", "12")
