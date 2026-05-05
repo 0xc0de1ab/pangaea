@@ -1283,6 +1283,10 @@ func writeControlCommandError(c *gin.Context, err error) {
 }
 
 func writeRouteError(c *gin.Context, err error) {
+	var upstream *provider.UpstreamError
+	if errors.As(err, &upstream) && upstream != nil && upstream.RetryAfter != "" {
+		c.Header("retry-after", upstream.RetryAfter)
+	}
 	c.JSON(routeErrorStatus(err), routeErrorPayload(err))
 }
 

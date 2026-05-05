@@ -176,6 +176,9 @@ func TestHTTPRouteErrorMapsUpstreamRateLimit(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d body=%s", rec.Code, rec.Body.String())
 	}
+	if rec.Header().Get("retry-after") != "8" {
+		t.Fatalf("retry-after header = %q, want 8", rec.Header().Get("retry-after"))
+	}
 	var out struct {
 		Error          string `json:"error"`
 		Code           string `json:"code"`

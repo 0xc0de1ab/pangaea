@@ -484,6 +484,9 @@ func TestE2E_V2APICompatibleProviderShimPropagatesUpstreamRateLimit(t *testing.T
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d body=%s", resp.StatusCode, string(data))
 	}
+	if resp.Header.Get("retry-after") != "11" {
+		t.Fatalf("retry-after header = %q, want 11", resp.Header.Get("retry-after"))
+	}
 	var out struct {
 		Code           string `json:"code"`
 		UpstreamCode   string `json:"upstream_code"`
