@@ -208,18 +208,19 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			APIDialect: compat.APIDialectAnthropic,
 			Stream:     anthropicRequest.Stream,
 		})
-		response, _, err := engine.Invoke(c.Request.Context(), RouteExecutionRequest{
+		execution := RouteExecutionRequest{
 			RequestID:     requestID,
 			RouteRequest:  routeRequest,
 			QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
 			QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
-		}, canonicalRequest)
-		if err != nil {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
 		}
 		if anthropicRequest.Stream {
-			writeAnthropicMessagesStream(c, response)
+			writeAnthropicMessagesEventStream(c, engine, execution, canonicalRequest)
+			return
+		}
+		response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
 		anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
@@ -986,6 +987,144 @@ func writeAnthropicMessagesStream(c *gin.Context, response compat.Response) {
 		},
 	})
 	writeSSEEvent(c, "message_stop", gin.H{"type": "message_stop"})
+}
+
+type anthropicMessagesEventStreamWriter struct {
+	id           string
+	model        string
+	wrote        bool
+	done         bool
+	blockStarted bool
+	usage        compat.Usage
+}
+
+func writeAnthropicMessagesEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
+	writer := &anthropicMessagesEventStreamWriter{
+		id:    execution.RequestID,
+		model: request.Model,
+	}
+	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+		return writer.write(c, event)
+	})
+	if err != nil {
+		if !writer.wrote {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		writer.writeError(c, err)
+		return
+	}
+	if !writer.done {
+		writer.writeDone(c, "end_turn")
+	}
+}
+
+func (w *anthropicMessagesEventStreamWriter) ensure(c *gin.Context) {
+	if w.wrote {
+		return
+	}
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache")
+	c.Header("connection", "keep-alive")
+	c.Status(http.StatusOK)
+	w.wrote = true
+}
+
+func (w *anthropicMessagesEventStreamWriter) write(c *gin.Context, event compat.Event) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	w.ensure(c)
+	switch event.Type {
+	case compat.EventMessageStart:
+		writeSSEEvent(c, "message_start", gin.H{
+			"type": "message_start",
+			"message": compat.AnthropicMessagesResponse{
+				ID:      w.id,
+				Type:    "message",
+				Role:    string(compat.MessageRoleAssistant),
+				Model:   w.model,
+				Content: []compat.AnthropicContentBlock{},
+				Usage:   compat.AnthropicUsage{},
+			},
+		})
+	case compat.EventContentDelta:
+		if !w.blockStarted {
+			writeSSEEvent(c, "content_block_start", gin.H{
+				"type":          "content_block_start",
+				"index":         0,
+				"content_block": compat.AnthropicContentBlock{Type: "text", Text: ""},
+			})
+			w.blockStarted = true
+		}
+		writeSSEEvent(c, "content_block_delta", gin.H{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": gin.H{
+				"type": "text_delta",
+				"text": event.ContentDelta.Text,
+			},
+		})
+	case compat.EventUsageDelta:
+		w.usage.InputTokens += event.UsageDelta.InputTokens
+		w.usage.OutputTokens += event.UsageDelta.OutputTokens
+		w.usage.TotalTokens += event.UsageDelta.TotalTokens
+	case compat.EventDone:
+		w.writeDone(c, canonicalStopToAnthropicEvent(event.DoneReason))
+	case compat.EventError:
+		w.writeErrorMessage(c, event.Error.Message)
+	}
+	return nil
+}
+
+func (w *anthropicMessagesEventStreamWriter) writeDone(c *gin.Context, stopReason string) {
+	if w.done {
+		return
+	}
+	w.ensure(c)
+	if w.blockStarted {
+		writeSSEEvent(c, "content_block_stop", gin.H{
+			"type":  "content_block_stop",
+			"index": 0,
+		})
+	}
+	writeSSEEvent(c, "message_delta", gin.H{
+		"type": "message_delta",
+		"delta": gin.H{
+			"stop_reason": stopReason,
+		},
+		"usage": gin.H{
+			"output_tokens": w.usage.OutputTokens,
+		},
+	})
+	writeSSEEvent(c, "message_stop", gin.H{"type": "message_stop"})
+	w.done = true
+}
+
+func (w *anthropicMessagesEventStreamWriter) writeError(c *gin.Context, err error) {
+	message := "stream failed"
+	if err != nil {
+		message = err.Error()
+	}
+	w.writeErrorMessage(c, message)
+}
+
+func (w *anthropicMessagesEventStreamWriter) writeErrorMessage(c *gin.Context, message string) {
+	w.ensure(c)
+	writeSSEEvent(c, "error", gin.H{
+		"type":  "error",
+		"error": gin.H{"message": message},
+	})
+	w.done = true
+}
+
+func canonicalStopToAnthropicEvent(stop string) string {
+	switch stop {
+	case "", "stop":
+		return "end_turn"
+	default:
+		return stop
+	}
 }
 
 func writeGeminiGenerateContentStream(c *gin.Context, response compat.Response) {
