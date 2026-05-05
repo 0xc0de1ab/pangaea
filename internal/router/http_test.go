@@ -118,6 +118,8 @@ func TestHTTPRouterDashboard(t *testing.T) {
 		!bytes.Contains(rec.Body.Bytes(), []byte("/auth/refresh")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("/drain")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("API Keys")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("api-key-form")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("raw_key")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("api-token")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("Authorization")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/api-keys")) ||

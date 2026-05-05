@@ -313,6 +313,13 @@ const routerDashboardHTML = `<!doctype html>
         </section>
         <section>
           <h2>API Keys</h2>
+          <form id="api-key-form" class="inline-form">
+            <label>Tenant<input id="api-key-tenant" name="tenant_id" value="dev" autocomplete="off"></label>
+            <label>User<input id="api-key-user" name="user_id" value="dev" autocomplete="off"></label>
+            <label class="checkline"><input id="api-key-disabled" name="disabled" type="checkbox"> Disabled</label>
+            <button type="submit">Create</button>
+          </form>
+          <div id="api-key-result" class="result"><div class="empty">No key created</div></div>
           <div id="api-keys" class="table-wrap"></div>
         </section>
         <section>
@@ -532,6 +539,44 @@ const routerDashboardHTML = `<!doctype html>
         { label: "Last Used", render: (r) => esc(fmtTime(r.last_used_at)) }
       ], "No API keys configured");
     }
+    async function createAPIKey(event) {
+      event.preventDefault();
+      $("error").style.display = "none";
+      const request = {
+        tenant_id: $("api-key-tenant").value.trim(),
+        user_id: $("api-key-user").value.trim(),
+        disabled: $("api-key-disabled").checked
+      };
+      try {
+        const res = await fetch(endpoints.apiKeys, {
+          method: "POST",
+          headers: authHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify(request)
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (res.ok && payload.raw_key) {
+          saveToken(payload.raw_key);
+        }
+        renderAPIKeyResult(payload, res.status);
+        if (res.ok) await refresh();
+      } catch (err) {
+        renderAPIKeyResult({ error: err.message }, 0);
+      }
+    }
+    function renderAPIKeyResult(payload, status) {
+      const ok = status >= 200 && status < 300;
+      const key = payload.api_key || {};
+      let html = '<div class="kv">';
+      html += '<div class="key">Status</div><div>' + statusPill(ok ? "created" : "failed") + (status ? ' <code>' + esc(status) + '</code>' : '') + '</div>';
+      html += '<div class="key">Key</div><div><code>' + esc(key.id || "") + '</code></div>';
+      html += '<div class="key">Prefix</div><div><code>' + esc(key.prefix || "") + '</code></div>';
+      html += '<div class="key">Result</div><div>' + esc(payload.error || (payload.raw_key ? "raw key stored for this browser" : "")) + '</div>';
+      if (payload.raw_key) {
+        html += '<div class="key">Raw</div><div><code>' + esc(payload.raw_key) + '</code></div>';
+      }
+      html += '</div>';
+      $("api-key-result").innerHTML = html;
+    }
     function renderQuotas(rows) {
       $("quotas").innerHTML = table(rows, [
         { label: "Scope", render: (r) => '<code>' + esc(fmtScope(r.scope || {})) + '</code>' },
@@ -704,6 +749,7 @@ const routerDashboardHTML = `<!doctype html>
     });
     $("dry-run-form").addEventListener("submit", runDryRun);
     $("control-form").addEventListener("submit", sendProviderControl);
+    $("api-key-form").addEventListener("submit", createAPIKey);
     loadToken();
     refresh();
     setInterval(refresh, 10000);
