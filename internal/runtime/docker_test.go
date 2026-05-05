@@ -1,7 +1,12 @@
 package runtime
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +17,7 @@ var _ Runtime = (*DockerRuntime)(nil)
 type recordedCommand struct {
 	binary string
 	args   []string
+	stdin  int
 }
 
 type recordingRunner struct {
@@ -19,8 +25,8 @@ type recordingRunner struct {
 	outputs  map[string]ExecResult
 }
 
-func (r *recordingRunner) Run(_ context.Context, binary string, args []string, _ []byte) (ExecResult, error) {
-	r.commands = append(r.commands, recordedCommand{binary: binary, args: append([]string(nil), args...)})
+func (r *recordingRunner) Run(_ context.Context, binary string, args []string, stdin []byte) (ExecResult, error) {
+	r.commands = append(r.commands, recordedCommand{binary: binary, args: append([]string(nil), args...), stdin: len(stdin)})
 	key := strings.Join(args, " ")
 	if out, ok := r.outputs[key]; ok {
 		return out, nil
@@ -39,6 +45,10 @@ func (r *streamingRunner) RunLogs(_ context.Context, binary string, args []strin
 }
 
 func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
+	hostAuthPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(hostAuthPath, []byte(`{"token":"test"}`), 0o644); err != nil {
+		t.Fatalf("write host auth: %v", err)
+	}
 	runner := &recordingRunner{outputs: map[string]ExecResult{
 		"create --name pangaea-codex-samtest --label pangaea.provider_id=codex-samtest --label pangaea.provider_instance_id=codex-samtest-a1 --env PANGAEA_PROVIDER_ID=codex-samtest --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea --tmpfs /run/pangaea --tmpfs /tmp --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
@@ -66,7 +76,7 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 	if _, err := rt.Exec(context.Background(), id, ExecSpec{Command: []string{"true"}}); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
-	if err := rt.CopyTo(context.Background(), id, CopySpec{HostPath: "/host/auth.json", ContainerPath: "/container/auth.json", OwnerUID: 10001, OwnerGID: 10001, FileMode: 0o600}); err != nil {
+	if err := rt.CopyTo(context.Background(), id, CopySpec{HostPath: hostAuthPath, ContainerPath: "/container/auth.json", OwnerUID: 10001, OwnerGID: 10001, FileMode: 0o600}); err != nil {
 		t.Fatalf("copy to: %v", err)
 	}
 	if err := rt.Stop(context.Background(), id, 2*time.Second); err != nil {
@@ -80,15 +90,45 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 		"docker create --name pangaea-codex-samtest",
 		"docker start container-1",
 		"docker exec container-1 true",
-		"docker cp /host/auth.json container-1:/container/auth.json",
-		"docker exec container-1 chmod 0600 /container/auth.json",
-		"docker exec container-1 chown 10001:10001 /container/auth.json",
+		"docker cp - container-1:/container",
 		"docker stop --time 2 container-1",
 		"docker rm --force --volumes container-1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected command %q in:\n%s", want, got)
 		}
+	}
+}
+
+func TestDockerCopyArchiveAppliesDestinationMetadata(t *testing.T) {
+	hostAuthPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(hostAuthPath, []byte(`{"token":"test"}`), 0o644); err != nil {
+		t.Fatalf("write host auth: %v", err)
+	}
+	archive, err := dockerCopyArchive(CopySpec{
+		HostPath:      hostAuthPath,
+		ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
+		OwnerUID:      10001,
+		OwnerGID:      10002,
+		FileMode:      0o600,
+	})
+	if err != nil {
+		t.Fatalf("copy archive: %v", err)
+	}
+	tr := tar.NewReader(bytes.NewReader(archive))
+	header, err := tr.Next()
+	if err != nil {
+		t.Fatalf("read tar header: %v", err)
+	}
+	if header.Name != "auth.json" || header.Mode != 0o600 || header.Uid != 10001 || header.Gid != 10002 {
+		t.Fatalf("unexpected tar header: %#v", header)
+	}
+	data, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatalf("read tar payload: %v", err)
+	}
+	if string(data) != `{"token":"test"}` {
+		t.Fatalf("unexpected tar payload: %s", string(data))
 	}
 }
 

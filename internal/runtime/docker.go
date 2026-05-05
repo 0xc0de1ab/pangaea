@@ -1,13 +1,16 @@
 package runtime
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -195,21 +198,12 @@ func (d *DockerRuntime) CopyTo(ctx context.Context, id ContainerID, spec CopySpe
 	if err := spec.Validate(); err != nil {
 		return err
 	}
-	if _, err := d.run(ctx, []string{"cp", spec.HostPath, id.String() + ":" + spec.ContainerPath}, nil); err != nil {
+	data, err := dockerCopyArchive(spec)
+	if err != nil {
 		return err
 	}
-	if spec.FileMode != 0 {
-		if _, err := d.Exec(ctx, id, ExecSpec{Command: []string{"chmod", fmt.Sprintf("%04o", spec.FileMode.Perm()), spec.ContainerPath}}); err != nil {
-			return err
-		}
-	}
-	if spec.OwnerUID != 0 || spec.OwnerGID != 0 {
-		owner := fmt.Sprintf("%d:%d", spec.OwnerUID, spec.OwnerGID)
-		if _, err := d.Exec(ctx, id, ExecSpec{Command: []string{"chown", owner, spec.ContainerPath}}); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err = d.run(ctx, []string{"cp", "-", id.String() + ":" + path.Dir(spec.ContainerPath)}, data)
+	return err
 }
 
 func (d *DockerRuntime) CopyFrom(ctx context.Context, id ContainerID, spec CopySpec) error {
@@ -291,6 +285,44 @@ func (d *DockerRuntime) Remove(ctx context.Context, id ContainerID, opts RemoveO
 	args = append(args, id.String())
 	_, err := d.run(ctx, args, nil)
 	return err
+}
+
+func dockerCopyArchive(spec CopySpec) ([]byte, error) {
+	info, err := os.Stat(spec.HostPath)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: host_path must be a regular file", ErrInvalidCopySpec)
+	}
+	data, err := os.ReadFile(spec.HostPath)
+	if err != nil {
+		return nil, err
+	}
+	mode := info.Mode().Perm()
+	if spec.FileMode != 0 {
+		mode = spec.FileMode.Perm()
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	header := &tar.Header{
+		Name:    path.Base(spec.ContainerPath),
+		Mode:    int64(mode),
+		Size:    int64(len(data)),
+		ModTime: info.ModTime(),
+		Uid:     spec.OwnerUID,
+		Gid:     spec.OwnerGID,
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		return nil, err
+	}
+	if _, err := tw.Write(data); err != nil {
+		return nil, err
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func (d *DockerRuntime) run(ctx context.Context, args []string, stdin []byte) (ExecResult, error) {

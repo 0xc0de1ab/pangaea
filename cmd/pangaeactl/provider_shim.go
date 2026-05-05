@@ -47,6 +47,7 @@ type providerShimRunOptions struct {
 	RefreshTimeout           time.Duration
 	RefreshThreshold         time.Duration
 	RefreshCooldown          time.Duration
+	AuthBootstrapTimeout     time.Duration
 }
 
 func newProviderShimCmd() *cobra.Command {
@@ -95,6 +96,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.ModelAlias, "model-alias", "", "optional public model alias for --api-compatible")
 	cmd.Flags().StringVar(&opts.AuthPath, "auth-path", "", "container-local auth file path for --cli-container")
 	cmd.Flags().StringVar(&opts.AuthFormat, "auth-format", "", "auth format name for --cli-container; defaults from --service when known")
+	cmd.Flags().DurationVar(&opts.AuthBootstrapTimeout, "auth-bootstrap-timeout", 30*time.Second, "maximum time for --cli-container to wait for copied auth file")
 	cmd.Flags().StringVar(&opts.RefreshCommand, "refresh-command", "", "oneshot auth refresh command for --cli-container")
 	cmd.Flags().BoolVar(&opts.RefreshLoginShell, "refresh-login-shell", true, "run --refresh-command through bash with ~/.bashrc sourced")
 	cmd.Flags().DurationVar(&opts.RefreshTimeout, "refresh-timeout", 2*time.Minute, "maximum duration for --refresh-command")
@@ -207,6 +209,11 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 			opts.RefreshCooldown = parsed
 		}
 	}
+	if raw, ok := os.LookupEnv("PANGAEA_AUTH_BOOTSTRAP_TIMEOUT"); ok {
+		if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil {
+			opts.AuthBootstrapTimeout = parsed
+		}
+	}
 	return opts
 }
 
@@ -242,6 +249,13 @@ func defaultRefreshCooldown(value time.Duration) time.Duration {
 	return 5 * time.Minute
 }
 
+func defaultAuthBootstrapTimeout(value time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return 30 * time.Second
+}
+
 func buildAPICompatibleProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {
 	account := provider.Account{Display: opts.Account}
 	return buildCompatibleProvider(opts, provider.KindAPICompatible, provider.AuthState{Status: provider.AuthHealthy, Account: account}, nil)
@@ -261,6 +275,9 @@ func buildCLIContainerProvider(ctx context.Context, opts providerShimRunOptions)
 	authFormat, ok := formats.Get(authFormatName)
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown --auth-format %q (known: %s)", authFormatName, strings.Join(formats.List(), ", "))
+	}
+	if err := waitForAuthBootstrap(ctx, opts.AuthPath, defaultAuthBootstrapTimeout(opts.AuthBootstrapTimeout)); err != nil {
+		return nil, nil, err
 	}
 	auth, err := initialAuthStateFromFile(ctx, opts.AuthPath, authFormat, time.Now)
 	if err != nil {
@@ -434,6 +451,50 @@ func initialAuthStateFromFile(ctx context.Context, path string, format formats.F
 		}
 	}
 	return auth, nil
+}
+
+func waitForAuthBootstrap(ctx context.Context, authPath string, timeout time.Duration) error {
+	if ok, err := authBootstrapReady(authPath); ok || err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("auth bootstrap file %q not ready", authPath)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("auth bootstrap file %q not ready: %w", authPath, waitCtx.Err())
+		case <-ticker.C:
+			ok, err := authBootstrapReady(authPath)
+			if err != nil {
+				return err
+			}
+			if ok {
+				return nil
+			}
+		}
+	}
+}
+
+func authBootstrapReady(authPath string) (bool, error) {
+	info, err := os.Stat(authPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat auth bootstrap file: %w", err)
+	}
+	if info.IsDir() {
+		return false, fmt.Errorf("auth bootstrap file %q is a directory", authPath)
+	}
+	if info.Size() == 0 {
+		return false, nil
+	}
+	return true, nil
 }
 
 func authStatusFromValidation(status formats.ValidationStatus) provider.AuthStatus {

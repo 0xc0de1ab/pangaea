@@ -49,6 +49,7 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_REFRESH_TIMEOUT", "45s")
 	t.Setenv("PANGAEA_REFRESH_THRESHOLD", "5m")
 	t.Setenv("PANGAEA_REFRESH_COOLDOWN", "90s")
+	t.Setenv("PANGAEA_AUTH_BOOTSTRAP_TIMEOUT", "3s")
 
 	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true})
 	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.ProviderID != "codex-samtest" {
@@ -63,7 +64,7 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	if opts.AuthPath != "/var/lib/pangaea/auth/codex/auth.json" || opts.AuthFormat != "codex-auth-json-format" || opts.RefreshCommand != "codex exec ping" {
 		t.Fatalf("env defaults did not populate auth config: %#v", opts)
 	}
-	if opts.RefreshLoginShell || opts.RefreshTimeout != 45*time.Second || opts.RefreshThreshold != 5*time.Minute || opts.RefreshCooldown != 90*time.Second {
+	if opts.RefreshLoginShell || opts.RefreshTimeout != 45*time.Second || opts.RefreshThreshold != 5*time.Minute || opts.RefreshCooldown != 90*time.Second || opts.AuthBootstrapTimeout != 3*time.Second {
 		t.Fatalf("env defaults did not populate refresh options: %#v", opts)
 	}
 }
@@ -86,7 +87,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "model", "model-alias", "auth-path", "auth-format", "refresh-command", "refresh-login-shell", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
+	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "model", "model-alias", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -213,6 +214,64 @@ func TestBuildCLIContainerProviderUsesAuthFileAndRefreshCommand(t *testing.T) {
 	}
 	if !hasCapability(registration.Models[0].Capabilities, provider.CapabilityStreamSSE) {
 		t.Fatalf("model capabilities %v missing %s", registration.Models[0].Capabilities, provider.CapabilityStreamSSE)
+	}
+}
+
+func TestBuildCLIContainerProviderWaitsForAuthBootstrap(t *testing.T) {
+	registerProviderShimTestFormat()
+	dir := t.TempDir()
+	authPath := dir + "/auth.json"
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		_ = os.WriteFile(authPath, []byte("healthy"), 0o600)
+	}()
+
+	apiProvider, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
+		ProviderID:           "codex-wait",
+		ProviderInstanceID:   "codex-wait-a1",
+		NodeID:               "node-a1",
+		HostName:             "snowbox",
+		Service:              "codex",
+		UpstreamBaseURL:      "http://127.0.0.1:4848",
+		UpstreamDialect:      "openai",
+		Model:                "gpt-5-codex",
+		AuthPath:             authPath,
+		AuthFormat:           "provider-shim-test-format",
+		AuthBootstrapTimeout: time.Second,
+		RefreshLoginShell:    true,
+		RefreshTimeout:       time.Minute,
+		RefreshThreshold:     5 * time.Minute,
+		RefreshCooldown:      5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("build cli-container provider with delayed auth: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if registration.Auth.Status != provider.AuthHealthy {
+		t.Fatalf("unexpected auth after delayed bootstrap: %#v", registration.Auth)
+	}
+}
+
+func TestBuildCLIContainerProviderTimesOutWaitingForAuthBootstrap(t *testing.T) {
+	registerProviderShimTestFormat()
+	_, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
+		ProviderID:           "codex-missing",
+		ProviderInstanceID:   "codex-missing-a1",
+		NodeID:               "node-a1",
+		HostName:             "snowbox",
+		Service:              "codex",
+		UpstreamBaseURL:      "http://127.0.0.1:4848",
+		UpstreamDialect:      "openai",
+		Model:                "gpt-5-codex",
+		AuthPath:             t.TempDir() + "/missing-auth.json",
+		AuthFormat:           "provider-shim-test-format",
+		AuthBootstrapTimeout: 10 * time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "auth bootstrap file") {
+		t.Fatalf("expected auth bootstrap timeout, got %v", err)
 	}
 }
 
