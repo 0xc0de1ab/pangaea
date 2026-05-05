@@ -339,7 +339,7 @@ func handleSimulatorControlRequest(ctx context.Context, client *controlClientCon
 		}
 		return handleSimulatorProviderDrain(ctx, client, sim, request)
 	default:
-		return fmt.Errorf("%w: unsupported control request type %q", ErrShimConfig, env.Type)
+		return nil
 	}
 }
 

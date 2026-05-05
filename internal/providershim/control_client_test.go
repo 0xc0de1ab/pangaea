@@ -260,6 +260,30 @@ func TestRunSimulatorControlClientHandlesProviderDrain(t *testing.T) {
 	t.Fatalf("provider drain command did not update provider health")
 }
 
+func TestControlClientsIgnoreUnknownControlMessages(t *testing.T) {
+	env := control.Envelope{
+		Version: control.ProtocolVersion,
+		Type:    control.MessageType("provider.future.command"),
+		ID:      "future_1",
+		SentAt:  time.Now().UTC(),
+		Payload: json.RawMessage(`{}`),
+	}
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	if err := handleSimulatorControlRequest(context.Background(), nil, sim, env); err != nil {
+		t.Fatalf("simulator control client should ignore unknown messages: %v", err)
+	}
+	registration, err := sim.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if err := handleStaticControlRequest(context.Background(), nil, newStaticControlState(registration), nil, env); err != nil {
+		t.Fatalf("static control client should ignore unknown messages: %v", err)
+	}
+}
+
 func TestRunStaticControlClientHandlesAuthRefreshWithRefresher(t *testing.T) {
 	engine := testRouterEngine(t)
 	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))

@@ -273,7 +273,7 @@ func handleStaticControlRequest(ctx context.Context, client *controlClientConn, 
 		result := executeStaticAuthRefresh(ctx, state, refresher, request)
 		return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
 	default:
-		return fmt.Errorf("%w: unsupported control request type %q", ErrShimConfig, env.Type)
+		return nil
 	}
 }
 
