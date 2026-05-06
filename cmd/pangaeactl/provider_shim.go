@@ -94,7 +94,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.UpstreamAPIKeyMode, "upstream-api-key-mode", "", "upstream API key placement (bearer|header|query|none; default bearer)")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKeyHeader, "upstream-api-key-header", "", "header name for --upstream-api-key-mode bearer or header")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKeyQueryParam, "upstream-api-key-query-param", "", "query parameter name for --upstream-api-key-mode query")
-	cmd.Flags().StringVar(&opts.Model, "model", "", "canonical upstream model id for --api-compatible")
+	cmd.Flags().StringVar(&opts.Model, "model", "", "canonical upstream model id for --api-compatible; if omitted, shim attempts upstream model discovery")
 	cmd.Flags().StringVar(&opts.ModelAlias, "model-alias", "", "optional public model alias for --api-compatible")
 	cmd.Flags().StringVar(&opts.AuthPath, "auth-path", "", "container-local auth file path for --cli-container")
 	cmd.Flags().StringVar(&opts.AuthFormat, "auth-format", "", "auth format name for --cli-container; defaults from --service when known")
@@ -341,9 +341,6 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 	if !dialect.Valid() {
 		return nil, fmt.Errorf("invalid --upstream-dialect %q", opts.UpstreamDialect)
 	}
-	if opts.Model == "" {
-		return nil, fmt.Errorf("--model is required with --api-compatible")
-	}
 	capability, err := capabilityForDialect(dialect)
 	if err != nil {
 		return nil, err
@@ -363,6 +360,14 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 	}
 	capabilities := append([]provider.Capability{capability, provider.CapabilityStreamSSE, provider.CapabilityUsageRead, provider.CapabilityModelsRead}, extraCapabilities...)
 	modelCapabilities := []provider.Capability{capability, provider.CapabilityStreamSSE}
+	models := []provider.Model(nil)
+	if opts.Model != "" {
+		models = []provider.Model{{
+			ID:           opts.Model,
+			Aliases:      aliases,
+			Capabilities: dedupeCapabilities(modelCapabilities),
+		}}
+	}
 	return apiprovider.New(apiprovider.Options{
 		Registration: provider.Registration{
 			Identity: provider.ProviderIdentity{
@@ -375,11 +380,7 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 				Account:            account,
 			},
 			Capabilities: dedupeCapabilities(capabilities),
-			Models: []provider.Model{{
-				ID:           opts.Model,
-				Aliases:      aliases,
-				Capabilities: dedupeCapabilities(modelCapabilities),
-			}},
+			Models:       models,
 			Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
 			Auth:         auth,
 			RegisteredAt: now,

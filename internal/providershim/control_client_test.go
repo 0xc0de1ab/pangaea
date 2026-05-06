@@ -28,6 +28,12 @@ func (f staticAuthReporterFunc) Auth() (provider.AuthState, error) {
 	return f()
 }
 
+type staticModelReporterFunc func(context.Context) ([]provider.Model, error)
+
+func (f staticModelReporterFunc) Models(ctx context.Context) ([]provider.Model, error) {
+	return f(ctx)
+}
+
 func TestRegisterSimulatorOnceRegistersProvider(t *testing.T) {
 	engine := testRouterEngine(t)
 	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
@@ -165,6 +171,57 @@ func TestRunStaticControlClientHeartbeatUsesDynamicReporters(t *testing.T) {
 	}
 	cancel()
 	t.Fatalf("dynamic reporter values did not update provider heartbeat")
+}
+
+func TestRunStaticControlClientReportsDiscoveredModels(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	registration, err := sim.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	registration.Models = nil
+	modelReporter := staticModelReporterFunc(func(context.Context) ([]provider.Model, error) {
+		return []provider.Model{{
+			ID:           "discovered-model",
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+		}}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunStaticControlClient(ctx, StaticControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: time.Second,
+			Registration:      registration,
+			ModelReporter:     modelReporter,
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, got := range engine.Providers() {
+			if got.Identity.ProviderInstanceID == registration.Identity.ProviderInstanceID &&
+				len(got.Models) == 1 &&
+				got.Models[0].ID == "discovered-model" {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("static control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("discovered models were not reported")
 }
 
 func TestRunSimulatorControlClientSendsUsage(t *testing.T) {

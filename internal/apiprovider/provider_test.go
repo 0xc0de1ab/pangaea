@@ -73,6 +73,75 @@ func TestProviderInvokeOpenAICompatibleUpstream(t *testing.T) {
 	}
 }
 
+func TestProviderDiscoversOpenAICompatibleModels(t *testing.T) {
+	var sawAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("authorization") == "Bearer sk_models" {
+			sawAuth = true
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "gpt-upstream-a", "object": "model"},
+				{"id": "gpt-upstream-b", "object": "model"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "sk_models")
+	models, err := client.Models(context.Background())
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	if !sawAuth {
+		t.Fatalf("expected authorization header")
+	}
+	if len(models) != 2 || models[0].ID != "gpt-upstream-a" || models[1].ID != "gpt-upstream-b" {
+		t.Fatalf("unexpected models: %#v", models)
+	}
+	if !hasProviderCapability(models[0].Capabilities, provider.CapabilityOpenAIChat) || !hasProviderCapability(models[0].Capabilities, provider.CapabilityStreamSSE) {
+		t.Fatalf("unexpected model capabilities: %#v", models[0].Capabilities)
+	}
+}
+
+func TestProviderDiscoversGeminiModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1beta/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]any{
+				{
+					"name":                       "models/gemini-2.5-flash",
+					"displayName":                "Gemini 2.5 Flash",
+					"supportedGenerationMethods": []string{"generateContent", "streamGenerateContent"},
+					"inputTokenLimit":            1048576,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectGemini, "")
+	models, err := client.Models(context.Background())
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gemini-2.5-flash" || models[0].ContextTokens != 1048576 {
+		t.Fatalf("unexpected models: %#v", models)
+	}
+	if !hasProviderCapability(models[0].Capabilities, provider.CapabilityGeminiGenerateContent) || !hasProviderCapability(models[0].Capabilities, provider.CapabilityStreamSSE) {
+		t.Fatalf("unexpected model capabilities: %#v", models[0].Capabilities)
+	}
+	if len(models[0].Aliases) != 1 || models[0].Aliases[0] != "Gemini 2.5 Flash" {
+		t.Fatalf("unexpected aliases: %#v", models[0].Aliases)
+	}
+}
+
 func TestProviderInvokeAnthropicCompatibleUpstream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
@@ -666,4 +735,13 @@ func testRegistration() provider.Registration {
 		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},
 		RegisteredAt: now,
 	}
+}
+
+func hasProviderCapability(capabilities []provider.Capability, want provider.Capability) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }

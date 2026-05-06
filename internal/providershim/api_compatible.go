@@ -13,6 +13,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const defaultModelDiscoveryTimeout = 5 * time.Second
+
 type APICompatibleShimOptions struct {
 	ControlURL           string
 	DataURL              string
@@ -64,6 +66,7 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 			UsageReporter:        opts.Provider,
 			HealthReporter:       dynamicHealth,
 			AuthReporter:         dynamicAuth,
+			ModelReporter:        opts.Provider,
 			AuthRefresher:        opts.AuthRefresher,
 			AutoRefreshThreshold: opts.AutoRefreshThreshold,
 			AutoRefreshCooldown:  opts.AutoRefreshCooldown,
@@ -88,6 +91,7 @@ type StaticControlClientOptions struct {
 	UsageReporter        usageReporter
 	HealthReporter       healthReporter
 	AuthReporter         authReporter
+	ModelReporter        modelReporter
 	AuthRefresher        AuthRefresher
 	AutoRefreshThreshold time.Duration
 	AutoRefreshCooldown  time.Duration
@@ -105,6 +109,10 @@ type authReporter interface {
 	Auth() (provider.AuthState, error)
 }
 
+type modelReporter interface {
+	Models(context.Context) ([]provider.Model, error)
+}
+
 func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions) error {
 	if opts.ControlURL == "" {
 		return fmt.Errorf("%w: control url is required", ErrShimConfig)
@@ -117,6 +125,7 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 		heartbeatInterval = 30 * time.Second
 	}
 	state := newStaticControlState(opts.Registration)
+	refreshStaticModels(ctx, state, opts.ModelReporter)
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		return err
@@ -157,6 +166,14 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 				return err
 			}
 		case <-ticker.C:
+			if refreshStaticModels(ctx, state, opts.ModelReporter) {
+				if err := writeStaticInventoryReport(ctx, client, state, "provider_inventory_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					return err
+				}
+			}
 			if err := writeStaticHeartbeat(ctx, client, state, opts.HealthReporter, opts.AuthReporter, "provider_heartbeat_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -244,6 +261,13 @@ func (s *staticControlState) setAuthFromReporter(auth provider.AuthState) provid
 	return s.registration
 }
 
+func (s *staticControlState) setModels(models []provider.Model) provider.Registration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registration.Models = cloneProviderModels(models)
+	return s.registration
+}
+
 func (s *staticControlState) claimAutoRefresh(now time.Time, cooldown time.Duration) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -251,6 +275,26 @@ func (s *staticControlState) claimAutoRefresh(now time.Time, cooldown time.Durat
 		return false
 	}
 	s.lastAutoRefreshAt = now
+	return true
+}
+
+func refreshStaticModels(ctx context.Context, state *staticControlState, reporter modelReporter) bool {
+	if state == nil || reporter == nil {
+		return false
+	}
+	if len(state.registrationSnapshot().Models) > 0 {
+		return false
+	}
+	if _, ok := ctx.Deadline(); !ok && defaultModelDiscoveryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultModelDiscoveryTimeout)
+		defer cancel()
+	}
+	models, err := reporter.Models(ctx)
+	if err != nil || len(models) == 0 {
+		return false
+	}
+	state.setModels(models)
 	return true
 }
 
@@ -444,4 +488,17 @@ func executeStaticAuthRefresh(ctx context.Context, state *staticControlState, re
 		result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: refreshErr.Error()}
 	}
 	return result
+}
+
+func cloneProviderModels(models []provider.Model) []provider.Model {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]provider.Model, len(models))
+	for i, model := range models {
+		out[i] = model
+		out[i].Aliases = append([]string(nil), model.Aliases...)
+		out[i].Capabilities = append([]provider.Capability(nil), model.Capabilities...)
+	}
+	return out
 }

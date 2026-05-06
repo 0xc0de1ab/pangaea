@@ -106,6 +106,122 @@ func (p *Provider) Registration() (provider.Registration, error) {
 	return p.registration, nil
 }
 
+func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
+	if p == nil || p.client == nil {
+		return nil, ErrAPIProviderConfig
+	}
+	switch p.dialect {
+	case compat.APIDialectOpenAI, compat.APIDialectAnthropic:
+		var response compatibleModelsResponse
+		if err := p.doGETJSON(ctx, "/v1/models", &response); err != nil {
+			return nil, err
+		}
+		return compatibleModels(response.Data, p.dialect), nil
+	case compat.APIDialectGemini:
+		var response geminiModelsResponse
+		if err := p.doGETJSON(ctx, "/v1beta/models", &response); err != nil {
+			return nil, err
+		}
+		return geminiModels(response.Models), nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported dialect %q", ErrAPIProviderConfig, p.dialect)
+	}
+}
+
+type compatibleModelsResponse struct {
+	Data []compatibleModel `json:"data"`
+}
+
+type compatibleModel struct {
+	ID string `json:"id"`
+}
+
+type geminiModelsResponse struct {
+	Models []geminiModel `json:"models"`
+}
+
+type geminiModel struct {
+	Name                       string   `json:"name"`
+	DisplayName                string   `json:"displayName,omitempty"`
+	SupportedGenerationMethods []string `json:"supportedGenerationMethods,omitempty"`
+	InputTokenLimit            int      `json:"inputTokenLimit,omitempty"`
+	OutputTokenLimit           int      `json:"outputTokenLimit,omitempty"`
+}
+
+func compatibleModels(items []compatibleModel, dialect compat.APIDialect) []provider.Model {
+	capabilities := []provider.Capability{capabilityForAPIDialect(dialect), provider.CapabilityStreamSSE}
+	models := make([]provider.Model, 0, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		models = append(models, provider.Model{
+			ID:           id,
+			Capabilities: capabilities,
+		})
+	}
+	return models
+}
+
+func geminiModels(items []geminiModel) []provider.Model {
+	models := make([]provider.Model, 0, len(items))
+	for _, item := range items {
+		id := strings.TrimPrefix(strings.TrimSpace(item.Name), "models/")
+		if id == "" {
+			continue
+		}
+		capabilities := geminiModelCapabilities(item.SupportedGenerationMethods)
+		aliases := []string(nil)
+		if display := strings.TrimSpace(item.DisplayName); display != "" && display != id {
+			aliases = []string{display}
+		}
+		models = append(models, provider.Model{
+			ID:            id,
+			Aliases:       aliases,
+			Capabilities:  capabilities,
+			ContextTokens: item.InputTokenLimit,
+		})
+	}
+	return models
+}
+
+func geminiModelCapabilities(methods []string) []provider.Capability {
+	capabilities := []provider.Capability{}
+	for _, method := range methods {
+		switch strings.TrimSpace(method) {
+		case "generateContent":
+			capabilities = appendProviderCapability(capabilities, provider.CapabilityGeminiGenerateContent)
+		case "streamGenerateContent":
+			capabilities = appendProviderCapability(capabilities, provider.CapabilityStreamSSE)
+		}
+	}
+	if len(capabilities) == 0 {
+		capabilities = append(capabilities, provider.CapabilityGeminiGenerateContent)
+	}
+	return capabilities
+}
+
+func capabilityForAPIDialect(dialect compat.APIDialect) provider.Capability {
+	switch dialect {
+	case compat.APIDialectAnthropic:
+		return provider.CapabilityAnthropicMessages
+	case compat.APIDialectGemini:
+		return provider.CapabilityGeminiGenerateContent
+	default:
+		return provider.CapabilityOpenAIChat
+	}
+}
+
+func appendProviderCapability(capabilities []provider.Capability, capability provider.Capability) []provider.Capability {
+	for _, existing := range capabilities {
+		if existing == capability {
+			return capabilities
+		}
+	}
+	return append(capabilities, capability)
+}
+
 func (p *Provider) Invoke(ctx context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
 	if p == nil || p.client == nil {
 		return compat.Response{}, ErrAPIProviderConfig
@@ -706,6 +822,56 @@ func (p *Provider) doJSON(ctx context.Context, method string, path string, body 
 		return err
 	}
 	return nil
+}
+
+func (p *Provider) doGETJSON(ctx context.Context, path string, out any) error {
+	resp, err := p.doGET(ctx, path, "application/json")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return upstreamHTTPError(resp, responseBody)
+	}
+	if len(responseBody) == 0 {
+		return fmt.Errorf("%w: empty upstream response", ErrAPIProviderConfig)
+	}
+	if err := json.Unmarshal(responseBody, out); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *Provider) doGET(ctx context.Context, path string, accept string) (*http.Response, error) {
+	apiKey, err := p.apiKeyForRequest()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.endpoint(path, apiKey), nil)
+	if err != nil {
+		return nil, err
+	}
+	if accept != "" {
+		req.Header.Set("accept", accept)
+	}
+	if err := p.applyAPIKeyHeader(req, apiKey); err != nil {
+		return nil, err
+	}
+	for key, value := range p.headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, &provider.UpstreamError{Message: err.Error()}
+	}
+	return resp, nil
 }
 
 func (p *Provider) doRequest(ctx context.Context, method string, path string, body any, accept string) (*http.Response, error) {

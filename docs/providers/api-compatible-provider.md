@@ -115,6 +115,13 @@ Model list may come from:
 - static config
 - router alias policy
 
+For OpenAI-compatible and Anthropic-compatible providers, the generic shim uses
+`GET /v1/models` when available. For Gemini-compatible providers, it uses
+`GET /v1beta/models` and strips the `models/` prefix before reporting model ids.
+If startup config omits a static model, the shim registers with discovered
+models when discovery succeeds and keeps reporting static/router policy aliases
+as fallback.
+
 ## Usage
 
 Usage may be:
