@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -50,8 +51,10 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 		}
 		if found {
 			if shouldRecreateExistingContainer(status, containerSpec) {
-				if err := rt.Pull(ctx, containerSpec.Image); err != nil {
-					return ReconcileResult{}, err
+				if shouldPullProviderImage(spec) {
+					if err := rt.Pull(ctx, containerSpec.Image); err != nil {
+						return ReconcileResult{}, err
+					}
 				}
 				if status.State == "running" {
 					if err := rt.Stop(ctx, status.ID, defaultContainerStopTimeout); err != nil {
@@ -100,10 +103,16 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 			return ReconcileResult{ContainerID: status.ID, Spec: containerSpec, Report: report}, nil
 		}
 	}
-	if err := rt.Pull(ctx, containerSpec.Image); err != nil {
-		return ReconcileResult{}, err
+	if shouldPullProviderImage(spec) {
+		if err := rt.Pull(ctx, containerSpec.Image); err != nil {
+			return ReconcileResult{}, err
+		}
 	}
 	return createProviderContainer(ctx, rt, containerSpec)
+}
+
+func shouldPullProviderImage(spec ProviderSpec) bool {
+	return normalizedImagePullPolicy(spec.ImagePullPolicy) != "never"
 }
 
 func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerSpec runtime.ContainerSpec) (ReconcileResult, error) {
@@ -199,7 +208,11 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		env["PANGAEA_ROUTER_CONTROL_URL"] = opts.RouterControlURL
 	}
 	if opts.RouterDataURL != "" {
-		env["PANGAEA_ROUTER_DATA_URL"] = opts.RouterDataURL
+		dataURL, err := routerDataURLForProvider(opts.RouterDataURL, instanceID)
+		if err != nil {
+			return runtime.ContainerSpec{}, err
+		}
+		env["PANGAEA_ROUTER_DATA_URL"] = dataURL
 	}
 	if opts.StreamTokenKey != "" {
 		env["PANGAEA_STREAM_TOKEN_KEY"] = opts.StreamTokenKey
@@ -209,6 +222,9 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	}
 	if spec.AccountHint != "" {
 		env["PANGAEA_ACCOUNT_DISPLAY"] = spec.AccountHint
+	}
+	if spec.Upstream.Adapter != "" {
+		env["PANGAEA_UPSTREAM_ADAPTER"] = spec.Upstream.Adapter
 	}
 	if spec.Upstream.BaseURL != "" {
 		env["PANGAEA_UPSTREAM_BASE_URL"] = spec.Upstream.BaseURL
@@ -295,6 +311,19 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		return runtime.ContainerSpec{}, err
 	}
 	return containerSpec, nil
+}
+
+func routerDataURLForProvider(raw string, providerInstanceID string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid router data url %q: %v", ErrNodeAgentConfig, raw, err)
+	}
+	q := u.Query()
+	if strings.TrimSpace(q.Get("provider_instance_id")) == "" {
+		q.Set("provider_instance_id", providerInstanceID)
+		u.RawQuery = q.Encode()
+	}
+	return u.String(), nil
 }
 
 func providerDialect(spec ProviderSpec) string {

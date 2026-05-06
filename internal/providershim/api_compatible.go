@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0xc0de1ab/pangaea/internal/apiprovider"
 	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/gorilla/websocket"
@@ -21,10 +20,16 @@ type APICompatibleShimOptions struct {
 	PeerToken            string
 	HeartbeatInterval    time.Duration
 	TokenKey             []byte
-	Provider             *apiprovider.Provider
+	Provider             APICompatibleProvider
 	AuthRefresher        AuthRefresher
 	AutoRefreshThreshold time.Duration
 	AutoRefreshCooldown  time.Duration
+}
+
+type APICompatibleProvider interface {
+	providerInvoker
+	usageReporter
+	modelReporter
 }
 
 func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) error {

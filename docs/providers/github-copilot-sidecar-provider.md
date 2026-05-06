@@ -15,10 +15,12 @@ chat or code completion capability.
 
 ## Capabilities
 
-Potential:
+Initial Pangaea capabilities:
 
 - `code.completion`
 - `api.openai.chat`
+- `usage.read`
+- `models.read`
 - `agent.workspace.read`
 - `stream.sse`
 
@@ -34,13 +36,42 @@ Must report:
 
 ## Bootstrap
 
-Not yet defined.
+The current Pangaea port provides a `providers/github-copilot-sidecar` image
+and `sidecar-agent` shim mode. The image does not implement a Copilot relay by
+itself; it supervises an optional sidecar command and connects the Pangaea shim
+to a local HTTP-compatible bridge.
 
-Potential bootstrap:
+Default container settings:
 
-- copy approved Copilot state
-- start VS Code/code-server extension relay
-- validate Copilot entitlement
+```text
+PANGAEA_SHIM_MODE=sidecar-agent
+PANGAEA_SERVICE=github-copilot
+PANGAEA_UPSTREAM_DIALECT=openai
+PANGAEA_UPSTREAM_BASE_URL=http://127.0.0.1:4141
+```
+
+Node-agent example:
+
+```yaml
+providers:
+  - id: copilot-default
+    kind: sidecar-agent
+    image: pangaea/provider-github-copilot-sidecar:dev
+    service: github-copilot
+    account_hint: operator@example.test
+    shim:
+      entrypoint: [/usr/local/bin/provider-entrypoint]
+      command: [/usr/local/bin/copilot-relay, --listen, 127.0.0.1:4141]
+      protocols: [openai]
+      capabilities:
+        - api.openai.chat
+        - code.completion
+        - usage.read
+        - models.read
+    upstream:
+      base_url: http://127.0.0.1:4141
+      compat: openai
+```
 
 ## Refresh
 
@@ -49,7 +80,10 @@ automatable.
 
 ## Runtime / Local Server
 
-Likely sidecar/extension relay, not simple HTTP API.
+Current supported bridge mode is a local OpenAI-compatible HTTP relay. The
+relay may be implemented by a VS Code/code-server extension bridge, a Copilot
+language-server wrapper, or another approved local process, but Pangaea only
+sees the normalized HTTP-compatible endpoint.
 
 ## Models
 
@@ -57,8 +91,9 @@ May expose chat models, completion models, or opaque Copilot capabilities.
 
 ## Usage
 
-Provider usage may be unavailable. Router should estimate by request/response
-size and request count.
+Provider usage may be unavailable. The sidecar shim reports request/token
+counts observed by Pangaea. A relay can expose richer usage through compatible
+metadata later.
 
 ## Routing Notes
 
@@ -67,13 +102,15 @@ operator-approved users.
 
 ## Limitations
 
-- Current `/workspace/github-copilot-sidecar` has little implementation.
+- Current `/workspace/github-copilot-sidecar` is only an empty skeleton, so the
+  Pangaea port supplies the shim/container integration but not a Copilot relay.
 - Vendor ToS and account sharing risks require explicit policy.
 - Auth automation may not be feasible.
 
 ## Tests
 
-- placeholder provider registration
+- sidecar provider registration
+- OpenAI-compatible bridge routing
 - capability-only routing
 - entitlement unavailable state
 - code completion contract fixture

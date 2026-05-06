@@ -121,7 +121,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 			Protocols:    []string{"openai"},
 			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
 			Entrypoint:   []string{"/usr/local/bin/provider-entrypoint"},
-			Command:      []string{"codex", "app-server", "--listen", "127.0.0.1:8080"},
+			Command:      []string{"codex", "app-server", "--listen", "ws://127.0.0.1:8080"},
 			WorkingDir:   "/var/lib/pangaea/provider",
 		},
 		Resources: ResourceSpec{
@@ -146,7 +146,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	if got, want := strings.Join(spec.Entrypoint, " "), "/usr/local/bin/provider-entrypoint"; got != want {
 		t.Fatalf("entrypoint = %q, want %q", got, want)
 	}
-	if got, want := strings.Join(spec.Command, " "), "codex app-server --listen 127.0.0.1:8080"; got != want {
+	if got, want := strings.Join(spec.Command, " "), "codex app-server --listen ws://127.0.0.1:8080"; got != want {
 		t.Fatalf("command = %q, want %q", got, want)
 	}
 	if spec.WorkingDir != "/var/lib/pangaea/provider" {
@@ -206,7 +206,7 @@ func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T
 	}
 	for key, want := range map[string]string{
 		"PANGAEA_ROUTER_CONTROL_URL": "ws://router/router/v1/control/ws",
-		"PANGAEA_ROUTER_DATA_URL":    "ws://router/router/v1/data/ws",
+		"PANGAEA_ROUTER_DATA_URL":    "ws://router/router/v1/data/ws?provider_instance_id=codex-samtest-a1",
 		"PANGAEA_STREAM_TOKEN_KEY":   "test-token-key",
 	} {
 		if spec.Env[key] != want {
@@ -247,6 +247,28 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	}
 	if result.Report.Resources.CPUPercent != 12.5 || result.Report.Resources.MemoryBytes != 64*1024*1024 || result.Report.Resources.OOMCount != 1 {
 		t.Fatalf("unexpected reconcile resources: %#v", result.Report.Resources)
+	}
+}
+
+func TestReconcileProviderContainerSkipsPullWhenImagePullPolicyNever(t *testing.T) {
+	rt := &fakeContainerRuntime{}
+	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ID:              "codex-kind",
+		InstanceID:      "codex-kind-a1",
+		Kind:            provider.KindCLIContainer,
+		Image:           "pangaea/provider-codex:kind",
+		ImagePullPolicy: "never",
+		Service:         provider.ServiceCodex,
+		Shim:            ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("reconcile provider container: %v", err)
+	}
+	if rt.pulled != "" {
+		t.Fatalf("image should not be pulled when image_pull_policy=never, pulled %q", rt.pulled)
+	}
+	if got, want := strings.Join(rt.calls, ","), "create,start"; got != want {
+		t.Fatalf("runtime call order = %s, want %s", got, want)
 	}
 }
 

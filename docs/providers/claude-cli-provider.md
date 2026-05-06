@@ -71,9 +71,15 @@ Refresh failure must distinguish:
 
 Possible bridge modes:
 
-- official CLI print/oneshot
+- `upstream.adapter: cli-oneshot`, implemented by running
+  `claude -p <prompt> --permission-mode plan --tools '' --output-format text`
+  per routed request
 - local server if available
 - pty/tmux adapter
+
+`cli-oneshot` registers as an Anthropic-capable provider and can be reached
+through router Anthropic/OpenAI compatibility transforms. Streaming is wrapped
+from the completed response until a native Claude local server adapter is added.
 
 ## Models
 
@@ -81,7 +87,9 @@ Models may be static policy aliases or discovered from provider metadata.
 
 ## Usage
 
-Use existing Pangaea Claude usage probe where available.
+Use existing Pangaea Claude usage probe where available. The provider shim
+reads the copied credentials file and reports the probe output as
+`usage.native_summary`.
 
 Usage must separate provider native plan/limit from router user quota.
 

@@ -1,0 +1,23 @@
+version: routing-policy/v1
+
+model_aliases:
+  codex-default:
+    canonical_model: gpt-5.5
+    required_capabilities:
+      - api.openai.chat
+      - stream.sse
+
+routes:
+  - id: codex-kind-openai
+    match:
+      models: [codex-default, gpt-5.5]
+      api_dialects: [openai]
+    candidates:
+      - provider: codex-cli
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      required_capabilities:
+        - api.openai.chat
+      max_queue_depth: 4

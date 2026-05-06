@@ -8,6 +8,7 @@
 /web/router-ui/node_modules/
 /web/router-ui/dist/
 /internal/routerui/dist/.stamp
+/.tmp/
 
 # dev pki / credentials (never commit!)
 /pki/
@@ -35,4 +36,5 @@
 /run/
 
 .codex
+/assets/.codex/
 .env

@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pangaea-e2e
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pangaea-router
+  namespace: pangaea-e2e
+  labels:
+    app.kubernetes.io/name: pangaea-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pangaea-router
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pangaea-router
+    spec:
+      containers:
+        - name: router
+          image: pangaea/router:kind
+          imagePullPolicy: IfNotPresent
+          args:
+            - router
+            - serve
+            - --listen=0.0.0.0:8080
+            - --policy=/etc/pangaea/router-policy.yaml
+            - --api-key=$(PANGAEA_ROUTER_API_KEY)
+            - --peer-token=$(PANGAEA_ROUTER_PEER_TOKEN)
+            - --stream-token-key=$(PANGAEA_STREAM_TOKEN_KEY)
+            - --tenant-id=kind
+            - --user-id=e2e
+          env:
+            - name: PANGAEA_ROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pangaea-router-secrets
+                  key: api-key
+            - name: PANGAEA_ROUTER_PEER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pangaea-router-secrets
+                  key: peer-token
+            - name: PANGAEA_STREAM_TOKEN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pangaea-router-secrets
+                  key: stream-token-key
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: router-policy
+              mountPath: /etc/pangaea
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+      volumes:
+        - name: router-policy
+          configMap:
+            name: pangaea-router-policy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pangaea-router
+  namespace: pangaea-e2e
+  labels:
+    app.kubernetes.io/name: pangaea-router
+spec:
+  selector:
+    app.kubernetes.io/name: pangaea-router
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

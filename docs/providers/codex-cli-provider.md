@@ -49,6 +49,15 @@ auth:
   container_path: /var/lib/pangaea/auth/codex/auth.json
 ```
 
+For the kind e2e bootstrap, when a codex file auth provider omits
+`auth.host_path`, node-agent resolves the first non-empty file from:
+
+1. `assets/.codex/auth.json`, searched from the config directory upward
+2. `~/.codex/auth.json`
+
+This is only a source selection rule for the host side. The selected file is
+still copied into the container path above and must not be mounted.
+
 Validity rule:
 
 - `access_token` JWT expiry is primary.
@@ -86,6 +95,22 @@ Flow:
 Preferred:
 
 - Codex app-server/JSON-RPC bridge when stable
+- Current CLI listen syntax uses a WebSocket URL, for example
+  `codex app-server --listen ws://127.0.0.1:8080`
+
+Pangaea shim adapter selection:
+
+```yaml
+upstream:
+  adapter: websocket
+  base_url: ws://127.0.0.1:8080
+  compat: openai
+```
+
+`adapter: websocket` makes the provider shim speak Codex AppServer JSON-RPC
+directly. `adapter: reverse-http` keeps the generic HTTP-compatible provider
+path and expects `base_url` to point at a local OpenAI/Anthropic/Gemini
+compatibility bridge.
 
 Fallback:
 

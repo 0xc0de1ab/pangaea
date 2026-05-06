@@ -30,12 +30,14 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_SHIM_MODE", "cli-container")
 	t.Setenv("PANGAEA_ROUTER_CONTROL_URL", "ws://router/control")
 	t.Setenv("PANGAEA_ROUTER_PEER_TOKEN", "peer-secret")
+	t.Setenv("PANGAEA_STREAM_TOKEN_KEY", "env-stream-token-key")
 	t.Setenv("PANGAEA_PROVIDER_ID", "codex-samtest")
 	t.Setenv("PANGAEA_PROVIDER_INSTANCE_ID", "codex-samtest-a1")
 	t.Setenv("PANGAEA_NODE_ID", "node-a1")
 	t.Setenv("PANGAEA_HOST_NAME", "snowbox")
 	t.Setenv("PANGAEA_SERVICE", "codex")
 	t.Setenv("PANGAEA_ACCOUNT_DISPLAY", "codex@example.test")
+	t.Setenv("PANGAEA_UPSTREAM_ADAPTER", "websocket")
 	t.Setenv("PANGAEA_UPSTREAM_BASE_URL", "http://127.0.0.1:8080")
 	t.Setenv("PANGAEA_UPSTREAM_DIALECT", "openai")
 	t.Setenv("PANGAEA_MODEL", "gpt-5-codex")
@@ -47,16 +49,20 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_AUTH_FORMAT", "codex-auth-json-format")
 	t.Setenv("PANGAEA_REFRESH_COMMAND", "codex exec ping")
 	t.Setenv("PANGAEA_REFRESH_LOGIN_SHELL", "false")
+	t.Setenv("PANGAEA_CLI_REQUEST_TIMEOUT", "70s")
 	t.Setenv("PANGAEA_REFRESH_TIMEOUT", "45s")
 	t.Setenv("PANGAEA_REFRESH_THRESHOLD", "5m")
 	t.Setenv("PANGAEA_REFRESH_COOLDOWN", "90s")
 	t.Setenv("PANGAEA_AUTH_BOOTSTRAP_TIMEOUT", "3s")
 
-	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true})
+	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true, StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
 	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.RouterPeerToken != "peer-secret" || opts.ProviderID != "codex-samtest" {
 		t.Fatalf("env defaults did not populate identity/mode: %#v", opts)
 	}
-	if opts.Account != "codex@example.test" || opts.UpstreamBaseURL != "http://127.0.0.1:8080" || opts.Model != "gpt-5-codex" {
+	if opts.StreamTokenKey != "env-stream-token-key" {
+		t.Fatalf("env defaults did not override default stream token key: %#v", opts)
+	}
+	if opts.Account != "codex@example.test" || opts.UpstreamAdapter != "websocket" || opts.UpstreamBaseURL != "http://127.0.0.1:8080" || opts.Model != "gpt-5-codex" {
 		t.Fatalf("env defaults did not populate provider config: %#v", opts)
 	}
 	if opts.UpstreamAPIKeyMode != "header" || opts.UpstreamAPIKeyHeader != "x-api-key" || opts.UpstreamAPIKeyQueryParam != "key" {
@@ -65,8 +71,16 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	if opts.AuthPath != "/var/lib/pangaea/auth/codex/auth.json" || opts.AuthFormat != "codex-auth-json-format" || opts.RefreshCommand != "codex exec ping" {
 		t.Fatalf("env defaults did not populate auth config: %#v", opts)
 	}
-	if opts.RefreshLoginShell || opts.RefreshTimeout != 45*time.Second || opts.RefreshThreshold != 5*time.Minute || opts.RefreshCooldown != 90*time.Second || opts.AuthBootstrapTimeout != 3*time.Second {
+	if opts.RefreshLoginShell || opts.CLIRequestTimeout != 70*time.Second || opts.RefreshTimeout != 45*time.Second || opts.RefreshThreshold != 5*time.Minute || opts.RefreshCooldown != 90*time.Second || opts.AuthBootstrapTimeout != 3*time.Second {
 		t.Fatalf("env defaults did not populate refresh options: %#v", opts)
+	}
+}
+
+func TestProviderShimRunOptionsApplySidecarEnvMode(t *testing.T) {
+	t.Setenv("PANGAEA_SHIM_MODE", "sidecar-agent")
+	opts := applyProviderShimEnvDefaults(providerShimRunOptions{StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
+	if !opts.Sidecar || opts.Simulator || opts.APICompatible || opts.CLIContainer {
+		t.Fatalf("expected sidecar mode from env, got %#v", opts)
 	}
 }
 
@@ -91,7 +105,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "cli-container", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "model", "model-alias", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
+	for _, name := range []string{"api-compatible", "cli-container", "sidecar", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-adapter", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "model", "model-alias", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "cli-request-timeout", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -218,6 +232,83 @@ func TestBuildCLIContainerProviderUsesAuthFileAndRefreshCommand(t *testing.T) {
 	}
 	if !hasCapability(registration.Models[0].Capabilities, provider.CapabilityStreamSSE) {
 		t.Fatalf("model capabilities %v missing %s", registration.Models[0].Capabilities, provider.CapabilityStreamSSE)
+	}
+}
+
+func TestBuildCLIContainerProviderUsesClaudeCLIOneshotWithoutUpstreamURL(t *testing.T) {
+	registerProviderShimTestFormat()
+	dir := t.TempDir()
+	authPath := dir + "/credentials.json"
+	if err := os.WriteFile(authPath, []byte("healthy"), 0o600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	apiProvider, refresher, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
+		ProviderID:         "claude-samtest",
+		ProviderInstanceID: "claude-samtest-a1",
+		NodeID:             "node-a1",
+		HostName:           "snowbox",
+		Service:            "claude",
+		Account:            "fallback@example.test",
+		UpstreamAdapter:    "cli-oneshot",
+		UpstreamDialect:    "anthropic",
+		Model:              "claude-default",
+		ModelAlias:         "claude-default",
+		AuthPath:           authPath,
+		AuthFormat:         "provider-shim-test-format",
+		RefreshLoginShell:  true,
+		CLIRequestTimeout:  time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("build claude cli-container provider: %v", err)
+	}
+	if refresher != nil {
+		t.Fatalf("did not expect auth refresher without refresh command")
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindCLIContainer || registration.Identity.Service != provider.ServiceClaude {
+		t.Fatalf("unexpected registration identity: %#v", registration.Identity)
+	}
+	if len(registration.Models) != 1 || registration.Models[0].ID != "claude-default" {
+		t.Fatalf("unexpected models: %#v", registration.Models)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityAnthropicMessages, provider.CapabilityStreamSSE, provider.CapabilityUsageRead, provider.CapabilityModelsRead, provider.CapabilityAuthFile} {
+		if !hasCapability(registration.Capabilities, capability) {
+			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+}
+
+func TestBuildSidecarProviderForGitHubCopilot(t *testing.T) {
+	apiProvider, err := buildSidecarProvider(providerShimRunOptions{
+		ProviderID:         "copilot-sidecar",
+		ProviderInstanceID: "copilot-sidecar-a1",
+		NodeID:             "node-a1",
+		HostName:           "snowbox",
+		Service:            "github-copilot",
+		Account:            "copilot@example.test",
+		UpstreamBaseURL:    "http://127.0.0.1:4141",
+		UpstreamDialect:    "openai",
+		Model:              "github-copilot-default",
+		ModelAlias:         "copilot-default",
+	})
+	if err != nil {
+		t.Fatalf("build sidecar provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindSidecar || registration.Identity.Service != provider.ServiceGitHubCopilot {
+		t.Fatalf("unexpected registration identity: %#v", registration.Identity)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityCodeCompletion, provider.CapabilityAgentWorkspaceRead} {
+		if !hasCapability(registration.Capabilities, capability) {
+			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
+		}
 	}
 }
 

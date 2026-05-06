@@ -10,6 +10,9 @@ APP_NAME       ?= pangaeactl
 PROVIDER_CODEX_IMAGE ?= pangaea/provider-codex:dev
 PROVIDER_GEMINI_IMAGE ?= pangaea/provider-gemini:dev
 PROVIDER_CLAUDE_IMAGE ?= pangaea/provider-claude:dev
+PROVIDER_GITHUB_COPILOT_IMAGE ?= pangaea/provider-github-copilot-sidecar:dev
+ROUTER_KIND_IMAGE ?= pangaea/router:kind
+PROVIDER_CODEX_KIND_IMAGE ?= pangaea/provider-codex:kind
 OS_LIST        ?= linux darwin windows
 ARCH_LIST      ?= amd64 arm64
 BUILD_VARIANTS ?= debug release
@@ -65,7 +68,8 @@ token3 = $(word 3,$(subst -, ,$(1)))
 .PHONY: all clean help \
 	$(OS_LIST) $(ARCH_LIST) $(BUILD_VARIANTS) \
 	$(OS_ARCH_PAIRS) $(OS_VARIANT_PAIRS) $(ARCH_VARIANT_PAIRS) $(FULL_KEYS) \
-	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-provider-claude docker-providers
+	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-providers \
+	docker-router-kind kind-codex-e2e
 
 all: $(FULL_TARGETS)
 
@@ -147,7 +151,16 @@ docker-provider-gemini:
 docker-provider-claude:
 	docker build -f providers/claude/Dockerfile -t $(PROVIDER_CLAUDE_IMAGE) --build-arg VERSION=$(VERSION) .
 
-docker-providers: docker-provider-codex docker-provider-gemini docker-provider-claude
+docker-provider-github-copilot-sidecar:
+	docker build -f providers/github-copilot-sidecar/Dockerfile -t $(PROVIDER_GITHUB_COPILOT_IMAGE) --build-arg VERSION=$(VERSION) .
+
+docker-providers: docker-provider-codex docker-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar
+
+docker-router-kind:
+	docker build -f deploy/kind/router.Dockerfile -t $(ROUTER_KIND_IMAGE) --build-arg VERSION=$(VERSION) .
+
+kind-codex-e2e:
+	PANGAEA_ROUTER_IMAGE=$(ROUTER_KIND_IMAGE) PANGAEA_CODEX_IMAGE=$(PROVIDER_CODEX_KIND_IMAGE) ./scripts/e2e-kind-codex.sh
 
 help:
 	@echo "Build matrix:"
@@ -165,7 +178,8 @@ help:
 	@echo "Version: $(VERSION)"
 	@echo
 	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  router-ui  demo"
-	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-provider-claude  docker-providers"
+	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-provider-claude  docker-provider-github-copilot-sidecar  docker-providers"
+	@echo "Kind e2e: docker-router-kind  kind-codex-e2e"
 
 %:
 	@echo "Unknown target '$@'"

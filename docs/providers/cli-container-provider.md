@@ -70,6 +70,14 @@ Default bootstrap is copy:
 
 Bind mount is not default.
 
+Codex e2e convenience defaults may resolve `auth.host_path` from
+`assets/.codex/auth.json` and then `~/.codex/auth.json` when omitted. Production
+multi-account hosts should set explicit host paths per provider instance.
+
+Local image e2e or air-gapped deployments may set `image_pull_policy: never`
+on a provider spec so node-agent uses an already-loaded Docker image instead of
+pulling from a registry.
+
 ## Refresh
 
 Refresh runs inside container.
@@ -94,6 +102,17 @@ Possible bridge modes:
 
 Local server must be private to container/shim network.
 
+`upstream.adapter` selects how the shim reaches the provider runtime:
+
+- `websocket`: direct provider AppServer WebSocket adapter where implemented
+  today for Codex.
+- `reverse-http`: generic HTTP-compatible bridge path. `upstream.base_url`
+  must point at a local OpenAI/Anthropic/Gemini-compatible HTTP endpoint.
+- `cli-oneshot`: run the provider CLI once per request. This is implemented
+  today for Claude and Gemini and does not require `upstream.base_url`.
+- `api-compatible`: same generic HTTP-compatible path, mainly for providers
+  that are not CLI containers.
+
 ## Models
 
 Model discovery may come from:
@@ -113,6 +132,10 @@ Usage may come from:
 - local server account/rate limit method
 - current Pangaea usage probes
 - router-side estimation when native usage missing
+
+For file-auth CLI containers, the shim also runs the auth format's native
+`UsageProbe` when available and reports it under `usage.native_summary`.
+Claude, Gemini, and Codex auth formats all expose this path.
 
 Usage reports include `host_name`, `provider_id`, `account_id`, and `service`.
 

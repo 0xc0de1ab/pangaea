@@ -63,7 +63,9 @@ func newRouterServeCmd() *cobra.Command {
 }
 
 func runRouterServe(ctx context.Context, opts routerServeOptions) error {
+	opts.APIKey = stringEnvDefault(opts.APIKey, "PANGAEA_ROUTER_API_KEY")
 	opts.PeerToken = stringEnvDefault(opts.PeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
+	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
 	engine, err := buildRouterEngine(opts)
 	if err != nil {
 		return err

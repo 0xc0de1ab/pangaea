@@ -156,6 +156,7 @@ func DefaultSecurityProfile() SecurityProfile {
 			"/var/lib/pangaea",
 			"/run/pangaea",
 			"/tmp",
+			"/work",
 		},
 	}
 }

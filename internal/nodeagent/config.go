@@ -16,6 +16,12 @@ import (
 
 const ConfigVersion = "node-agent/v1"
 
+const (
+	codexDefaultAuthHostPathRelative = "assets/.codex/auth.json"
+	codexDefaultAuthContainerPath    = "/var/lib/pangaea/auth/codex/auth.json"
+	codexDefaultAuthFormat           = "codex-auth-json-format"
+)
+
 type Config struct {
 	Version   string         `json:"version" yaml:"version"`
 	Node      NodeConfig     `json:"node,omitempty" yaml:"node,omitempty"`
@@ -36,19 +42,20 @@ type RuntimeConfig struct {
 }
 
 type ProviderSpec struct {
-	ID          string           `json:"id" yaml:"id"`
-	InstanceID  string           `json:"instance_id,omitempty" yaml:"instance_id,omitempty"`
-	Kind        provider.Kind    `json:"kind" yaml:"kind"`
-	Image       string           `json:"image,omitempty" yaml:"image,omitempty"`
-	HostName    string           `json:"host_name,omitempty" yaml:"host_name,omitempty"`
-	AccountHint string           `json:"account_hint,omitempty" yaml:"account_hint,omitempty"`
-	Service     provider.Service `json:"service" yaml:"service"`
-	Models      []provider.Model `json:"models,omitempty" yaml:"models,omitempty"`
-	Auth        AuthSpec         `json:"auth,omitempty" yaml:"auth,omitempty"`
-	Refresh     RefreshSpec      `json:"refresh,omitempty" yaml:"refresh,omitempty"`
-	Shim        ShimSpec         `json:"shim,omitempty" yaml:"shim,omitempty"`
-	Resources   ResourceSpec     `json:"resources,omitempty" yaml:"resources,omitempty"`
-	Upstream    UpstreamSpec     `json:"upstream,omitempty" yaml:"upstream,omitempty"`
+	ID              string           `json:"id" yaml:"id"`
+	InstanceID      string           `json:"instance_id,omitempty" yaml:"instance_id,omitempty"`
+	Kind            provider.Kind    `json:"kind" yaml:"kind"`
+	Image           string           `json:"image,omitempty" yaml:"image,omitempty"`
+	ImagePullPolicy string           `json:"image_pull_policy,omitempty" yaml:"image_pull_policy,omitempty"`
+	HostName        string           `json:"host_name,omitempty" yaml:"host_name,omitempty"`
+	AccountHint     string           `json:"account_hint,omitempty" yaml:"account_hint,omitempty"`
+	Service         provider.Service `json:"service" yaml:"service"`
+	Models          []provider.Model `json:"models,omitempty" yaml:"models,omitempty"`
+	Auth            AuthSpec         `json:"auth,omitempty" yaml:"auth,omitempty"`
+	Refresh         RefreshSpec      `json:"refresh,omitempty" yaml:"refresh,omitempty"`
+	Shim            ShimSpec         `json:"shim,omitempty" yaml:"shim,omitempty"`
+	Resources       ResourceSpec     `json:"resources,omitempty" yaml:"resources,omitempty"`
+	Upstream        UpstreamSpec     `json:"upstream,omitempty" yaml:"upstream,omitempty"`
 }
 
 type AuthSpec struct {
@@ -91,6 +98,7 @@ type ResourceSpec struct {
 }
 
 type UpstreamSpec struct {
+	Adapter          string `json:"adapter,omitempty" yaml:"adapter,omitempty"`
 	BaseURL          string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
 	Compat           string `json:"compat,omitempty" yaml:"compat,omitempty"`
 	APIKey           string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
@@ -105,20 +113,58 @@ func LoadConfigFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg, err := ParseConfigYAML(data)
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, err
+	}
+	baseDir, err := filepath.Abs(filepath.Dir(path))
 	if err != nil {
 		return Config{}, err
 	}
-	baseDir := filepath.Dir(path)
-	for i := range cfg.Providers {
-		if cfg.Providers[i].Auth.HostPath, err = config.ExpandPathFromDir(baseDir, cfg.Providers[i].Auth.HostPath); err != nil {
-			return Config{}, err
-		}
-		if cfg.Providers[i].Auth.ContainerPath, err = config.ExpandPath(cfg.Providers[i].Auth.ContainerPath); err != nil {
-			return Config{}, err
-		}
+	if err := applyConfigLoadDefaults(&cfg, baseDir); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func applyConfigLoadDefaults(cfg *Config, baseDir string) error {
+	for i := range cfg.Providers {
+		spec := &cfg.Providers[i]
+		auth := &spec.Auth
+		if auth.HostPath != "" {
+			expanded, err := config.ExpandPathFromDir(baseDir, auth.HostPath)
+			if err != nil {
+				return err
+			}
+			auth.HostPath = expanded
+		}
+		if auth.ContainerPath != "" {
+			expanded, err := config.ExpandPath(auth.ContainerPath)
+			if err != nil {
+				return err
+			}
+			auth.ContainerPath = expanded
+		}
+		if spec.Service == provider.ServiceCodex && auth.Mode == "file" {
+			if auth.HostPath == "" {
+				resolved, err := DefaultCodexAuthHostPath(baseDir)
+				if err != nil {
+					return fmt.Errorf("%w: provider %q %v", ErrNodeAgentConfig, spec.ID, err)
+				}
+				auth.HostPath = resolved
+			}
+			if auth.ContainerPath == "" {
+				auth.ContainerPath = codexDefaultAuthContainerPath
+			}
+			if auth.Format == "" {
+				auth.Format = codexDefaultAuthFormat
+			}
+		}
+	}
+	return nil
 }
 
 func ParseConfigYAML(data []byte) (Config, error) {
@@ -130,6 +176,51 @@ func ParseConfigYAML(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func DefaultCodexAuthHostPath(baseDir string) (string, error) {
+	candidates := CodexAuthHostPathCandidates(baseDir)
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			return candidate, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("stat codex auth candidate %q: %w", candidate, err)
+		}
+	}
+	return "", fmt.Errorf("codex auth file not found; checked %s", strings.Join(candidates, ", "))
+}
+
+func CodexAuthHostPathCandidates(baseDir string) []string {
+	candidates := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	add := func(path string) {
+		path = filepath.Clean(path)
+		if path == "." || path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		candidates = append(candidates, path)
+	}
+	if baseDir != "" {
+		if abs, err := filepath.Abs(baseDir); err == nil {
+			for dir := filepath.Clean(abs); ; dir = filepath.Dir(dir) {
+				add(filepath.Join(dir, codexDefaultAuthHostPathRelative))
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					break
+				}
+			}
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		add(filepath.Join(home, ".codex", "auth.json"))
+	}
+	return candidates
 }
 
 func (c Config) Validate() error {
@@ -174,10 +265,16 @@ func (p ProviderSpec) Validate() error {
 	if p.Service == "" {
 		return fmt.Errorf("%w: provider %q service is required", ErrNodeAgentConfig, p.ID)
 	}
+	if err := validateImagePullPolicy(p.ID, p.ImagePullPolicy); err != nil {
+		return err
+	}
 	if len(p.Shim.Capabilities) == 0 {
 		return fmt.Errorf("%w: provider %q shim.capabilities is required", ErrNodeAgentConfig, p.ID)
 	}
 	if err := p.Auth.Validate(p.ID); err != nil {
+		return err
+	}
+	if err := validateUpstreamAdapter(p.ID, p.Upstream.Adapter); err != nil {
 		return err
 	}
 	for _, raw := range []string{p.Refresh.Threshold, p.Refresh.Cooldown, p.Refresh.Timeout} {
@@ -189,6 +286,32 @@ func (p ProviderSpec) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateUpstreamAdapter(providerID string, adapter string) error {
+	switch normalizedUpstreamAdapter(adapter) {
+	case "", "api-compatible", "websocket", "reverse-http", "cli-oneshot", "codex-websocket", "codex-reverse-http", "claude-cli", "gemini-cli":
+		return nil
+	default:
+		return fmt.Errorf("%w: provider %q unsupported upstream.adapter %q", ErrNodeAgentConfig, providerID, adapter)
+	}
+}
+
+func normalizedUpstreamAdapter(adapter string) string {
+	return strings.ToLower(strings.TrimSpace(adapter))
+}
+
+func validateImagePullPolicy(providerID string, policy string) error {
+	switch normalizedImagePullPolicy(policy) {
+	case "", "always", "never":
+		return nil
+	default:
+		return fmt.Errorf("%w: provider %q unsupported image_pull_policy %q", ErrNodeAgentConfig, providerID, policy)
+	}
+}
+
+func normalizedImagePullPolicy(policy string) string {
+	return strings.ToLower(strings.TrimSpace(policy))
 }
 
 func (a AuthSpec) Validate(providerID string) error {

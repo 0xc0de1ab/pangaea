@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/apiprovider"
+	"github.com/0xc0de1ab/pangaea/internal/cliprovider"
+	"github.com/0xc0de1ab/pangaea/internal/codexprovider"
 	"github.com/0xc0de1ab/pangaea/internal/common"
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
@@ -24,6 +27,7 @@ type providerShimRunOptions struct {
 	Simulator                bool
 	APICompatible            bool
 	CLIContainer             bool
+	Sidecar                  bool
 	HeartbeatInterval        time.Duration
 	StreamTokenKey           string
 	ProviderID               string
@@ -32,6 +36,7 @@ type providerShimRunOptions struct {
 	HostName                 string
 	Service                  string
 	Account                  string
+	UpstreamAdapter          string
 	UpstreamBaseURL          string
 	UpstreamDialect          string
 	UpstreamAPIKey           string
@@ -45,6 +50,7 @@ type providerShimRunOptions struct {
 	AuthFormat               string
 	RefreshCommand           string
 	RefreshLoginShell        bool
+	CLIRequestTimeout        time.Duration
 	RefreshTimeout           time.Duration
 	RefreshThreshold         time.Duration
 	RefreshCooldown          time.Duration
@@ -79,6 +85,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.Simulator, "simulator", false, "run the built-in simulator shim")
 	cmd.Flags().BoolVar(&opts.APICompatible, "api-compatible", false, "run a generic API-compatible provider shim")
 	cmd.Flags().BoolVar(&opts.CLIContainer, "cli-container", false, "run a CLI-container provider shim against a local compatible upstream")
+	cmd.Flags().BoolVar(&opts.Sidecar, "sidecar", false, "run a sidecar provider shim against a local compatible upstream")
 	cmd.Flags().DurationVar(&opts.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "control heartbeat interval")
 	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
 	cmd.Flags().StringVar(&opts.ProviderID, "provider-id", "", "logical provider id for --api-compatible")
@@ -87,6 +94,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "operator-facing host name for --api-compatible")
 	cmd.Flags().StringVar(&opts.Service, "service", "", "provider service family for --api-compatible, such as glm, minimax, deepseek")
 	cmd.Flags().StringVar(&opts.Account, "account", "", "operator-facing account label for --api-compatible")
+	cmd.Flags().StringVar(&opts.UpstreamAdapter, "upstream-adapter", "", "upstream adapter for --cli-container (api-compatible|websocket|reverse-http|cli-oneshot|codex-websocket|codex-reverse-http|claude-cli|gemini-cli)")
 	cmd.Flags().StringVar(&opts.UpstreamBaseURL, "upstream-base-url", "", "upstream compatible API base URL for --api-compatible")
 	cmd.Flags().StringVar(&opts.UpstreamDialect, "upstream-dialect", "openai", "upstream API dialect for --api-compatible (openai|anthropic|gemini)")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKey, "upstream-api-key", "", "upstream API key for --api-compatible")
@@ -101,6 +109,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&opts.AuthBootstrapTimeout, "auth-bootstrap-timeout", 30*time.Second, "maximum time for --cli-container to wait for copied auth file")
 	cmd.Flags().StringVar(&opts.RefreshCommand, "refresh-command", "", "oneshot auth refresh command for --cli-container")
 	cmd.Flags().BoolVar(&opts.RefreshLoginShell, "refresh-login-shell", true, "run --refresh-command through bash with ~/.bashrc sourced")
+	cmd.Flags().DurationVar(&opts.CLIRequestTimeout, "cli-request-timeout", 5*time.Minute, "maximum duration for --cli-container cli-oneshot invocations")
 	cmd.Flags().DurationVar(&opts.RefreshTimeout, "refresh-timeout", 2*time.Minute, "maximum duration for --refresh-command")
 	cmd.Flags().DurationVar(&opts.RefreshThreshold, "refresh-threshold", 5*time.Minute, "auth expiry window that triggers automatic --refresh-command for --cli-container")
 	cmd.Flags().DurationVar(&opts.RefreshCooldown, "refresh-cooldown", 5*time.Minute, "minimum interval between automatic auth refresh attempts for --cli-container")
@@ -114,7 +123,7 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 	}
 	switch {
 	case enabledModes(opts) > 1:
-		return fmt.Errorf("choose only one of --simulator, --api-compatible, or --cli-container")
+		return fmt.Errorf("choose only one of --simulator, --api-compatible, --cli-container, or --sidecar")
 	case opts.Simulator:
 		sim, err := providersim.New(providersim.Options{Mode: providersim.ModeAPICompatible})
 		if err != nil {
@@ -141,6 +150,19 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 			TokenKey:          []byte(opts.StreamTokenKey),
 			Provider:          apiProvider,
 		})
+	case opts.Sidecar:
+		sidecarProvider, err := buildSidecarProvider(opts)
+		if err != nil {
+			return err
+		}
+		return providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
+			ControlURL:        opts.RouterControlURL,
+			DataURL:           opts.RouterDataURL,
+			PeerToken:         opts.RouterPeerToken,
+			HeartbeatInterval: opts.HeartbeatInterval,
+			TokenKey:          []byte(opts.StreamTokenKey),
+			Provider:          sidecarProvider,
+		})
 	case opts.CLIContainer:
 		apiProvider, refresher, err := buildCLIContainerProvider(ctx, opts)
 		if err != nil {
@@ -158,7 +180,7 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 			AutoRefreshCooldown:  defaultRefreshCooldown(opts.RefreshCooldown),
 		})
 	default:
-		return fmt.Errorf("one of --simulator, --api-compatible, or --cli-container is required")
+		return fmt.Errorf("one of --simulator, --api-compatible, --cli-container, or --sidecar is required")
 	}
 }
 
@@ -172,12 +194,14 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 			opts.APICompatible = true
 		case "cli-container":
 			opts.CLIContainer = true
+		case "sidecar", "sidecar-agent":
+			opts.Sidecar = true
 		}
 	}
 	opts.RouterControlURL = stringEnvDefault(opts.RouterControlURL, "PANGAEA_ROUTER_CONTROL_URL")
 	opts.RouterDataURL = stringEnvDefault(opts.RouterDataURL, "PANGAEA_ROUTER_DATA_URL")
 	opts.RouterPeerToken = stringEnvDefault(opts.RouterPeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
-	opts.StreamTokenKey = stringEnvDefault(opts.StreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
+	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
 	opts.ProviderID = stringEnvDefault(opts.ProviderID, "PANGAEA_PROVIDER_ID")
 	opts.ProviderInstanceID = stringEnvDefault(opts.ProviderInstanceID, "PANGAEA_PROVIDER_INSTANCE_ID")
 	opts.NodeID = stringEnvDefault(opts.NodeID, "PANGAEA_NODE_ID")
@@ -185,8 +209,9 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	opts.Service = stringEnvDefault(opts.Service, "PANGAEA_SERVICE")
 	opts.Account = stringEnvDefault(opts.Account, "PANGAEA_ACCOUNT")
 	opts.Account = stringEnvDefault(opts.Account, "PANGAEA_ACCOUNT_DISPLAY")
+	opts.UpstreamAdapter = stringEnvDefault(opts.UpstreamAdapter, "PANGAEA_UPSTREAM_ADAPTER")
 	opts.UpstreamBaseURL = stringEnvDefault(opts.UpstreamBaseURL, "PANGAEA_UPSTREAM_BASE_URL")
-	opts.UpstreamDialect = stringEnvDefault(opts.UpstreamDialect, "PANGAEA_UPSTREAM_DIALECT")
+	opts.UpstreamDialect = stringEnvDefaultWhenDefault(opts.UpstreamDialect, "openai", "PANGAEA_UPSTREAM_DIALECT")
 	opts.UpstreamAPIKey = stringEnvDefault(opts.UpstreamAPIKey, "PANGAEA_UPSTREAM_API_KEY")
 	opts.UpstreamAPIKeyFile = stringEnvDefault(opts.UpstreamAPIKeyFile, "PANGAEA_UPSTREAM_API_KEY_FILE")
 	opts.UpstreamAPIKeyMode = stringEnvDefault(opts.UpstreamAPIKeyMode, "PANGAEA_UPSTREAM_API_KEY_MODE")
@@ -199,6 +224,11 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	opts.RefreshCommand = stringEnvDefault(opts.RefreshCommand, "PANGAEA_REFRESH_COMMAND")
 	if raw, ok := os.LookupEnv("PANGAEA_REFRESH_LOGIN_SHELL"); ok {
 		opts.RefreshLoginShell = parseEnvBool(raw, opts.RefreshLoginShell)
+	}
+	if raw, ok := os.LookupEnv("PANGAEA_CLI_REQUEST_TIMEOUT"); ok {
+		if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil {
+			opts.CLIRequestTimeout = parsed
+		}
 	}
 	if raw, ok := os.LookupEnv("PANGAEA_REFRESH_TIMEOUT"); ok {
 		if parsed, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil {
@@ -228,6 +258,16 @@ func stringEnvDefault(current string, name string) string {
 		return current
 	}
 	return strings.TrimSpace(os.Getenv(name))
+}
+
+func stringEnvDefaultWhenDefault(current string, defaultValue string, name string) string {
+	if strings.TrimSpace(current) != "" && strings.TrimSpace(current) != defaultValue {
+		return current
+	}
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return current
 }
 
 func parseEnvBool(raw string, fallback bool) bool {
@@ -267,7 +307,13 @@ func buildAPICompatibleProvider(opts providerShimRunOptions) (*apiprovider.Provi
 	return buildCompatibleProvider(opts, provider.KindAPICompatible, provider.AuthState{Status: provider.AuthHealthy, Account: account}, nil)
 }
 
-func buildCLIContainerProvider(ctx context.Context, opts providerShimRunOptions) (*apiprovider.Provider, providershim.AuthRefresher, error) {
+func buildSidecarProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {
+	account := provider.Account{Display: opts.Account}
+	auth := provider.AuthState{Status: provider.AuthHealthy, Account: account, SelectedSource: "sidecar"}
+	return buildCompatibleProvider(opts, provider.KindSidecar, auth, defaultSidecarCapabilities(provider.Service(opts.Service)))
+}
+
+func buildCLIContainerProvider(ctx context.Context, opts providerShimRunOptions) (providershim.APICompatibleProvider, providershim.AuthRefresher, error) {
 	if opts.AuthPath == "" {
 		return nil, nil, fmt.Errorf("--auth-path is required with --cli-container")
 	}
@@ -307,43 +353,169 @@ func buildCLIContainerProvider(ctx context.Context, opts providerShimRunOptions)
 			return nil, nil, err
 		}
 	}
+	adapter, err := normalizedCLIContainerAdapter(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if adapter == "codex-websocket" {
+		codexProvider, err := buildCodexWebSocketProvider(opts, auth, extraCaps)
+		if err != nil {
+			return nil, nil, err
+		}
+		return wrapNativeUsageProbe(codexProvider, opts.AuthPath, authFormat), refresher, nil
+	}
+	if adapter == "cli-oneshot" || adapter == "claude-cli" || adapter == "gemini-cli" {
+		cliProvider, err := buildCLICommandProvider(opts, auth, extraCaps)
+		if err != nil {
+			return nil, nil, err
+		}
+		return wrapNativeUsageProbe(cliProvider, opts.AuthPath, authFormat), refresher, nil
+	}
+	if adapter == "codex-reverse-http" && isWebSocketURL(opts.UpstreamBaseURL) {
+		return nil, nil, fmt.Errorf("--upstream-adapter reverse-http requires an HTTP-compatible bridge URL, got %q", opts.UpstreamBaseURL)
+	}
 	apiProvider, err := buildCompatibleProvider(opts, provider.KindCLIContainer, auth, extraCaps)
 	if err != nil {
 		return nil, nil, err
 	}
-	return apiProvider, refresher, nil
+	return wrapNativeUsageProbe(apiProvider, opts.AuthPath, authFormat), refresher, nil
+}
+
+func normalizedCLIContainerAdapter(opts providerShimRunOptions) (string, error) {
+	adapter := strings.ToLower(strings.TrimSpace(opts.UpstreamAdapter))
+	service := provider.Service(opts.Service)
+	if adapter == "" {
+		if service == provider.ServiceCodex && isWebSocketURL(opts.UpstreamBaseURL) {
+			return "codex-websocket", nil
+		}
+		if (service == provider.ServiceClaude || service == provider.ServiceGemini) && strings.TrimSpace(opts.UpstreamBaseURL) == "" {
+			return "cli-oneshot", nil
+		}
+		return "api-compatible", nil
+	}
+	switch adapter {
+	case "api-compatible":
+		return adapter, nil
+	case "websocket":
+		if service != provider.ServiceCodex {
+			return "", fmt.Errorf("--upstream-adapter websocket is currently only supported for service codex")
+		}
+		return "codex-websocket", nil
+	case "reverse-http":
+		if service == provider.ServiceCodex {
+			return "codex-reverse-http", nil
+		}
+		return "api-compatible", nil
+	case "cli-oneshot":
+		if service != provider.ServiceClaude && service != provider.ServiceGemini {
+			return "", fmt.Errorf("--upstream-adapter cli-oneshot is currently supported for service claude or gemini")
+		}
+		return adapter, nil
+	case "claude-cli":
+		if service != provider.ServiceClaude {
+			return "", fmt.Errorf("--upstream-adapter claude-cli requires --service claude")
+		}
+		return adapter, nil
+	case "gemini-cli":
+		if service != provider.ServiceGemini {
+			return "", fmt.Errorf("--upstream-adapter gemini-cli requires --service gemini")
+		}
+		return adapter, nil
+	case "codex-websocket", "codex-reverse-http":
+		if service != provider.ServiceCodex {
+			return "", fmt.Errorf("--upstream-adapter %s requires --service codex", adapter)
+		}
+		return adapter, nil
+	default:
+		return "", fmt.Errorf("unsupported --upstream-adapter %q", opts.UpstreamAdapter)
+	}
+}
+
+func isWebSocketURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	return strings.HasPrefix(raw, "ws://") || strings.HasPrefix(raw, "wss://")
+}
+
+func buildCodexWebSocketProvider(opts providerShimRunOptions, auth provider.AuthState, extraCapabilities []provider.Capability) (*codexprovider.Provider, error) {
+	registration, err := buildProviderRegistration(opts, provider.KindCLIContainer, auth, extraCapabilities)
+	if err != nil {
+		return nil, err
+	}
+	return codexprovider.New(codexprovider.Options{
+		Registration: registration,
+		AppServerURL: opts.UpstreamBaseURL,
+		AuthPath:     opts.AuthPath,
+	})
+}
+
+func buildCLICommandProvider(opts providerShimRunOptions, auth provider.AuthState, extraCapabilities []provider.Capability) (*cliprovider.Provider, error) {
+	registration, err := buildProviderRegistrationWithoutUpstream(opts, provider.KindCLIContainer, auth, extraCapabilities)
+	if err != nil {
+		return nil, err
+	}
+	return cliprovider.New(cliprovider.Options{
+		Registration:   registration,
+		Service:        provider.Service(opts.Service),
+		RequestTimeout: opts.CLIRequestTimeout,
+	})
 }
 
 func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, auth provider.AuthState, extraCapabilities []provider.Capability) (*apiprovider.Provider, error) {
+	registration, err := buildProviderRegistration(opts, kind, auth, extraCapabilities)
+	if err != nil {
+		return nil, err
+	}
+	dialect := compat.APIDialect(opts.UpstreamDialect)
+	return apiprovider.New(apiprovider.Options{
+		Registration:     registration,
+		BaseURL:          opts.UpstreamBaseURL,
+		Dialect:          dialect,
+		APIKey:           opts.UpstreamAPIKey,
+		APIKeyFile:       opts.UpstreamAPIKeyFile,
+		APIKeyMode:       opts.UpstreamAPIKeyMode,
+		APIKeyHeader:     opts.UpstreamAPIKeyHeader,
+		APIKeyQueryParam: opts.UpstreamAPIKeyQueryParam,
+	})
+}
+
+func buildProviderRegistration(opts providerShimRunOptions, kind provider.Kind, auth provider.AuthState, extraCapabilities []provider.Capability) (provider.Registration, error) {
+	return buildProviderRegistrationWithOptions(opts, kind, auth, extraCapabilities, true)
+}
+
+func buildProviderRegistrationWithoutUpstream(opts providerShimRunOptions, kind provider.Kind, auth provider.AuthState, extraCapabilities []provider.Capability) (provider.Registration, error) {
+	return buildProviderRegistrationWithOptions(opts, kind, auth, extraCapabilities, false)
+}
+
+func buildProviderRegistrationWithOptions(opts providerShimRunOptions, kind provider.Kind, auth provider.AuthState, extraCapabilities []provider.Capability, requireUpstreamBaseURL bool) (provider.Registration, error) {
 	if opts.ProviderID == "" {
-		return nil, fmt.Errorf("--provider-id is required")
+		return provider.Registration{}, fmt.Errorf("--provider-id is required")
 	}
 	if opts.ProviderInstanceID == "" {
-		return nil, fmt.Errorf("--provider-instance-id is required")
+		return provider.Registration{}, fmt.Errorf("--provider-instance-id is required")
 	}
 	if opts.NodeID == "" {
-		return nil, fmt.Errorf("--node-id is required")
+		return provider.Registration{}, fmt.Errorf("--node-id is required")
 	}
 	if opts.HostName == "" {
-		return nil, fmt.Errorf("--host-name is required")
+		return provider.Registration{}, fmt.Errorf("--host-name is required")
 	}
 	if opts.Service == "" {
-		return nil, fmt.Errorf("--service is required")
+		return provider.Registration{}, fmt.Errorf("--service is required")
 	}
 	service := provider.Service(opts.Service)
 	if !service.Valid() {
-		return nil, fmt.Errorf("invalid --service %q", opts.Service)
+		return provider.Registration{}, fmt.Errorf("invalid --service %q", opts.Service)
 	}
-	if opts.UpstreamBaseURL == "" {
-		return nil, fmt.Errorf("--upstream-base-url is required")
+	if requireUpstreamBaseURL && opts.UpstreamBaseURL == "" {
+		return provider.Registration{}, fmt.Errorf("--upstream-base-url is required")
 	}
 	dialect := compat.APIDialect(opts.UpstreamDialect)
 	if !dialect.Valid() {
-		return nil, fmt.Errorf("invalid --upstream-dialect %q", opts.UpstreamDialect)
+		return provider.Registration{}, fmt.Errorf("invalid --upstream-dialect %q", opts.UpstreamDialect)
 	}
 	capability, err := capabilityForDialect(dialect)
 	if err != nil {
-		return nil, err
+		return provider.Registration{}, err
 	}
 	account := auth.Account
 	if account.Display == "" {
@@ -368,31 +540,110 @@ func buildCompatibleProvider(opts providerShimRunOptions, kind provider.Kind, au
 			Capabilities: dedupeCapabilities(modelCapabilities),
 		}}
 	}
-	return apiprovider.New(apiprovider.Options{
-		Registration: provider.Registration{
-			Identity: provider.ProviderIdentity{
-				ProviderID:         opts.ProviderID,
-				ProviderInstanceID: opts.ProviderInstanceID,
-				NodeID:             opts.NodeID,
-				HostName:           opts.HostName,
-				Service:            service,
-				Kind:               kind,
-				Account:            account,
-			},
-			Capabilities: dedupeCapabilities(capabilities),
-			Models:       models,
-			Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
-			Auth:         auth,
-			RegisteredAt: now,
+	return provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderID:         opts.ProviderID,
+			ProviderInstanceID: opts.ProviderInstanceID,
+			NodeID:             opts.NodeID,
+			HostName:           opts.HostName,
+			Service:            service,
+			Kind:               kind,
+			Account:            account,
 		},
-		BaseURL:          opts.UpstreamBaseURL,
-		Dialect:          dialect,
-		APIKey:           opts.UpstreamAPIKey,
-		APIKeyFile:       opts.UpstreamAPIKeyFile,
-		APIKeyMode:       opts.UpstreamAPIKeyMode,
-		APIKeyHeader:     opts.UpstreamAPIKeyHeader,
-		APIKeyQueryParam: opts.UpstreamAPIKeyQueryParam,
-	})
+		Capabilities: dedupeCapabilities(capabilities),
+		Models:       models,
+		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
+		Auth:         auth,
+		RegisteredAt: now,
+	}, nil
+}
+
+func defaultSidecarCapabilities(service provider.Service) []provider.Capability {
+	switch service {
+	case provider.ServiceGitHubCopilot:
+		return []provider.Capability{
+			provider.CapabilityCodeCompletion,
+			provider.CapabilityAgentWorkspaceRead,
+		}
+	default:
+		return nil
+	}
+}
+
+type nativeUsageProbeProvider struct {
+	providershim.APICompatibleProvider
+	authPath string
+	format   formats.Format
+	probe    formats.UsageProbe
+	client   *http.Client
+}
+
+func wrapNativeUsageProbe(base providershim.APICompatibleProvider, authPath string, format formats.Format) providershim.APICompatibleProvider {
+	probe, ok := format.(formats.UsageProbe)
+	if !ok || base == nil {
+		return base
+	}
+	return &nativeUsageProbeProvider{
+		APICompatibleProvider: base,
+		authPath:              authPath,
+		format:                format,
+		probe:                 probe,
+		client:                &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+func (p *nativeUsageProbeProvider) Usage() (provider.UsageReport, error) {
+	base, baseErr := p.APICompatibleProvider.Usage()
+	if base.ObservedAt.IsZero() {
+		base.ObservedAt = time.Now().UTC()
+	}
+	if p == nil || p.probe == nil || p.format == nil || strings.TrimSpace(p.authPath) == "" {
+		return base, baseErr
+	}
+	raw, err := os.ReadFile(p.authPath)
+	if err != nil {
+		return withNativeUsageProbeError(base, err), nil
+	}
+	snapshot, err := p.format.Parse(raw)
+	if err != nil {
+		return withNativeUsageProbeError(base, err), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	native, err := p.probe.Probe(ctx, snapshot, p.authPath, p.client)
+	if err != nil {
+		return withNativeUsageProbeError(base, err), nil
+	}
+	base.ObservedAt = time.Now().UTC()
+	base.Source = joinUsageSources(base.Source, p.format.Name()+"/usage-probe")
+	base.NativeSummary = native
+	return base, nil
+}
+
+func withNativeUsageProbeError(base provider.UsageReport, err error) provider.UsageReport {
+	base.ObservedAt = time.Now().UTC()
+	base.Source = joinUsageSources(base.Source, "usage-probe-error")
+	base.NativeSummary = map[string]any{"probe_error": err.Error()}
+	return base
+}
+
+func joinUsageSources(values ...string) string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, "+") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, "+")
 }
 
 func enabledModes(opts providerShimRunOptions) int {
@@ -404,6 +655,9 @@ func enabledModes(opts providerShimRunOptions) int {
 		count++
 	}
 	if opts.CLIContainer {
+		count++
+	}
+	if opts.Sidecar {
 		count++
 	}
 	return count

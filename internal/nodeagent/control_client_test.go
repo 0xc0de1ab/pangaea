@@ -160,7 +160,7 @@ func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
 			if rt.created.Env["PANGAEA_ROUTER_CONTROL_URL"] != controlURL(server.URL) {
 				t.Fatalf("reconciled container did not receive router control url: %#v", rt.created.Env)
 			}
-			if rt.created.Env["PANGAEA_ROUTER_DATA_URL"] != "ws://router.example.test/router/v1/data/ws" || rt.created.Env["PANGAEA_STREAM_TOKEN_KEY"] != "node-stream-token-key" || rt.created.Env["PANGAEA_ROUTER_PEER_TOKEN"] != "node-peer-token" {
+			if rt.created.Env["PANGAEA_ROUTER_DATA_URL"] != "ws://router.example.test/router/v1/data/ws?provider_instance_id=codex-samtest-0001" || rt.created.Env["PANGAEA_STREAM_TOKEN_KEY"] != "node-stream-token-key" || rt.created.Env["PANGAEA_ROUTER_PEER_TOKEN"] != "node-peer-token" {
 				t.Fatalf("reconciled container did not receive data plane config: %#v", rt.created.Env)
 			}
 			return

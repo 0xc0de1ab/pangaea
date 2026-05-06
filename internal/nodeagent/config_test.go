@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ providers:
       api_key_mode: bearer
     shim:
       entrypoint: [/usr/local/bin/provider-entrypoint]
-      command: [codex, app-server, --listen, 127.0.0.1:8080]
+      command: [codex, app-server, --listen, ws://127.0.0.1:8080]
       working_dir: /var/lib/pangaea/provider
       protocols: [openai]
       capabilities: [api.openai.chat, models.read, auth.refresh.oneshot]
@@ -187,6 +188,107 @@ providers:
 	}
 }
 
+func TestParseConfigYAMLAcceptsImagePullPolicyNever(t *testing.T) {
+	cfg, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: codex-kind
+    kind: cli-container
+    image: pangaea/provider-codex:kind
+    image_pull_policy: never
+    service: codex
+    auth:
+      mode: file
+      host_path: /srv/pangaea/auth/codex/auth.json
+      container_path: /var/lib/pangaea/auth/codex/auth.json
+    shim:
+      capabilities: [api.openai.chat]
+`))
+	if err != nil {
+		t.Fatalf("parse image pull policy: %v", err)
+	}
+	if got := cfg.Providers[0].ImagePullPolicy; got != "never" {
+		t.Fatalf("image_pull_policy = %q, want never", got)
+	}
+}
+
+func TestLoadConfigFileDefaultsCodexAuthPathPriority(t *testing.T) {
+	repoRoot := t.TempDir()
+	configDir := filepath.Join(repoRoot, "deploy", "kind")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	assetsAuthPath := filepath.Join(repoRoot, "assets", ".codex", "auth.json")
+	writeTestFile(t, assetsAuthPath, `{"source":"assets"}`)
+	homeDir := t.TempDir()
+	homeAuthPath := filepath.Join(homeDir, ".codex", "auth.json")
+	writeTestFile(t, homeAuthPath, `{"source":"home"}`)
+	t.Setenv("HOME", homeDir)
+
+	configPath := filepath.Join(configDir, "node-agent.yaml")
+	writeTestFile(t, configPath, `
+version: node-agent/v1
+providers:
+  - id: codex-kind
+    kind: cli-container
+    service: codex
+    auth:
+      mode: file
+    shim:
+      capabilities: [api.openai.chat]
+`)
+	cfg, err := LoadConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("load config with assets auth: %v", err)
+	}
+	if got := cfg.Providers[0].Auth.HostPath; got != assetsAuthPath {
+		t.Fatalf("auth host path = %q, want assets path %q", got, assetsAuthPath)
+	}
+	if got := cfg.Providers[0].Auth.ContainerPath; got != codexDefaultAuthContainerPath {
+		t.Fatalf("auth container path = %q, want %q", got, codexDefaultAuthContainerPath)
+	}
+	if got := cfg.Providers[0].Auth.Format; got != codexDefaultAuthFormat {
+		t.Fatalf("auth format = %q, want %q", got, codexDefaultAuthFormat)
+	}
+
+	if err := os.Remove(assetsAuthPath); err != nil {
+		t.Fatalf("remove assets auth: %v", err)
+	}
+	cfg, err = LoadConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("load config with home auth: %v", err)
+	}
+	if got := cfg.Providers[0].Auth.HostPath; got != homeAuthPath {
+		t.Fatalf("auth host path = %q, want home path %q", got, homeAuthPath)
+	}
+}
+
+func TestLoadConfigFileReportsMissingDefaultCodexAuthCandidates(t *testing.T) {
+	repoRoot := t.TempDir()
+	configPath := filepath.Join(repoRoot, "node-agent.yaml")
+	writeTestFile(t, configPath, `
+version: node-agent/v1
+providers:
+  - id: codex-kind
+    kind: cli-container
+    service: codex
+    auth:
+      mode: file
+    shim:
+      capabilities: [api.openai.chat]
+`)
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	_, err := LoadConfigFile(configPath)
+	if err == nil {
+		t.Fatalf("expected missing codex auth error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "assets/.codex/auth.json") || !strings.Contains(msg, ".codex/auth.json") {
+		t.Fatalf("expected checked auth candidates in error, got %v", err)
+	}
+}
+
 func TestBootstrapAuthCopyCopiesFileAtomically(t *testing.T) {
 	dir := t.TempDir()
 	hostPath := filepath.Join(dir, "host", "auth.json")
@@ -224,6 +326,16 @@ func TestBootstrapAuthCopyCopiesFileAtomically(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("copied auth mode = %o", info.Mode().Perm())
+	}
+}
+
+func writeTestFile(t *testing.T, path string, data string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 

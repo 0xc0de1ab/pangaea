@@ -50,7 +50,7 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 		t.Fatalf("write host auth: %v", err)
 	}
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-codex-samtest --label pangaea.provider_id=codex-samtest --label pangaea.provider_instance_id=codex-samtest-a1 --env PANGAEA_PROVIDER_ID=codex-samtest --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea --tmpfs /run/pangaea --tmpfs /tmp --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-codex-samtest --label pangaea.provider_id=codex-samtest --label pangaea.provider_instance_id=codex-samtest-a1 --env PANGAEA_PROVIDER_ID=codex-samtest --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{
@@ -90,13 +90,17 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 		"docker create --name pangaea-codex-samtest",
 		"docker start container-1",
 		"docker exec container-1 true",
-		"docker cp - container-1:/container",
+		"docker exec --user 10001:10001 container-1 mkdir -p /container",
+		"docker exec -i --user 10001:10001 container-1 sh -c cat > \"$1\" && chmod \"$2\" \"$1\" sh /container/auth.json 0600",
 		"docker stop --time 2 container-1",
 		"docker rm --force --volumes container-1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected command %q in:\n%s", want, got)
 		}
+	}
+	if runner.commands[4].stdin != len(`{"token":"test"}`) {
+		t.Fatalf("expected auth payload on copy stdin, got %#v", runner.commands[4])
 	}
 }
 

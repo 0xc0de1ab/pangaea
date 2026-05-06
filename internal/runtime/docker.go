@@ -198,12 +198,42 @@ func (d *DockerRuntime) CopyTo(ctx context.Context, id ContainerID, spec CopySpe
 	if err := spec.Validate(); err != nil {
 		return err
 	}
-	data, err := dockerCopyArchive(spec)
+	info, err := os.Stat(spec.HostPath)
 	if err != nil {
 		return err
 	}
-	_, err = d.run(ctx, []string{"cp", "-", id.String() + ":" + path.Dir(spec.ContainerPath)}, data)
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: host_path must be a regular file", ErrInvalidCopySpec)
+	}
+	data, err := os.ReadFile(spec.HostPath)
+	if err != nil {
+		return err
+	}
+	containerDir := path.Dir(spec.ContainerPath)
+	mkdirArgs := append([]string{"exec"}, dockerExecUserArgs(spec)...)
+	mkdirArgs = append(mkdirArgs, id.String(), "mkdir", "-p", containerDir)
+	if _, err := d.run(ctx, mkdirArgs, nil); err != nil {
+		return err
+	}
+	mode := info.Mode().Perm()
+	if spec.FileMode != 0 {
+		mode = spec.FileMode.Perm()
+	}
+	copyArgs := append([]string{"exec", "-i"}, dockerExecUserArgs(spec)...)
+	copyArgs = append(copyArgs, id.String(), "sh", "-c", `cat > "$1" && chmod "$2" "$1"`, "sh", spec.ContainerPath, fmt.Sprintf("%04o", mode))
+	_, err = d.run(ctx, copyArgs, data)
 	return err
+}
+
+func dockerExecUserArgs(spec CopySpec) []string {
+	if spec.OwnerUID <= 0 && spec.OwnerGID <= 0 {
+		return nil
+	}
+	user := strconv.Itoa(spec.OwnerUID)
+	if spec.OwnerGID > 0 {
+		user += ":" + strconv.Itoa(spec.OwnerGID)
+	}
+	return []string{"--user", user}
 }
 
 func (d *DockerRuntime) CopyFrom(ctx context.Context, id ContainerID, spec CopySpec) error {
@@ -462,7 +492,7 @@ func appendSecurityArgs(args []string, profile SecurityProfile) []string {
 		if writablePath == "" {
 			continue
 		}
-		args = append(args, "--tmpfs", writablePath)
+		args = append(args, "--tmpfs", tmpfsMountSpec(writablePath, profile))
 	}
 	if profile.RunAsNonRoot && profile.RunAsUser > 0 {
 		user := strconv.Itoa(profile.RunAsUser)
@@ -472,6 +502,21 @@ func appendSecurityArgs(args []string, profile SecurityProfile) []string {
 		args = append(args, "--user", user)
 	}
 	return args
+}
+
+func tmpfsMountSpec(path string, profile SecurityProfile) string {
+	if strings.Contains(path, ":") || !profile.RunAsNonRoot || profile.RunAsUser <= 0 {
+		return path
+	}
+	mode := "0700"
+	if path == "/tmp" {
+		mode = "1777"
+	}
+	gid := profile.RunAsGroup
+	if gid <= 0 {
+		gid = profile.RunAsUser
+	}
+	return fmt.Sprintf("%s:uid=%d,gid=%d,mode=%s", path, profile.RunAsUser, gid, mode)
 }
 
 func parseDockerPercent(raw string) float64 {

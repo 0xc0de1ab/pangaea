@@ -28,6 +28,7 @@ ENV HOME=/var/lib/pangaea/home/gemini \
     GEMINI_CLI_TRUST_WORKSPACE=true \
     PANGAEA_SHIM_MODE=cli-container \
     PANGAEA_SERVICE=gemini \
+    PANGAEA_UPSTREAM_ADAPTER=cli-oneshot \
     PANGAEA_UPSTREAM_DIALECT=gemini \
     PANGAEA_MODEL=gemini-2.5-flash \
     PANGAEA_MODEL_ALIAS=gemini-default

@@ -172,7 +172,7 @@ providers:
         - codex
         - app-server
         - --listen
-        - 127.0.0.1:8080
+        - ws://127.0.0.1:8080
       working_dir: /var/lib/pangaea/provider
       listen: 127.0.0.1:8080
       protocols: [openai, anthropic, gemini]
@@ -187,6 +187,32 @@ providers:
       cpus: 2
       memory: 2GiB
       pids_limit: 512
+    upstream:
+      adapter: websocket
+      base_url: ws://127.0.0.1:8080
+      compat: openai
+
+  - id: claude-samtest
+    kind: cli-container
+    image: pangaea/provider-claude:2026.05.1
+    host_name: snowbox
+    account_hint: samtest4u@gmail.com
+    service: claude
+    auth:
+      mode: file
+      bootstrap: copy
+      host_path: /srv/pangaea/auth/claude/samtest/.credentials.json
+      container_path: /var/lib/pangaea/auth/claude/.credentials.json
+    shim:
+      protocols: [anthropic, openai]
+      capabilities:
+        - api.anthropic.messages
+        - usage.read
+        - auth.file
+        - auth.refresh.oneshot
+    upstream:
+      adapter: cli-oneshot
+      compat: anthropic
 
   - id: codex-nullcode
     kind: cli-container
@@ -235,6 +261,30 @@ providers:
         - api.anthropic.messages
         - api.openai.chat
         - usage.read
+```
+
+Sidecar provider example:
+
+```yaml
+providers:
+  - id: copilot-default
+    kind: sidecar-agent
+    image: pangaea/provider-github-copilot-sidecar:2026.05.1
+    host_name: snowbox
+    account_hint: operator@example.test
+    service: github-copilot
+    shim:
+      entrypoint: [/usr/local/bin/provider-entrypoint]
+      command: [/usr/local/bin/copilot-relay, --listen, 127.0.0.1:4141]
+      protocols: [openai]
+      capabilities:
+        - api.openai.chat
+        - code.completion
+        - usage.read
+        - models.read
+    upstream:
+      base_url: http://127.0.0.1:4141
+      compat: openai
 ```
 
 ## Auth Bootstrap

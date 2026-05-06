@@ -66,9 +66,14 @@ gemini -p "Reply with OK only." --skip-trust --approval-mode plan --output-forma
 
 Possible bridge modes:
 
-- Gemini CLI prompt mode
+- `upstream.adapter: cli-oneshot`, implemented by running
+  `gemini -p <prompt> --skip-trust --approval-mode plan --output-format json`
+  per routed request
 - ACP/local protocol if available
 - HTTP hook/MITM observation from `cli-sidecar`
+
+`cli-oneshot` registers as a Gemini-capable provider. Streaming is wrapped from
+the completed response until ACP/local streaming is wired directly.
 
 ## Models
 
@@ -84,6 +89,9 @@ Use existing Pangaea Gemini usage probe where possible:
 
 - Code Assist load/quota endpoint
 - Flash/Flash Lite/Pro windows
+
+The provider shim reads the copied `oauth_creds.json` and reports probe output
+as `usage.native_summary`.
 
 ## Routing Notes
 

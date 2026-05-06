@@ -28,7 +28,7 @@ ENV CODEX_HOME=/var/lib/pangaea/auth/codex \
     PANGAEA_SHIM_MODE=cli-container \
     PANGAEA_SERVICE=codex \
     PANGAEA_UPSTREAM_DIALECT=openai \
-    PANGAEA_MODEL=gpt-5-codex \
+    PANGAEA_MODEL=gpt-5.5 \
     PANGAEA_MODEL_ALIAS=codex-default
 
 USER 10001:10001
