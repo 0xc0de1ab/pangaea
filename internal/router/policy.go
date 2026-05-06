@@ -82,8 +82,17 @@ type RouteDecision struct {
 	SelectedProvider     *provider.Registration `json:"selected_provider,omitempty"`
 	RequiredCapabilities []provider.Capability  `json:"required_capabilities,omitempty"`
 	FallbackChain        []string               `json:"fallback_chain,omitempty"`
+	Scores               []RouteCandidateScore  `json:"scores,omitempty"`
 	Rejections           []RouteRejection       `json:"rejections,omitempty"`
 	Reason               string                 `json:"reason,omitempty"`
+}
+
+type RouteCandidateScore struct {
+	ProviderInstanceID string `json:"provider_instance_id,omitempty"`
+	ProviderID         string `json:"provider_id,omitempty"`
+	Score              int    `json:"score"`
+	Weight             int    `json:"weight,omitempty"`
+	Reason             string `json:"reason,omitempty"`
 }
 
 type RouteRejection struct {
@@ -95,6 +104,8 @@ type RouteRejection struct {
 type scoredCandidate struct {
 	registration provider.Registration
 	score        int
+	weight       int
+	reason       string
 }
 
 func ParseRoutingPolicyYAML(data []byte) (RoutingPolicy, error) {
@@ -197,7 +208,7 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 				continue
 			}
 			candidateMatches = true
-			score, rejection := evaluateRegistration(candidate, route.Constraints, required, registration)
+			score, weight, scoreReason, rejection := evaluateRegistration(candidate, route.Constraints, required, registration)
 			if rejection != "" {
 				decision.Rejections = append(decision.Rejections, RouteRejection{
 					ProviderInstanceID: registration.Identity.ProviderInstanceID,
@@ -206,7 +217,7 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 				})
 				continue
 			}
-			scored = append(scored, scoredCandidate{registration: registration, score: score})
+			scored = append(scored, scoredCandidate{registration: registration, score: score, weight: weight, reason: scoreReason})
 		}
 		if !candidateMatches {
 			decision.Rejections = append(decision.Rejections, RouteRejection{
@@ -223,6 +234,13 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 	})
 	for _, candidate := range scored {
 		decision.FallbackChain = append(decision.FallbackChain, candidate.registration.Identity.ProviderInstanceID)
+		decision.Scores = append(decision.Scores, RouteCandidateScore{
+			ProviderInstanceID: candidate.registration.Identity.ProviderInstanceID,
+			ProviderID:         candidate.registration.Identity.ProviderID,
+			Score:              candidate.score,
+			Weight:             candidate.weight,
+			Reason:             candidate.reason,
+		})
 	}
 	if len(scored) == 0 {
 		decision.Reason = ErrNoProvider.Error()
@@ -252,42 +270,42 @@ func (p RoutingPolicy) matchRoute(request RouteRequest) (Route, bool) {
 	return Route{}, false
 }
 
-func evaluateRegistration(candidate Candidate, constraints Constraints, required []provider.Capability, registration provider.Registration) (int, string) {
+func evaluateRegistration(candidate Candidate, constraints Constraints, required []provider.Capability, registration provider.Registration) (int, int, string, string) {
 	for _, capability := range required {
 		if !hasCapability(registration.Capabilities, capability) {
-			return 0, "required capability missing: " + string(capability)
+			return 0, 0, "", "required capability missing: " + string(capability)
 		}
 	}
 	if len(constraints.AuthStatus) > 0 && !hasAuthStatus(constraints.AuthStatus, registration.Auth.Status) {
-		return 0, "auth status not allowed: " + string(registration.Auth.Status)
+		return 0, 0, "", "auth status not allowed: " + string(registration.Auth.Status)
 	}
 	if len(constraints.HealthState) > 0 && !hasHealthStatus(constraints.HealthState, registration.Health.Status) {
 		reason := "health state not allowed: " + string(registration.Health.Status)
 		if strings.TrimSpace(registration.Health.Reason) != "" {
 			reason += " (" + strings.TrimSpace(registration.Health.Reason) + ")"
 		}
-		return 0, reason
+		return 0, 0, "", reason
 	}
 	if len(constraints.ProviderKind) > 0 && !hasKind(constraints.ProviderKind, registration.Identity.Kind) {
-		return 0, "provider kind not allowed: " + string(registration.Identity.Kind)
+		return 0, 0, "", "provider kind not allowed: " + string(registration.Identity.Kind)
 	}
 	if !matchString(constraints.NodeID, registration.Identity.NodeID) {
-		return 0, "node_id constraint not matched"
+		return 0, 0, "", "node_id constraint not matched"
 	}
 	if !matchString(constraints.HostName, registration.Identity.HostName) {
-		return 0, "host_name constraint not matched"
+		return 0, 0, "", "host_name constraint not matched"
 	}
 	if !matchAccount(constraints.Account, registration.Identity.Account) {
-		return 0, "account constraint not matched"
+		return 0, 0, "", "account constraint not matched"
 	}
 	if constraints.MaxQueueDepth > 0 && registration.Limits.QueueDepth > constraints.MaxQueueDepth {
-		return 0, fmt.Sprintf("queue_depth %d > max_queue_depth %d", registration.Limits.QueueDepth, constraints.MaxQueueDepth)
+		return 0, 0, "", fmt.Sprintf("queue_depth %d > max_queue_depth %d", registration.Limits.QueueDepth, constraints.MaxQueueDepth)
 	}
 	weight := candidate.Weight
 	if weight == 0 {
 		weight = 1
 	}
-	return weight, ""
+	return weight, weight, fmt.Sprintf("candidate weight %d", weight), ""
 }
 
 func candidateMatchesRegistration(candidate Candidate, registration provider.Registration) bool {

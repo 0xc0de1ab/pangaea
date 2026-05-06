@@ -61,6 +61,15 @@ func TestRoutingPolicyEvaluateSelectsHighestWeightHealthyCandidate(t *testing.T)
 	if decision.CanonicalModel != "gpt-5.3-codex-spark" {
 		t.Fatalf("expected canonical model, got %q", decision.CanonicalModel)
 	}
+	if len(decision.Scores) != 2 {
+		t.Fatalf("expected two candidate scores, got %#v", decision.Scores)
+	}
+	if decision.Scores[0].ProviderInstanceID != "codex-nullcode-a1" || decision.Scores[0].Score != 50 || decision.Scores[0].Weight != 50 {
+		t.Fatalf("unexpected top candidate score: %#v", decision.Scores)
+	}
+	if decision.Scores[0].Reason == "" {
+		t.Fatalf("expected score reason, got %#v", decision.Scores)
+	}
 }
 
 func TestRoutingPolicyEvaluateRejectsMissingCapability(t *testing.T) {

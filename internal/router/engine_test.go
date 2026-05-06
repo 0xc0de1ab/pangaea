@@ -269,6 +269,9 @@ func TestEngineInvokeRecordsRequestTrace(t *testing.T) {
 	if trace.ActualUsage.Tokens != 3 || trace.EstimatedUsage.Tokens != 10 {
 		t.Fatalf("unexpected trace usage: %#v", trace)
 	}
+	if len(trace.Decision.Scores) == 0 || trace.Decision.Scores[0].ProviderInstanceID == "" || trace.Decision.Scores[0].Reason == "" {
+		t.Fatalf("trace missing routing score explanation: %#v", trace.Decision.Scores)
+	}
 	traces := engine.RequestTraces(1)
 	if len(traces) != 1 || traces[0].RequestID != "req_trace_1" {
 		t.Fatalf("unexpected traces list: %#v", traces)

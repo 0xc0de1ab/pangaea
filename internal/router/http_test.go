@@ -115,6 +115,7 @@ func TestHTTPRouterDashboard(t *testing.T) {
 		!bytes.Contains(rec.Body.Bytes(), []byte("Route Dry Run")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/routes/dry-run")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("Provider Controls")) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("decision.scores")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("/auth/refresh")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("/drain")) ||
 		!bytes.Contains(rec.Body.Bytes(), []byte("API Keys")) ||

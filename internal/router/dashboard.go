@@ -754,6 +754,7 @@ const routerDashboardHTML = `<!doctype html>
     function renderDryRunResult(decision, status) {
       const selected = decision.selected || "";
       const rejections = decision.rejections || [];
+      const scores = decision.scores || [];
       let html = '<div class="kv">';
       html += '<div class="key">Status</div><div>' + statusPill(decision.allowed ? "allowed" : "rejected") + (status ? ' <code>' + esc(status) + '</code>' : '') + '</div>';
       html += '<div class="key">Route</div><div><code>' + esc(decision.route_id) + '</code></div>';
@@ -761,6 +762,14 @@ const routerDashboardHTML = `<!doctype html>
       html += '<div class="key">Selected</div><div><code>' + esc(selected) + '</code></div>';
       html += '<div class="key">Reason</div><div>' + esc(decision.reason) + '</div>';
       html += '</div>';
+      if (scores.length > 0) {
+        html += table(scores, [
+          { label: "Provider", render: (r) => '<code>' + esc(r.provider_instance_id) + '</code>' },
+          { label: "Score", render: (r) => esc(r.score) },
+          { label: "Weight", render: (r) => esc(r.weight) },
+          { label: "Reason", render: (r) => esc(r.reason) }
+        ], "");
+      }
       if (rejections.length > 0) {
         html += table(rejections, [
           { label: "Provider", render: (r) => '<code>' + esc(r.provider_instance_id) + '</code>' },
