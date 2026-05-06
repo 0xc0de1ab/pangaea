@@ -16,6 +16,8 @@ type fakeContainerRuntime struct {
 	copied     *runtime.CopySpec
 	copiedFrom *runtime.CopySpec
 	started    runtime.ContainerID
+	stopped    runtime.ContainerID
+	removed    runtime.ContainerID
 	stats      runtime.Stats
 	calls      []string
 }
@@ -42,7 +44,9 @@ func (r *fakeContainerRuntime) Start(_ context.Context, id runtime.ContainerID) 
 	return nil
 }
 
-func (r *fakeContainerRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
+func (r *fakeContainerRuntime) Stop(_ context.Context, id runtime.ContainerID, _ time.Duration) error {
+	r.calls = append(r.calls, "stop")
+	r.stopped = id
 	return nil
 }
 
@@ -72,7 +76,9 @@ func (r *fakeContainerRuntime) Logs(context.Context, runtime.ContainerID, runtim
 	return ch, nil
 }
 
-func (r *fakeContainerRuntime) Remove(context.Context, runtime.ContainerID, runtime.RemoveOptions) error {
+func (r *fakeContainerRuntime) Remove(_ context.Context, id runtime.ContainerID, _ runtime.RemoveOptions) error {
+	r.calls = append(r.calls, "remove")
+	r.removed = id
 	return nil
 }
 
@@ -257,6 +263,40 @@ func TestReconcileProviderContainerReusesExistingContainer(t *testing.T) {
 	}
 	if result.ContainerID != "container-existing" || result.Report.State != "running" {
 		t.Fatalf("unexpected existing container result: %#v", result)
+	}
+}
+
+func TestReconcileExistingContainerRecreatesWhenImageChanges(t *testing.T) {
+	rt := &fakeExistingContainerRuntime{
+		status: runtime.ContainerStatus{
+			ID:    "container-existing",
+			Image: "pangaea/provider-codex:old",
+			State: "running",
+		},
+		found: true,
+	}
+	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ID:         "codex-samtest",
+		InstanceID: "codex-samtest-a1",
+		Kind:       provider.KindCLIContainer,
+		Image:      "pangaea/provider-codex:new",
+		Service:    provider.ServiceCodex,
+		Shim:       ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("reconcile existing provider container: %v", err)
+	}
+	if rt.pulled != "pangaea/provider-codex:new" || rt.stopped != "container-existing" || rt.removed != "container-existing" {
+		t.Fatalf("expected old container replaced: pulled=%q stopped=%q removed=%q", rt.pulled, rt.stopped, rt.removed)
+	}
+	if rt.created.Image != "pangaea/provider-codex:new" || rt.started != "container-1" {
+		t.Fatalf("expected replacement container created and started: created=%#v started=%q", rt.created, rt.started)
+	}
+	if got, want := strings.Join(rt.calls, ","), "pull,stop,remove,create,start"; got != want {
+		t.Fatalf("runtime call order = %s, want %s", got, want)
+	}
+	if result.ContainerID != "container-1" || result.Report.Image != "pangaea/provider-codex:new" {
+		t.Fatalf("unexpected replacement result: %#v", result)
 	}
 }
 

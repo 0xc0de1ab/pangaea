@@ -12,6 +12,8 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/runtime"
 )
 
+const defaultContainerStopTimeout = 30 * time.Second
+
 type ReconcileResult struct {
 	ContainerID runtime.ContainerID     `json:"container_id"`
 	Spec        runtime.ContainerSpec   `json:"spec"`
@@ -47,6 +49,20 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 			return ReconcileResult{}, err
 		}
 		if found {
+			if shouldRecreateExistingContainer(status, containerSpec) {
+				if err := rt.Pull(ctx, containerSpec.Image); err != nil {
+					return ReconcileResult{}, err
+				}
+				if status.State == "running" {
+					if err := rt.Stop(ctx, status.ID, defaultContainerStopTimeout); err != nil {
+						return ReconcileResult{}, err
+					}
+				}
+				if err := rt.Remove(ctx, status.ID, runtime.RemoveOptions{Force: true}); err != nil {
+					return ReconcileResult{}, err
+				}
+				return createProviderContainer(ctx, rt, containerSpec)
+			}
 			state := status.State
 			if state != "running" {
 				if err := rt.Start(ctx, status.ID); err != nil {
@@ -87,6 +103,10 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 	if err := rt.Pull(ctx, containerSpec.Image); err != nil {
 		return ReconcileResult{}, err
 	}
+	return createProviderContainer(ctx, rt, containerSpec)
+}
+
+func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerSpec runtime.ContainerSpec) (ReconcileResult, error) {
 	containerID, err := rt.Create(ctx, containerSpec)
 	if err != nil {
 		return ReconcileResult{}, err
@@ -112,6 +132,12 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 	}
 	populateContainerStats(ctx, rt, containerID, &report)
 	return ReconcileResult{ContainerID: containerID, Spec: containerSpec, Report: report}, nil
+}
+
+func shouldRecreateExistingContainer(status runtime.ContainerStatus, spec runtime.ContainerSpec) bool {
+	currentImage := strings.TrimSpace(status.Image.String())
+	desiredImage := strings.TrimSpace(spec.Image.String())
+	return currentImage != "" && desiredImage != "" && currentImage != desiredImage
 }
 
 func populateContainerStats(ctx context.Context, rt runtime.Runtime, id runtime.ContainerID, report *control.ContainerReport) {
