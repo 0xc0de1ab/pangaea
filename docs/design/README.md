@@ -19,6 +19,7 @@ Containerized LLM runtime router로 확장하기 위한 논의용 초안:
 - [Security Design v1 Draft](./security-v1.md)
 - [Performance Design v1 Draft](./performance-v1.md)
 - [Testing Strategy Draft](./testing-strategy.md)
+- [Router Dashboard v1 Design](./router-dashboard-v1.md)
 - [Router Dashboard UX/UI Draft](./ux-console.md)
 - [Implementation Roadmap](./implementation-roadmap.md)
 - [Provider Design Notes](../providers/README.md)
