@@ -167,6 +167,13 @@ providers:
       cooldown: 2h
       timeout: 90s
     shim:
+      entrypoint: [/usr/local/bin/provider-entrypoint]
+      command:
+        - codex
+        - app-server
+        - --listen
+        - 127.0.0.1:8080
+      working_dir: /var/lib/pangaea/provider
       listen: 127.0.0.1:8080
       protocols: [openai, anthropic, gemini]
       capabilities:
@@ -198,6 +205,12 @@ providers:
         - api.openai.chat
         - usage.read
 ```
+
+`shim.entrypoint` and `shim.command` are passed to the container runtime as the
+container entrypoint and command. For same-container MVP images, the entrypoint
+SHOULD start the provider local server and the Pangaea provider shim under a
+small supervisor, keeping provider HTTP/listen sockets bound to container
+loopback or a private network only.
 
 API provider example:
 

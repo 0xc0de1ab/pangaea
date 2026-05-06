@@ -117,7 +117,13 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 			FileMode:      "0600",
 		},
 		Refresh: RefreshSpec{Command: []string{"codex", "exec", "Reply with OK only."}, Threshold: "5m", Cooldown: "90s", Timeout: "2m"},
-		Shim:    ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		Shim: ShimSpec{
+			Protocols:    []string{"openai"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+			Entrypoint:   []string{"/usr/local/bin/provider-entrypoint"},
+			Command:      []string{"codex", "app-server", "--listen", "127.0.0.1:8080"},
+			WorkingDir:   "/var/lib/pangaea/provider",
+		},
 		Resources: ResourceSpec{
 			CPUs:      "2",
 			Memory:    "2GiB",
@@ -136,6 +142,15 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	}
 	if spec.ProviderInstanceID != "codex-samtest-a1" || spec.HostName != "snowbox" || spec.Image != "pangaea/provider-codex:test" {
 		t.Fatalf("unexpected container spec identity: %#v", spec)
+	}
+	if got, want := strings.Join(spec.Entrypoint, " "), "/usr/local/bin/provider-entrypoint"; got != want {
+		t.Fatalf("entrypoint = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(spec.Command, " "), "codex app-server --listen 127.0.0.1:8080"; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+	if spec.WorkingDir != "/var/lib/pangaea/provider" {
+		t.Fatalf("working dir = %q", spec.WorkingDir)
 	}
 	if spec.Env["PANGAEA_AUTH_PATH"] != "/var/lib/pangaea/auth/codex/auth.json" {
 		t.Fatalf("missing auth env: %#v", spec.Env)

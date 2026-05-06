@@ -47,6 +47,9 @@ providers:
       api_key_file: /run/secrets/codex-api-key
       api_key_mode: bearer
     shim:
+      entrypoint: [/usr/local/bin/provider-entrypoint]
+      command: [codex, app-server, --listen, 127.0.0.1:8080]
+      working_dir: /var/lib/pangaea/provider
       protocols: [openai]
       capabilities: [api.openai.chat, models.read, auth.refresh.oneshot]
   - id: codex-nullcode
@@ -82,6 +85,9 @@ providers:
 	}
 	if cfg.Providers[0].Upstream.APIKeyFile != "/run/secrets/codex-api-key" || cfg.Providers[0].Upstream.APIKeyMode != "bearer" {
 		t.Fatalf("expected upstream api key config to parse, got %#v", cfg.Providers[0].Upstream)
+	}
+	if len(cfg.Providers[0].Shim.Command) != 4 || cfg.Providers[0].Shim.WorkingDir != "/var/lib/pangaea/provider" {
+		t.Fatalf("expected shim command config to parse, got %#v", cfg.Providers[0].Shim)
 	}
 	foundModelsRead := false
 	for _, capability := range registration.Capabilities {

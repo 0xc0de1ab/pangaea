@@ -79,6 +79,9 @@ type ShimSpec struct {
 	Listen       string                `json:"listen,omitempty" yaml:"listen,omitempty"`
 	Protocols    []string              `json:"protocols,omitempty" yaml:"protocols,omitempty"`
 	Capabilities []provider.Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Entrypoint   []string              `json:"entrypoint,omitempty" yaml:"entrypoint,omitempty"`
+	Command      []string              `json:"command,omitempty" yaml:"command,omitempty"`
+	WorkingDir   string                `json:"working_dir,omitempty" yaml:"working_dir,omitempty"`
 }
 
 type ResourceSpec struct {
