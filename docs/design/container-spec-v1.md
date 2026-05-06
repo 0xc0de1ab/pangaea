@@ -210,7 +210,10 @@ providers:
 container entrypoint and command. For same-container MVP images, the entrypoint
 SHOULD start the provider local server and the Pangaea provider shim under a
 small supervisor, keeping provider HTTP/listen sockets bound to container
-loopback or a private network only.
+loopback or a private network only. The built-in provider images treat
+`shim.command` as the provider local server command and keep
+`pangaeactl provider-shim run` alive beside it; if either process exits, the
+container exits so node-agent can restart or recreate it.
 
 API provider example:
 

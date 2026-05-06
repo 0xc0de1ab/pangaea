@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -gt 0 ]; then
-  exec "$@"
-fi
-
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-/var/lib/pangaea/auth/claude}"
 export PANGAEA_SHIM_MODE="${PANGAEA_SHIM_MODE:-cli-container}"
 export PANGAEA_SERVICE="${PANGAEA_SERVICE:-claude}"
@@ -29,4 +25,32 @@ while [ ! -f "${PANGAEA_AUTH_PATH}" ]; do
   sleep 1
 done
 
-exec /usr/local/bin/pangaeactl provider-shim run
+provider_pid=""
+shim_pid=""
+
+cleanup() {
+  if [ -n "${provider_pid}" ] && kill -0 "${provider_pid}" 2>/dev/null; then
+    kill "${provider_pid}" 2>/dev/null || true
+  fi
+  if [ -n "${shim_pid}" ] && kill -0 "${shim_pid}" 2>/dev/null; then
+    kill "${shim_pid}" 2>/dev/null || true
+  fi
+  wait 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 143' INT TERM
+
+if [ "$#" -gt 0 ]; then
+  "$@" &
+  provider_pid="$!"
+fi
+
+/usr/local/bin/pangaeactl provider-shim run &
+shim_pid="$!"
+
+if [ -n "${provider_pid}" ]; then
+  wait -n "${provider_pid}" "${shim_pid}"
+  exit "$?"
+fi
+
+wait "${shim_pid}"
