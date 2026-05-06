@@ -176,6 +176,45 @@ func TestDataBrokerProviderQueueDepthTracksPendingRequest(t *testing.T) {
 	}
 }
 
+func TestDataBrokerCapabilityTokenUsesShortTTL(t *testing.T) {
+	tokenKey := []byte("test-data-token-ttl-key")
+	broker, err := NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	before := time.Now().UTC()
+	request, deadline, err := broker.newDataRequest(ctx, provider.Registration{
+		Identity: provider.ProviderIdentity{ProviderInstanceID: "provider-a1"},
+	}, compat.Request{
+		ID:      "req_token_ttl_1",
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5-sim",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("new data request: %v", err)
+	}
+	if deadline.Sub(before) < time.Minute {
+		t.Fatalf("request deadline should keep default request timeout, got %s", deadline.Sub(before))
+	}
+	signer, err := tunnel.NewTokenSigner(tokenKey)
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	claims, err := signer.VerifyForDescriptor(request.CapabilityToken, request.Descriptor, before)
+	if err != nil {
+		t.Fatalf("verify capability token: %v", err)
+	}
+	if claims.Deadline.After(before.Add(defaultCapabilityTokenMaxTTL + time.Second)) {
+		t.Fatalf("capability token deadline too long: %s", claims.Deadline.Sub(before))
+	}
+}
+
 func TestHTTPDataSessionsIncludesProviderMetadata(t *testing.T) {
 	engine, _ := testEngine(t)
 	broker, err := NewDataBroker([]byte("test-data-session-metadata-key"))

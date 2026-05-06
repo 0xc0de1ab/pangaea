@@ -18,7 +18,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const defaultDataRequestTimeout = 2 * time.Minute
+const (
+	defaultDataRequestTimeout    = 2 * time.Minute
+	defaultCapabilityTokenMaxTTL = 30 * time.Second
+)
 
 var (
 	ErrDataBrokerNotReady = errors.New("router data broker not ready")
@@ -140,6 +143,10 @@ func (b *DataBroker) newDataRequest(ctx context.Context, registration provider.R
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
+	tokenDeadline := now.Add(defaultCapabilityTokenMaxTTL)
+	if deadline.Before(tokenDeadline) {
+		tokenDeadline = deadline
+	}
 	providerInstanceID := registration.Identity.ProviderInstanceID
 	descriptor := tunnel.StreamDescriptor{
 		StreamID:           tunnel.StreamID("stream_" + requestID),
@@ -154,7 +161,7 @@ func (b *DataBroker) newDataRequest(ctx context.Context, registration provider.R
 		StreamID:           descriptor.StreamID,
 		ProviderInstanceID: descriptor.ProviderInstanceID,
 		Model:              descriptor.Model,
-		Deadline:           deadline,
+		Deadline:           tokenDeadline,
 	})
 	if err != nil {
 		return tunnel.DataRequest{}, time.Time{}, err
