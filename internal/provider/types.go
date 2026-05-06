@@ -41,6 +41,7 @@ const (
 	CapabilityModelsRead            Capability = "models.read"
 	CapabilityAuthFile              Capability = "auth.file"
 	CapabilityAuthRefreshOneshot    Capability = "auth.refresh.oneshot"
+	CapabilityAuthRefreshProtocol   Capability = "auth.refresh.provider_protocol"
 	CapabilityAgentWorkspaceRead    Capability = "agent.workspace.read"
 	CapabilityAgentWorkspaceWrite   Capability = "agent.workspace.write"
 	CapabilityAgentTerminal         Capability = "agent.terminal"

@@ -41,6 +41,7 @@ func TestRegistrationValidate(t *testing.T) {
 			CapabilityStreamSSE,
 			CapabilityUsageRead,
 			CapabilityModelsRead,
+			CapabilityAuthRefreshProtocol,
 		},
 		Models: []Model{
 			{ID: "gpt-5.3-codex-spark", Aliases: []string{"codex-spark"}},
