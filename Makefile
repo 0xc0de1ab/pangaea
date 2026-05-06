@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 GO    ?= go
+NPM   ?= npm
 VERSION_BASE ?= v0.9.0-202604.1
 VERSION ?= $(shell ./scripts/version.sh "$(VERSION_BASE)")
 
@@ -13,6 +14,9 @@ OS_LIST        ?= linux darwin windows
 ARCH_LIST      ?= amd64 arm64
 BUILD_VARIANTS ?= debug release
 OUTPUT_DIR     ?= build
+ROUTER_UI_DIR  ?= web/router-ui
+ROUTER_UI_DIST ?= internal/routerui/dist
+ROUTER_UI_STAMP ?= $(ROUTER_UI_DIST)/.stamp
 
 GO_DEBUG_FLAGS   ?= -trimpath -gcflags=all=-N\ -l -ldflags=-X\ main.version=$(VERSION)
 GO_RELEASE_FLAGS ?= -trimpath -ldflags=-X\ main.version=$(VERSION)\ -s\ -w\ -extldflags\ -static
@@ -21,6 +25,9 @@ GO_RELEASE_FLAGS ?= -trimpath -ldflags=-X\ main.version=$(VERSION)\ -s\ -w\ -ext
 # only the affected build target via the per-output rule below.
 rwildcard = $(wildcard $(1)$(2)) $(foreach d,$(wildcard $(1)*),$(call rwildcard,$d/,$(2)))
 GO_FILES := $(call rwildcard,,*.go)
+ROUTER_UI_FILES := $(shell if [ -d "$(ROUTER_UI_DIR)" ]; then find "$(ROUTER_UI_DIR)" -type f \
+	! -path "$(ROUTER_UI_DIR)/node_modules/*" \
+	! -path "$(ROUTER_UI_DIR)/dist/*"; fi)
 
 artifact_os  = $(if $(filter darwin,$(1)),macos,$(1))
 artifact_dir = $(OUTPUT_DIR)/$(call artifact_os,$(1))-$(2)/$(3)
@@ -36,7 +43,7 @@ ALL_DIRS           := $(sort $(foreach k,$(FULL_KEYS),$(call artifact_dir,$(word
 # Per-output build recipe. release -> CGO_ENABLED=0 + static + stripped;
 # debug  -> keeps symbols, leaves CGO_ENABLED to environment.
 define BUILD_RULE
-$(call artifact,$(1),$(2),$(3)): $(GO_FILES) | $(call artifact_dir,$(1),$(2),$(3))
+$(call artifact,$(1),$(2),$(3)): $(GO_FILES) $(ROUTER_UI_STAMP) | $(call artifact_dir,$(1),$(2),$(3))
 	@echo "build $(1)/$(2)/$(3) -> $$@"
 	@GOOS=$(1) GOARCH=$(2) $(if $(filter release,$(3)),CGO_ENABLED=0 ) \
 		$(GO) build $(if $(filter release,$(3)),$(GO_RELEASE_FLAGS),$(GO_DEBUG_FLAGS)) \
@@ -58,7 +65,7 @@ token3 = $(word 3,$(subst -, ,$(1)))
 .PHONY: all clean help \
 	$(OS_LIST) $(ARCH_LIST) $(BUILD_VARIANTS) \
 	$(OS_ARCH_PAIRS) $(OS_VARIANT_PAIRS) $(ARCH_VARIANT_PAIRS) $(FULL_KEYS) \
-	test race integration lint fmt vet tidy demo docker-provider-codex docker-provider-gemini docker-provider-claude docker-providers
+	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-provider-claude docker-providers
 
 all: $(FULL_TARGETS)
 
@@ -94,6 +101,18 @@ $(FULL_KEYS):
 $(foreach os,$(OS_LIST),$(foreach arch,$(ARCH_LIST),$(foreach var,$(BUILD_VARIANTS),$(eval $(call BUILD_RULE,$(os),$(arch),$(var))))))
 
 # --- housekeeping ---------------------------------------------------------
+$(ROUTER_UI_STAMP): $(ROUTER_UI_FILES)
+	@test -f "$(ROUTER_UI_DIR)/package.json" || { echo "router UI package not found at $(ROUTER_UI_DIR)"; exit 1; }
+	@echo "build router UI -> $(ROUTER_UI_DIST)"
+	cd "$(ROUTER_UI_DIR)" && $(NPM) ci
+	cd "$(ROUTER_UI_DIR)" && $(NPM) run build
+	rm -rf "$(ROUTER_UI_DIST)"
+	mkdir -p "$(ROUTER_UI_DIST)"
+	cp -R "$(ROUTER_UI_DIR)/dist/." "$(ROUTER_UI_DIST)/"
+	touch "$(ROUTER_UI_STAMP)"
+
+router-ui: $(ROUTER_UI_STAMP)
+
 test:
 	$(GO) test ./...
 
@@ -145,7 +164,7 @@ help:
 	@echo "  note: darwin builds are written under $(OUTPUT_DIR)/macos-<arch>/..."
 	@echo "Version: $(VERSION)"
 	@echo
-	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  demo"
+	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  router-ui  demo"
 	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-provider-claude  docker-providers"
 
 %:

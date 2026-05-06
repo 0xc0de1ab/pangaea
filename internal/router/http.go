@@ -75,8 +75,8 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
-	r.GET("/router/ui", serveRouterDashboard)
-	r.GET("/router/ui/", serveRouterDashboard)
+	r.GET("/router/ui", serveEmbeddedRouterDashboard)
+	r.GET("/router/ui/*path", serveEmbeddedRouterDashboard)
 	r.Use(routerAdminAuthMiddleware(opts.APIKeys))
 	r.GET("/v1/models", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
@@ -244,6 +244,30 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"providers": engine.Providers()})
+	})
+	r.GET("/router/v1/dashboard/summary", func(c *gin.Context) {
+		c.JSON(http.StatusOK, BuildDashboardSummary(opts.Engine, opts.DataBroker))
+	})
+	r.GET("/router/v1/dashboard/overview", func(c *gin.Context) {
+		c.JSON(http.StatusOK, BuildDashboardOverview(opts.Engine, opts.DataBroker))
+	})
+	r.GET("/router/v1/dashboard/routes", func(c *gin.Context) {
+		c.JSON(http.StatusOK, BuildDashboardRoutes(opts.Engine, opts.DataBroker))
+	})
+	r.GET("/router/v1/dashboard/providers", func(c *gin.Context) {
+		c.JSON(http.StatusOK, BuildDashboardProviders(opts.Engine, opts.DataBroker))
+	})
+	r.GET("/router/v1/dashboard/traces", func(c *gin.Context) {
+		limit := 0
+		if raw := c.Query("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a non-negative integer"})
+				return
+			}
+			limit = parsed
+		}
+		c.JSON(http.StatusOK, BuildDashboardTraces(opts.Engine, limit))
 	})
 	r.POST("/router/v1/providers/:provider_instance_id/auth/refresh", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -631,10 +655,6 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		c.JSON(status, decision)
 	})
 	return r
-}
-
-func serveRouterDashboard(c *gin.Context) {
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(routerDashboardHTML))
 }
 
 func routerAdminAuthMiddleware(store *security.APIKeyStore) gin.HandlerFunc {

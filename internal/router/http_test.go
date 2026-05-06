@@ -110,25 +110,15 @@ func TestHTTPRouterDashboard(t *testing.T) {
 	if got := rec.Header().Get("content-type"); !strings.Contains(got, "text/html") {
 		t.Fatalf("expected html content type, got %q", got)
 	}
+	if rec.Header().Get("x-content-type-options") != "nosniff" {
+		t.Fatalf("expected nosniff header")
+	}
+	if rec.Header().Get("content-security-policy") == "" {
+		t.Fatalf("expected content security policy")
+	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("Pangaea Router")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/providers")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("Route Dry Run")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/routes/dry-run")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("Provider Controls")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("decision.scores")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/auth/refresh")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/drain")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("API Keys")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("api-key-form")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("data-api-key-delete")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("raw_key")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("api-token")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("Authorization")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/api-keys")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("Quotas")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("quota-form")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/quotas/limits")) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte("/router/v1/quotas")) {
+		!bytes.Contains(rec.Body.Bytes(), []byte(`id="root"`)) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte("/router/ui/assets/")) {
 		t.Fatalf("dashboard body missing expected content: %s", rec.Body.String())
 	}
 }

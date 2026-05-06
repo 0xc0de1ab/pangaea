@@ -1,0 +1,248 @@
+import { useMemo, useState } from "react";
+import { Activity, Clipboard, KeyRound, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
+import type { DashboardViewProps } from "../app/dashboard";
+import { DataTable, type DashboardColumn } from "../components/DataTable";
+import { Drawer } from "../components/Drawer";
+import { Section } from "../components/Section";
+import { StatusBadge } from "../components/StatusBadge";
+import { api } from "../lib/api";
+import { providerID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
+import { accountLabel, age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
+import type { ProviderRegistration } from "../lib/types";
+
+export function ProvidersView({ data, queries, search, token, onAction, refresh }: DashboardViewProps) {
+  const [selected, setSelected] = useState<ProviderRegistration | null>(null);
+  const rows = useMemo(() => {
+    return [...data.providers]
+      .sort((a, b) => `${a.identity.service}:${a.identity.host_name}:${accountLabel(a.identity.account)}:${providerID(a)}`.localeCompare(`${b.identity.service}:${b.identity.host_name}:${accountLabel(b.identity.account)}:${providerID(b)}`))
+      .filter((provider) => hasText(provider, search));
+  }, [data.providers, search]);
+  const control = sessionSet(data.controlSessions);
+  const dataSession = sessionSet(data.dataSessions);
+  const usage = providerUsageMap(data.usage);
+
+  function providerAction(provider: ProviderRegistration, kind: "drain" | "resume" | "refresh") {
+    const id = providerID(provider);
+    const scope = serviceHostAccount(provider);
+    onAction({
+      title: kind === "drain" ? "Drain provider" : kind === "resume" ? "Resume routing" : "Refresh provider auth",
+      target: id,
+      detail:
+        kind === "drain"
+          ? `New traffic will stop routing to ${scope}. Existing streams may continue.`
+          : kind === "resume"
+            ? `Routing can resume for ${scope} after the provider acknowledges the control command.`
+            : `The provider shim will run its configured auth refresh flow for ${scope}.`,
+      requireReason: true,
+      confirmLabel: kind === "refresh" ? "Refresh auth" : kind === "resume" ? "Resume" : "Drain",
+      danger: kind === "drain",
+      execute: async (reason) => {
+        if (kind === "refresh") {
+          await api.providerAuthRefresh(id, reason, token);
+        } else {
+          await api.providerDrain(id, kind === "drain", reason, token);
+        }
+        refresh();
+      },
+    });
+  }
+
+  const columns: DashboardColumn<ProviderRegistration>[] = [
+    {
+      id: "provider",
+      header: "Provider Instance",
+      sortValue: (row) => providerID(row),
+      cell: (row) => (
+        <span className="id-cell">
+          <span className="mono">{middleEllipsis(providerID(row), 12, 9)}</span>
+          <button className="mini-icon" type="button" aria-label="Copy provider id" onClick={(event) => { event.stopPropagation(); copyText(providerID(row)); }}>
+            <Clipboard aria-hidden="true" size={13} />
+          </button>
+        </span>
+      ),
+      width: "210px",
+    },
+    { id: "service", header: "Service", sortValue: (row) => row.identity.service, cell: (row) => row.identity.service, width: "105px" },
+    { id: "kind", header: "Kind", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
+    { id: "host", header: "Host", sortValue: (row) => row.identity.host_name, cell: (row) => row.identity.host_name, width: "150px" },
+    { id: "account", header: "Account", sortValue: (row) => accountLabel(row.identity.account), cell: (row) => accountLabel(row.identity.account), width: "170px" },
+    { id: "health", header: "Health", sortValue: (row) => row.health?.status, cell: (row) => <StatusBadge value={row.health?.status} title={row.health?.reason} />, width: "128px" },
+    { id: "auth", header: "Auth", sortValue: (row) => row.auth?.status, cell: (row) => <StatusBadge value={row.auth?.status} title={row.auth?.last_refresh_error} />, width: "132px" },
+    {
+      id: "sessions",
+      header: "Sessions",
+      sortValue: (row) => Number(control.has(providerID(row))) + Number(dataSession.has(providerID(row))),
+      cell: (row) => (
+        <div className="session-pair">
+          <StatusBadge value={control.has(providerID(row)) ? "control" : "no control"} tone={control.has(providerID(row)) ? "ok" : "warn"} />
+          <StatusBadge value={dataSession.has(providerID(row)) ? "data" : "no data"} tone={dataSession.has(providerID(row)) ? "ok" : "danger"} />
+        </div>
+      ),
+      width: "210px",
+    },
+    { id: "models", header: "Models", sortValue: (row) => row.models?.length ?? 0, cell: (row) => n(row.models?.length ?? 0), align: "right", width: "80px" },
+    { id: "queue", header: "Queue", sortValue: (row) => row.limits?.queue_depth ?? 0, cell: (row) => n(row.limits?.queue_depth ?? 0), align: "right", width: "76px" },
+    { id: "streams", header: "Streams", sortValue: (row) => row.limits?.active_streams ?? 0, cell: (row) => n(row.limits?.active_streams ?? 0), align: "right", width: "92px" },
+    {
+      id: "usage",
+      header: "Requests",
+      sortValue: (row) => usage.get(providerID(row))?.usage?.requests ?? 0,
+      cell: (row) => n(usage.get(providerID(row))?.usage?.requests ?? 0),
+      align: "right",
+      width: "98px",
+    },
+    {
+      id: "actions",
+      header: "Actions",
+      cell: (row) => (
+        <div className="row-actions">
+          <button className="icon-button small" type="button" title="Drain" onClick={(event) => { event.stopPropagation(); providerAction(row, "drain"); }}>
+            <PauseCircle aria-hidden="true" size={15} />
+          </button>
+          <button className="icon-button small" type="button" title="Resume routing" onClick={(event) => { event.stopPropagation(); providerAction(row, "resume"); }}>
+            <PlayCircle aria-hidden="true" size={15} />
+          </button>
+          <button className="icon-button small" type="button" title="Refresh auth" onClick={(event) => { event.stopPropagation(); providerAction(row, "refresh"); }}>
+            <KeyRound aria-hidden="true" size={15} />
+          </button>
+        </div>
+      ),
+      width: "118px",
+    },
+  ];
+
+  return (
+    <div className="view-stack">
+      <Section
+        title="Providers"
+        subtitle="Grouped by service, host name, account, and provider instance"
+        error={queries.providers.error}
+        actions={
+          <button className="button secondary" type="button" onClick={refresh}>
+            <RefreshCw aria-hidden="true" size={15} />
+            Refresh
+          </button>
+        }
+      >
+        <DataTable rows={rows} columns={columns} empty="No providers registered" getRowId={(row) => providerID(row)} onRowClick={setSelected} compact />
+      </Section>
+
+      <Drawer
+        open={!!selected}
+        onClose={() => setSelected(null)}
+        title={selected ? middleEllipsis(providerID(selected), 18, 12) : "Provider"}
+        subtitle={selected ? serviceHostAccount(selected) : undefined}
+      >
+        {selected ? (
+          <ProviderDetail
+            provider={selected}
+            controlConnected={control.has(providerID(selected))}
+            dataConnected={dataSession.has(providerID(selected))}
+            usage={usage.get(providerID(selected))}
+            onDrain={() => providerAction(selected, "drain")}
+            onResume={() => providerAction(selected, "resume")}
+            onRefreshAuth={() => providerAction(selected, "refresh")}
+          />
+        ) : null}
+      </Drawer>
+    </div>
+  );
+}
+
+type ProviderDetailProps = {
+  provider: ProviderRegistration;
+  controlConnected: boolean;
+  dataConnected: boolean;
+  usage?: ReturnType<typeof providerUsageMap> extends Map<string, infer T> ? T : never;
+  onDrain: () => void;
+  onResume: () => void;
+  onRefreshAuth: () => void;
+};
+
+function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDrain, onResume, onRefreshAuth }: ProviderDetailProps) {
+  return (
+    <div className="detail-stack">
+      <div className="drawer-action-row">
+        <button className="button danger" type="button" onClick={onDrain}>
+          <PauseCircle aria-hidden="true" size={15} />
+          Drain
+        </button>
+        <button className="button secondary" type="button" onClick={onResume}>
+          <PlayCircle aria-hidden="true" size={15} />
+          Resume
+        </button>
+        <button className="button secondary" type="button" onClick={onRefreshAuth}>
+          <KeyRound aria-hidden="true" size={15} />
+          Refresh auth
+        </button>
+      </div>
+
+      <div className="detail-section">
+        <h3>Summary</h3>
+        <div className="kv-list">
+          <div className="kv-key">Provider ID</div><div className="kv-value mono">{provider.identity.provider_id}</div>
+          <div className="kv-key">Instance</div><div className="kv-value mono">{provider.identity.provider_instance_id}</div>
+          <div className="kv-key">Node</div><div className="kv-value mono">{provider.identity.node_id}</div>
+          <div className="kv-key">Host</div><div className="kv-value">{provider.identity.host_name}</div>
+          <div className="kv-key">Container</div><div className="kv-value mono">{provider.identity.container_id || ""}</div>
+          <div className="kv-key">Registered</div><div className="kv-value">{fmtTime(provider.registered_at)}</div>
+        </div>
+      </div>
+
+      <div className="detail-section">
+        <h3>State</h3>
+        <div className="badge-row">
+          <StatusBadge value={provider.health?.status} title={provider.health?.reason} />
+          <StatusBadge value={provider.auth?.status} title={provider.auth?.last_refresh_error} />
+          <StatusBadge value={controlConnected ? "control connected" : "control missing"} tone={controlConnected ? "ok" : "warn"} />
+          <StatusBadge value={dataConnected ? "data connected" : "data missing"} tone={dataConnected ? "ok" : "danger"} />
+        </div>
+        <div className="kv-list">
+          <div className="kv-key">Health check</div><div className="kv-value">{age(provider.health?.checked_at)}</div>
+          <div className="kv-key">Auth expires</div><div className="kv-value">{fmtTime(provider.auth?.expires_at)}</div>
+          <div className="kv-key">Last refresh</div><div className="kv-value">{fmtTime(provider.auth?.last_refresh_at)}</div>
+          <div className="kv-key">Refreshable</div><div className="kv-value">{provider.auth?.refreshable ? "yes" : "no"}</div>
+        </div>
+      </div>
+
+      <div className="detail-section">
+        <h3>Models</h3>
+        <div className="tag-list">
+          {(provider.models ?? []).map((model) => (
+            <span className="tag mono" key={model.id}>{model.id}</span>
+          ))}
+          {!provider.models?.length ? <span className="muted">No model report</span> : null}
+        </div>
+      </div>
+
+      <div className="detail-section">
+        <h3>Usage And Load</h3>
+        <div className="kv-list">
+          <div className="kv-key">Queue depth</div><div className="kv-value">{n(provider.limits?.queue_depth ?? 0)}</div>
+          <div className="kv-key">Active streams</div><div className="kv-value">{n(provider.limits?.active_streams ?? 0)}</div>
+          <div className="kv-key">Max concurrency</div><div className="kv-value">{n(provider.limits?.max_concurrency ?? 0)}</div>
+          <div className="kv-key">Requests</div><div className="kv-value">{n(usage?.usage?.requests ?? 0)}</div>
+          <div className="kv-key">Tokens</div><div className="kv-value">{n(usage?.usage?.total_tokens ?? 0)}</div>
+          <div className="kv-key">Usage age</div><div className="kv-value">{age(usage?.updated_at || usage?.usage?.observed_at)}</div>
+        </div>
+      </div>
+
+      <div className="detail-section">
+        <h3>Capabilities</h3>
+        <div className="tag-list">
+          {(provider.capabilities ?? []).map((capability) => (
+            <span className="tag mono" key={capability}>{capability}</span>
+          ))}
+        </div>
+      </div>
+
+      <div className="detail-section">
+        <h3>Operational Notes</h3>
+        <div className="note-row">
+          <Activity aria-hidden="true" size={15} />
+          <span>Preview/execute action endpoints are not exposed yet; this shell uses current drain and auth-refresh endpoints with confirmation and audit flow.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
