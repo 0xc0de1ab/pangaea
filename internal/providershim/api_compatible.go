@@ -268,10 +268,13 @@ func writeStaticInventoryReport(ctx context.Context, client *controlClientConn, 
 
 func writeStaticAuthReport(ctx context.Context, client *controlClientConn, state *staticControlState, id string) error {
 	registration := state.registrationSnapshot()
-	return client.sendAndWaitAck(ctx, control.MessageTypeProviderAuthReport, id, control.ProviderAuthReport{
+	now := time.Now().UTC()
+	return client.sendAndWaitAck(ctx, control.MessageTypeAuthSnapshot, id, control.AuthSnapshot{
 		ProviderInstanceID: registration.Identity.ProviderInstanceID,
 		Auth:               registration.Auth,
-		ReportedAt:         time.Now().UTC(),
+		Source:             registration.Auth.SelectedSource,
+		ObservedAt:         now,
+		ReportedAt:         now,
 	})
 }
 
@@ -334,6 +337,26 @@ func handleStaticControlRequest(ctx context.Context, client *controlClientConn, 
 		}
 		result := executeStaticAuthRefresh(ctx, state, refresher, request)
 		return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
+	case control.MessageTypeAuthPush:
+		push, err := control.Decode[control.AuthPush](env, control.MessageTypeAuthPush)
+		if err != nil {
+			return err
+		}
+		registration := state.registrationSnapshot()
+		if push.ProviderInstanceID != registration.Identity.ProviderInstanceID {
+			return fmt.Errorf("%w: auth push provider_instance_id does not match this shim", ErrShimConfig)
+		}
+		if push.Auth.Status != "" {
+			auth := push.Auth
+			if auth.Account == (provider.Account{}) {
+				auth.Account = registration.Identity.Account
+			}
+			if auth.SelectedSource == "" && push.Source != "" {
+				auth.SelectedSource = push.Source
+			}
+			state.setAuth(auth)
+		}
+		return writeStaticAuthReport(ctx, client, state, "auth_snapshot_push_"+time.Now().UTC().Format("20060102150405.000000000"))
 	default:
 		return nil
 	}

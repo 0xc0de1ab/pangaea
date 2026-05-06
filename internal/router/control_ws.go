@@ -93,6 +93,22 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 			return control.ErrInvalidPayload
 		}
 		return engine.UpdateProviderUsage(report.ProviderInstanceID, report.Usage, report.ReportedAt)
+	case control.MessageTypeAuthSnapshot:
+		snapshot, err := control.Decode[control.AuthSnapshot](env, control.MessageTypeAuthSnapshot)
+		if err != nil {
+			return err
+		}
+		if snapshot.ProviderInstanceID == "" {
+			return control.ErrInvalidPayload
+		}
+		auth := snapshot.Auth
+		if auth.Status == "" {
+			auth.Status = provider.AuthUnknown
+		}
+		if auth.SelectedSource == "" && snapshot.Source != "" {
+			auth.SelectedSource = snapshot.Source
+		}
+		return engine.UpdateProviderAuth(snapshot.ProviderInstanceID, auth)
 	case control.MessageTypeAuthRefreshResult:
 		result, err := control.Decode[control.AuthRefreshResult](env, control.MessageTypeAuthRefreshResult)
 		if err != nil {
@@ -163,6 +179,11 @@ func bindControlSessionForEnvelope(engine *Engine, session *controlSession, env 
 		result, err := control.Decode[control.AuthRefreshResult](env, control.MessageTypeAuthRefreshResult)
 		if err == nil {
 			engine.bindProviderControlSession(result.ProviderInstanceID, session)
+		}
+	case control.MessageTypeAuthSnapshot:
+		snapshot, err := control.Decode[control.AuthSnapshot](env, control.MessageTypeAuthSnapshot)
+		if err == nil {
+			engine.bindProviderControlSession(snapshot.ProviderInstanceID, session)
 		}
 	}
 }

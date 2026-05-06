@@ -310,9 +310,11 @@ func writeSimulatorInventoryReport(ctx context.Context, client *controlClientCon
 
 func writeSimulatorAuthReport(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, id string) error {
 	auth := sim.Auth()
-	return client.sendAndWaitAck(ctx, control.MessageTypeProviderAuthReport, id, control.ProviderAuthReport{
+	return client.sendAndWaitAck(ctx, control.MessageTypeAuthSnapshot, id, control.AuthSnapshot{
 		ProviderInstanceID: auth.Identity.ProviderInstanceID,
 		Auth:               auth.Auth,
+		Source:             auth.Auth.SelectedSource,
+		ObservedAt:         auth.ReportedAt,
 		ReportedAt:         auth.ReportedAt,
 	})
 }
@@ -343,6 +345,12 @@ func handleSimulatorControlRequest(ctx context.Context, client *controlClientCon
 			return err
 		}
 		return handleSimulatorProviderDrain(ctx, client, sim, request)
+	case control.MessageTypeAuthPush:
+		request, err := control.Decode[control.AuthPush](env, control.MessageTypeAuthPush)
+		if err != nil {
+			return err
+		}
+		return handleSimulatorAuthPush(ctx, client, sim, request)
 	default:
 		return nil
 	}
@@ -373,6 +381,27 @@ func handleSimulatorAuthRefreshRequest(ctx context.Context, client *controlClien
 		result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: "simulator auth refresh did not produce healthy auth"}
 	}
 	return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
+}
+
+func handleSimulatorAuthPush(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, push control.AuthPush) error {
+	registration, err := sim.Registration()
+	if err != nil {
+		return err
+	}
+	if push.ProviderInstanceID != registration.Identity.ProviderInstanceID {
+		return fmt.Errorf("%w: auth push provider_instance_id does not match this shim", ErrShimConfig)
+	}
+	if push.Auth.Status != "" {
+		auth := push.Auth
+		if auth.Account == (provider.Account{}) {
+			auth.Account = registration.Identity.Account
+		}
+		if auth.SelectedSource == "" && push.Source != "" {
+			auth.SelectedSource = push.Source
+		}
+		sim.SetAuthState(auth)
+	}
+	return writeSimulatorAuthReport(ctx, client, sim, "auth_snapshot_push_"+time.Now().UTC().Format("20060102150405.000000000"))
 }
 
 func handleSimulatorProviderDrain(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, request control.ProviderDrain) error {

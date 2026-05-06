@@ -314,6 +314,36 @@ for example two Codex accounts on one host:
 - `unknown`: cannot validate.
 - `conflict`: multiple incompatible auth states exist for same account.
 
+### Auth Snapshot / Push
+
+`auth.snapshot` is a redacted provider-to-router auth state report. It carries
+status, account identity, expiry, refreshability, selected source, and optional
+fingerprint metadata. It MUST NOT carry raw OAuth tokens, API keys, refresh
+tokens, credential file bytes, or provider cookies.
+
+```json
+{
+  "provider_instance_id": "codex-samtest/a1/01",
+  "account_id": "user-H8Pbt",
+  "auth": {
+    "status": "refresh_soon",
+    "account": {"id": "user-H8Pbt", "display": "samtest4u@gmail.com"},
+    "expires_at": "2026-05-06T10:19:45Z",
+    "refreshable": true,
+    "selected_source": "container"
+  },
+  "fingerprint": "sha256:...",
+  "source": "container",
+  "observed_at": "2026-05-05T00:00:00Z",
+  "reported_at": "2026-05-05T00:00:00Z"
+}
+```
+
+`auth.push` is a router-to-shim control command that updates the shim's redacted
+auth mirror and asks it to publish a fresh `auth.snapshot`. It is metadata-only;
+credential file synchronization remains a node-agent/container runtime action
+such as explicit bootstrap copy or configured host/container auth sync.
+
 ### Inventory Reports
 
 Inventory reports may be full or delta.

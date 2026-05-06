@@ -196,6 +196,66 @@ func TestProviderRegisterRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAuthSnapshotAndPushRoundTrip(t *testing.T) {
+	ts := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
+	snapshot := AuthSnapshot{
+		ProviderInstanceID: "codex-samtest/a1/01",
+		AccountID:          "acct-1",
+		Auth: provider.AuthState{
+			Status:         provider.AuthRefreshSoon,
+			Account:        provider.Account{ID: "acct-1", Display: "samtest4u@gmail.com"},
+			ExpiresAt:      ts.Add(time.Hour),
+			Refreshable:    true,
+			SelectedSource: "container",
+		},
+		Fingerprint: "sha256:auth-state",
+		Source:      "container",
+		ObservedAt:  ts,
+		ReportedAt:  ts,
+	}
+	data, err := Marshal(MessageTypeAuthSnapshot, "auth_snapshot_1", ts, snapshot)
+	if err != nil {
+		t.Fatalf("Marshal snapshot: %v", err)
+	}
+	env, err := Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Unmarshal snapshot: %v", err)
+	}
+	gotSnapshot, err := Decode[AuthSnapshot](env, MessageTypeAuthSnapshot)
+	if err != nil {
+		t.Fatalf("Decode snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(gotSnapshot, snapshot) {
+		t.Fatalf("snapshot mismatch:\ngot  %#v\nwant %#v", gotSnapshot, snapshot)
+	}
+
+	push := AuthPush{
+		PushID:             "push_1",
+		ProviderInstanceID: "codex-samtest/a1/01",
+		AccountID:          "acct-1",
+		Auth:               snapshot.Auth,
+		Fingerprint:        snapshot.Fingerprint,
+		Source:             "router",
+		Reason:             "operator sync",
+		DeadlineAt:         ts.Add(30 * time.Second),
+	}
+	data, err = Marshal(MessageTypeAuthPush, "auth_push_1", ts, push)
+	if err != nil {
+		t.Fatalf("Marshal push: %v", err)
+	}
+	env, err = Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Unmarshal push: %v", err)
+	}
+	gotPush, err := Decode[AuthPush](env, MessageTypeAuthPush)
+	if err != nil {
+		t.Fatalf("Decode push: %v", err)
+	}
+	if !reflect.DeepEqual(gotPush, push) {
+		t.Fatalf("push mismatch:\ngot  %#v\nwant %#v", gotPush, push)
+	}
+}
+
 func TestDecodePayloadRejectsTypeMismatch(t *testing.T) {
 	ts := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
 	data, err := Marshal(MessageTypeNodeHeartbeat, "msg_01", ts, NodeHeartbeat{NodeID: "a1"})

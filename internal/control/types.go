@@ -20,6 +20,8 @@ const (
 	MessageTypeProviderInventoryReport MessageType = "provider.inventory.report"
 	MessageTypeProviderAuthReport      MessageType = "provider.auth.report"
 	MessageTypeProviderUsageReport     MessageType = "provider.usage.report"
+	MessageTypeAuthSnapshot            MessageType = "auth.snapshot"
+	MessageTypeAuthPush                MessageType = "auth.push"
 	MessageTypeAuthRefreshRequest      MessageType = "auth.refresh.request"
 	MessageTypeAuthRefreshResult       MessageType = "auth.refresh.result"
 	MessageTypeProviderDrain           MessageType = "provider.drain"
@@ -40,6 +42,8 @@ func (t MessageType) Valid() bool {
 		MessageTypeProviderInventoryReport,
 		MessageTypeProviderAuthReport,
 		MessageTypeProviderUsageReport,
+		MessageTypeAuthSnapshot,
+		MessageTypeAuthPush,
 		MessageTypeAuthRefreshRequest,
 		MessageTypeAuthRefreshResult,
 		MessageTypeProviderDrain,
@@ -149,6 +153,27 @@ type ProviderUsageReport struct {
 	ReportedAt         time.Time            `json:"reported_at,omitempty"`
 }
 
+type AuthSnapshot struct {
+	ProviderInstanceID string             `json:"provider_instance_id"`
+	AccountID          string             `json:"account_id,omitempty"`
+	Auth               provider.AuthState `json:"auth"`
+	Fingerprint        string             `json:"fingerprint,omitempty"`
+	Source             string             `json:"source,omitempty"`
+	ObservedAt         time.Time          `json:"observed_at,omitempty"`
+	ReportedAt         time.Time          `json:"reported_at,omitempty"`
+}
+
+type AuthPush struct {
+	PushID             string             `json:"push_id"`
+	ProviderInstanceID string             `json:"provider_instance_id"`
+	AccountID          string             `json:"account_id,omitempty"`
+	Auth               provider.AuthState `json:"auth"`
+	Fingerprint        string             `json:"fingerprint,omitempty"`
+	Source             string             `json:"source,omitempty"`
+	Reason             string             `json:"reason,omitempty"`
+	DeadlineAt         time.Time          `json:"deadline_at,omitempty"`
+}
+
 type AuthRefreshRequest struct {
 	RefreshID          string    `json:"refresh_id"`
 	ProviderInstanceID string    `json:"provider_instance_id"`
@@ -254,6 +279,8 @@ type ProviderHeartbeatPayload = ProviderHeartbeat
 type ProviderInventoryReportPayload = ProviderInventoryReport
 type ProviderAuthReportPayload = ProviderAuthReport
 type ProviderUsageReportPayload = ProviderUsageReport
+type AuthSnapshotPayload = AuthSnapshot
+type AuthPushPayload = AuthPush
 type AuthRefreshRequestPayload = AuthRefreshRequest
 type AuthRefreshResultPayload = AuthRefreshResult
 type ProviderDrainPayload = ProviderDrain

@@ -130,6 +130,34 @@ func (e *Engine) SendProviderDrain(ctx context.Context, request control.Provider
 	return session.write(control.MessageTypeProviderDrain, id, request)
 }
 
+func (e *Engine) SendAuthPush(ctx context.Context, push control.AuthPush) error {
+	if e == nil || e.registry == nil {
+		return ErrRouterNotReady
+	}
+	push.ProviderInstanceID = strings.TrimSpace(push.ProviderInstanceID)
+	if push.ProviderInstanceID == "" {
+		return control.ErrInvalidPayload
+	}
+	if strings.TrimSpace(push.PushID) == "" {
+		push.PushID = newControlRequestID("auth_push", push.ProviderInstanceID)
+	}
+	if push.DeadlineAt.IsZero() {
+		if deadline, ok := ctx.Deadline(); ok {
+			push.DeadlineAt = deadline.UTC()
+		}
+	}
+	if _, ok := e.registry.Get(push.ProviderInstanceID); !ok {
+		return provider.ErrProviderNotFound
+	}
+	e.controlMu.RLock()
+	session := e.controlSessions[push.ProviderInstanceID]
+	e.controlMu.RUnlock()
+	if session == nil {
+		return fmt.Errorf("%w: %s", ErrProviderControlSessionNotFound, push.ProviderInstanceID)
+	}
+	return session.write(control.MessageTypeAuthPush, push.PushID, push)
+}
+
 func (e *Engine) bindProviderControlSession(providerInstanceID string, session *controlSession) {
 	if e == nil || session == nil || strings.TrimSpace(providerInstanceID) == "" {
 		return

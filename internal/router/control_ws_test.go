@@ -128,6 +128,42 @@ func TestControlWSProviderAuthReportUpdatesAuth(t *testing.T) {
 	t.Fatalf("registered provider missing")
 }
 
+func TestControlWSAuthSnapshotUpdatesAuth(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+	defer conn.Close()
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+
+	writeControlEnvelope(t, conn, control.MessageTypeAuthSnapshot, "msg_auth_snapshot", control.AuthSnapshot{
+		ProviderInstanceID: "codex-control-a1",
+		AccountID:          "acct-1",
+		Auth: provider.AuthState{
+			Status:      provider.AuthRefreshSoon,
+			Account:     provider.Account{ID: "acct-1", Display: "control@example.test"},
+			Refreshable: true,
+		},
+		Source:     "container",
+		ObservedAt: time.Now().UTC(),
+	})
+	readControlAck(t, conn, "msg_auth_snapshot")
+
+	for _, registration := range engine.Providers() {
+		if registration.Identity.ProviderInstanceID == "codex-control-a1" {
+			if registration.Auth.Status != provider.AuthRefreshSoon || registration.Auth.SelectedSource != "container" {
+				t.Fatalf("expected auth snapshot update, got %#v", registration.Auth)
+			}
+			if registration.Auth.Account.ID != "acct-1" {
+				t.Fatalf("expected snapshot account, got %#v", registration.Auth.Account)
+			}
+			return
+		}
+	}
+	t.Fatalf("registered provider missing")
+}
+
 func TestControlWSProviderUsageReportUpdatesUsage(t *testing.T) {
 	engine, _ := testEngine(t)
 	conn := dialControlWS(t, engine)

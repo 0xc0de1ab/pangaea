@@ -140,6 +140,10 @@ func DecodeKnownPayload(env Envelope) (any, error) {
 		return Decode[ProviderAuthReport](env, MessageTypeProviderAuthReport)
 	case MessageTypeProviderUsageReport:
 		return Decode[ProviderUsageReport](env, MessageTypeProviderUsageReport)
+	case MessageTypeAuthSnapshot:
+		return Decode[AuthSnapshot](env, MessageTypeAuthSnapshot)
+	case MessageTypeAuthPush:
+		return Decode[AuthPush](env, MessageTypeAuthPush)
 	case MessageTypeAuthRefreshRequest:
 		return Decode[AuthRefreshRequest](env, MessageTypeAuthRefreshRequest)
 	case MessageTypeAuthRefreshResult:

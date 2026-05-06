@@ -430,6 +430,66 @@ func TestRunStaticControlClientHandlesAuthRefreshWithRefresher(t *testing.T) {
 	}
 }
 
+func TestRunStaticControlClientHandlesAuthPush(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	registration, err := sim.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunStaticControlClient(ctx, StaticControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: time.Second,
+			Registration:      registration,
+		})
+	}()
+
+	waitForProvider(t, engine, registration.Identity.ProviderInstanceID)
+	waitForControlSession(t, engine, registration.Identity.ProviderInstanceID)
+	pushCtx, pushCancel := context.WithTimeout(context.Background(), time.Second)
+	defer pushCancel()
+	if err := engine.SendAuthPush(pushCtx, control.AuthPush{
+		PushID:             "push_static",
+		ProviderInstanceID: registration.Identity.ProviderInstanceID,
+		Auth: provider.AuthState{
+			Status:      provider.AuthRefreshSoon,
+			Refreshable: true,
+		},
+		Source: "router",
+		Reason: "test push",
+	}); err != nil {
+		t.Fatalf("send auth push: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, got := range engine.Providers() {
+			if got.Identity.ProviderInstanceID == registration.Identity.ProviderInstanceID &&
+				got.Auth.Status == provider.AuthRefreshSoon &&
+				got.Auth.SelectedSource == "router" {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("static control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("auth push did not update router snapshot")
+}
+
 func TestRunStaticControlClientAutoRefreshesNearExpiry(t *testing.T) {
 	engine := testRouterEngine(t)
 	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
@@ -511,6 +571,20 @@ func waitForProvider(t *testing.T, engine *router.Engine, providerInstanceID str
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("provider %s was not registered", providerInstanceID)
+}
+
+func waitForControlSession(t *testing.T, engine *router.Engine, providerInstanceID string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, session := range engine.ControlSessions() {
+			if session.ProviderInstanceID == providerInstanceID {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("control session for provider %s was not registered", providerInstanceID)
 }
 
 func testRouterEngine(t *testing.T) *router.Engine {
