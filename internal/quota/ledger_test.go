@@ -135,6 +135,25 @@ func TestLedgerSnapshotsReturnsLimitsAndUsage(t *testing.T) {
 	t.Fatalf("primary snapshot missing: %#v", snapshots)
 }
 
+func TestLedgerRestoreSnapshots(t *testing.T) {
+	ledger := NewLedger()
+	scope := Scope{TenantID: "team-a", Model: "gpt-5"}
+	if err := ledger.RestoreSnapshots([]SnapshotRecord{{
+		Scope:     scope,
+		Limit:     Limit{MaxTokens: 100, MaxRequests: 10},
+		Committed: Usage{Tokens: 25, Requests: 2},
+	}}); err != nil {
+		t.Fatalf("restore snapshots: %v", err)
+	}
+	limit, committed, reserved, err := ledger.Snapshot(scope)
+	if err != nil {
+		t.Fatalf("snapshot restored scope: %v", err)
+	}
+	if limit.MaxTokens != 100 || committed.Tokens != 25 || reserved != (Usage{}) {
+		t.Fatalf("unexpected restored snapshot: limit=%#v committed=%#v reserved=%#v", limit, committed, reserved)
+	}
+}
+
 func TestLedgerConcurrentReservationsDoNotOverrunQuota(t *testing.T) {
 	ledger := NewLedger()
 	scope := testScope()

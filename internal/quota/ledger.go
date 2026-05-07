@@ -236,6 +236,39 @@ func (l *Ledger) Snapshots() []SnapshotRecord {
 	return out
 }
 
+func (l *Ledger) RestoreSnapshots(records []SnapshotRecord) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.limits = make(map[Scope]Limit, len(records))
+	l.committed = make(map[Scope]Usage, len(records))
+	l.reserved = make(map[Scope]Usage, len(records))
+	l.reservations = make(map[string]Reservation)
+	for _, record := range records {
+		if err := validateScope(record.Scope); err != nil {
+			return err
+		}
+		if record.Limit.MaxTokens < 0 || record.Limit.MaxRequests < 0 {
+			return fmt.Errorf("%w: negative limit", ErrInvalidRequest)
+		}
+		if err := validateUsage(record.Committed); err != nil {
+			return err
+		}
+		if err := validateUsage(record.Reserved); err != nil {
+			return err
+		}
+		if record.Limit != (Limit{}) {
+			l.limits[record.Scope] = record.Limit
+		}
+		if record.Committed != (Usage{}) {
+			l.committed[record.Scope] = record.Committed
+		}
+		if record.Reserved != (Usage{}) {
+			l.reserved[record.Scope] = record.Reserved
+		}
+	}
+	return nil
+}
+
 func (l *Ledger) canReserveLocked(scope Scope, estimate Usage) error {
 	limit := l.limits[scope]
 	if limit == (Limit{}) {

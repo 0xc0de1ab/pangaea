@@ -8,6 +8,7 @@ type Kind string
 
 const (
 	KindCLIContainer  Kind = "cli-container"
+	KindAppServer     Kind = "app-server"
 	KindAPICompatible Kind = "api-compatible"
 	KindSidecar       Kind = "sidecar-agent"
 	KindSimulator     Kind = "simulator"

@@ -188,6 +188,7 @@ func (e *Engine) UpdateProviderHeartbeat(providerInstanceID string, health provi
 	}
 	if auth.Status != "" {
 		registration.Auth = auth
+		registration.Identity.Account = accountWithFallback(registration.Identity.Account, auth.Account)
 	}
 	if limits != (provider.LimitState{}) {
 		registration.Limits = limits
@@ -204,6 +205,7 @@ func (e *Engine) UpdateProviderAuth(providerInstanceID string, auth provider.Aut
 		return provider.ErrProviderNotFound
 	}
 	registration.Auth = auth
+	registration.Identity.Account = accountWithFallback(registration.Identity.Account, auth.Account)
 	return e.registry.Upsert(registration)
 }
 
@@ -240,6 +242,7 @@ func (e *Engine) UpdateProviderUsage(providerInstanceID string, usage provider.U
 		usage.ObservedAt = reportedAt
 	}
 	identity := registration.Identity
+	identity.Account = accountWithFallback(identity.Account, registration.Auth.Account)
 	snapshot := ProviderUsageSnapshot{
 		ProviderInstanceID: identity.ProviderInstanceID,
 		ProviderID:         identity.ProviderID,

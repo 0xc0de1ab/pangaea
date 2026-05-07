@@ -104,6 +104,41 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 	}
 }
 
+func TestDockerRuntimeCreateAddsBindMounts(t *testing.T) {
+	hostDir := filepath.Join(t.TempDir(), "provider-state")
+	runner := &recordingRunner{outputs: map[string]ExecResult{
+		"create --name pangaea-codex-samtest --label pangaea.provider_id=codex-samtest --label pangaea.provider_instance_id=codex-samtest-a1 --mount type=bind,source=" + hostDir + ",target=/var/lib/pangaea --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test": {ExitCode: 0, Stdout: []byte("container-1\n")},
+	}}
+	rt := &DockerRuntime{Binary: "docker", Runner: runner}
+	spec := ContainerSpec{
+		ProviderID:         "codex-samtest",
+		ProviderInstanceID: "codex-samtest-a1",
+		Name:               "pangaea-codex-samtest",
+		Image:              "pangaea/provider-codex:test",
+		Mounts: []MountSpec{{
+			Type:      "bind",
+			Source:    hostDir,
+			Target:    "/var/lib/pangaea",
+			Directory: true,
+		}},
+		Security: DefaultSecurityProfile(),
+	}
+	spec.Security.WritablePaths = []string{"/run/pangaea", "/tmp", "/work"}
+	id, err := rt.Create(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("create with bind mount: %v", err)
+	}
+	if id != "container-1" {
+		t.Fatalf("container id = %q", id)
+	}
+	if info, err := os.Stat(hostDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected bind source directory to be prepared, info=%#v err=%v", info, err)
+	}
+	if got := joinedCommands(runner.commands); !strings.Contains(got, "--mount type=bind,source="+hostDir+",target=/var/lib/pangaea") {
+		t.Fatalf("missing bind mount in:\n%s", got)
+	}
+}
+
 func TestDockerCopyArchiveAppliesDestinationMetadata(t *testing.T) {
 	hostAuthPath := filepath.Join(t.TempDir(), "auth.json")
 	if err := os.WriteFile(hostAuthPath, []byte(`{"token":"test"}`), 0o644); err != nil {

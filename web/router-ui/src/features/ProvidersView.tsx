@@ -6,15 +6,15 @@ import { Drawer } from "../components/Drawer";
 import { Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
-import { providerID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
-import { accountLabel, age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
+import { providerAccountLabel, providerID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
+import { age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
 import type { ProviderRegistration } from "../lib/types";
 
 export function ProvidersView({ data, queries, search, token, onAction, refresh }: DashboardViewProps) {
   const [selected, setSelected] = useState<ProviderRegistration | null>(null);
   const rows = useMemo(() => {
     return [...data.providers]
-      .sort((a, b) => `${a.identity.service}:${a.identity.host_name}:${accountLabel(a.identity.account)}:${providerID(a)}`.localeCompare(`${b.identity.service}:${b.identity.host_name}:${accountLabel(b.identity.account)}:${providerID(b)}`))
+      .sort((a, b) => `${a.identity.service}:${a.identity.host_name}:${providerAccountLabel(a)}:${providerID(a)}`.localeCompare(`${b.identity.service}:${b.identity.host_name}:${providerAccountLabel(b)}:${providerID(b)}`))
       .filter((provider) => hasText(provider, search));
   }, [data.providers, search]);
   const control = sessionSet(data.controlSessions);
@@ -65,7 +65,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     { id: "service", header: "Service", sortValue: (row) => row.identity.service, cell: (row) => row.identity.service, width: "105px" },
     { id: "kind", header: "Kind", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
     { id: "host", header: "Host", sortValue: (row) => row.identity.host_name, cell: (row) => row.identity.host_name, width: "150px" },
-    { id: "account", header: "Account", sortValue: (row) => accountLabel(row.identity.account), cell: (row) => accountLabel(row.identity.account), width: "170px" },
+    { id: "account", header: "Account", sortValue: (row) => providerAccountLabel(row), cell: (row) => providerAccountLabel(row), width: "190px" },
     { id: "health", header: "Health", sortValue: (row) => row.health?.status, cell: (row) => <StatusBadge value={row.health?.status} title={row.health?.reason} />, width: "128px" },
     { id: "auth", header: "Auth", sortValue: (row) => row.auth?.status, cell: (row) => <StatusBadge value={row.auth?.status} title={row.auth?.last_refresh_error} />, width: "132px" },
     {
@@ -184,6 +184,7 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
           <div className="kv-key">Instance</div><div className="kv-value mono">{provider.identity.provider_instance_id}</div>
           <div className="kv-key">Node</div><div className="kv-value mono">{provider.identity.node_id}</div>
           <div className="kv-key">Host</div><div className="kv-value">{provider.identity.host_name}</div>
+          <div className="kv-key">Account</div><div className="kv-value">{providerAccountLabel(provider)}</div>
           <div className="kv-key">Container</div><div className="kv-value mono">{provider.identity.container_id || ""}</div>
           <div className="kv-key">Registered</div><div className="kv-value">{fmtTime(provider.registered_at)}</div>
         </div>

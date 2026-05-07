@@ -192,7 +192,7 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 			opts.Simulator = true
 		case "api-compatible":
 			opts.APICompatible = true
-		case "cli-container":
+		case "cli-container", "app-server":
 			opts.CLIContainer = true
 		case "sidecar", "sidecar-agent":
 			opts.Sidecar = true
@@ -375,7 +375,7 @@ func buildCLIContainerProvider(ctx context.Context, opts providerShimRunOptions)
 	if adapter == "codex-reverse-http" && isWebSocketURL(opts.UpstreamBaseURL) {
 		return nil, nil, fmt.Errorf("--upstream-adapter reverse-http requires an HTTP-compatible bridge URL, got %q", opts.UpstreamBaseURL)
 	}
-	apiProvider, err := buildCompatibleProvider(opts, provider.KindCLIContainer, auth, extraCaps)
+	apiProvider, err := buildCompatibleProvider(opts, kindForCLIAdapter(adapter), auth, extraCaps)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -437,8 +437,17 @@ func isWebSocketURL(raw string) bool {
 	return strings.HasPrefix(raw, "ws://") || strings.HasPrefix(raw, "wss://")
 }
 
+func kindForCLIAdapter(adapter string) provider.Kind {
+	switch adapter {
+	case "codex-websocket", "codex-reverse-http":
+		return provider.KindAppServer
+	default:
+		return provider.KindCLIContainer
+	}
+}
+
 func buildCodexWebSocketProvider(opts providerShimRunOptions, auth provider.AuthState, extraCapabilities []provider.Capability) (*codexprovider.Provider, error) {
-	registration, err := buildProviderRegistration(opts, provider.KindCLIContainer, auth, extraCapabilities)
+	registration, err := buildProviderRegistration(opts, provider.KindAppServer, auth, extraCapabilities)
 	if err != nil {
 		return nil, err
 	}

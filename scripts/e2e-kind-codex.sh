@@ -12,7 +12,7 @@ router_api_key="${PANGAEA_ROUTER_API_KEY:-kind-router-key}"
 router_peer_token="${PANGAEA_ROUTER_PEER_TOKEN:-kind-peer-token}"
 stream_token_key="${PANGAEA_STREAM_TOKEN_KEY:-kind-stream-token-key}"
 provider_id="${PANGAEA_PROVIDER_ID:-codex-cli}"
-provider_instance_id="${PANGAEA_PROVIDER_INSTANCE_ID:-codex-cli-kind}"
+provider_instance_id="${PANGAEA_PROVIDER_INSTANCE_ID:-codex-cli}"
 codex_model="${PANGAEA_CODEX_MODEL:-gpt-5.5}"
 node_id="${PANGAEA_NODE_ID:-kind-host}"
 host_name="${PANGAEA_HOST_NAME:-$(hostname -s 2>/dev/null || hostname)}"
@@ -21,6 +21,8 @@ work_dir="${PANGAEA_E2E_WORKDIR:-${repo_root}/.tmp/kind-codex-e2e}"
 keep="${PANGAEA_E2E_KEEP:-1}"
 require_route="${PANGAEA_E2E_REQUIRE_ROUTE:-0}"
 invoke="${PANGAEA_E2E_INVOKE:-0}"
+storage_mode="${PANGAEA_E2E_STORAGE_MODE:-persistent}"
+provider_storage_root="${PANGAEA_E2E_PROVIDER_STORAGE_ROOT:-${work_dir}/persistent/providers}"
 success=0
 port_forward_pid=""
 node_agent_pid=""
@@ -157,6 +159,13 @@ require_tool curl
 require_tool go
 
 mkdir -p "${work_dir}"
+case "${storage_mode}" in
+  persistent|ephemeral) ;;
+  *)
+    echo "unsupported PANGAEA_E2E_STORAGE_MODE=${storage_mode}; expected persistent or ephemeral" >&2
+    exit 1
+    ;;
+esac
 auth_path="$(resolve_codex_auth_path)"
 
 if [ "${PANGAEA_E2E_SKIP_BUILD:-0}" != "1" ]; then
@@ -183,6 +192,10 @@ kind load docker-image --name "${cluster}" "${codex_image}"
   --dry-run=client -o yaml | "${kubectl_bin}" apply -f -
 sed "s/namespace: pangaea-e2e/namespace: ${namespace}/g; s/name: pangaea-e2e/name: ${namespace}/g" \
   "${repo_root}/deploy/kind/router.yaml" >"${work_dir}/router.rendered.yaml"
+if [ "${storage_mode}" = "ephemeral" ]; then
+  sed -i 's/value: persistent/value: ephemeral/' "${work_dir}/router.rendered.yaml"
+  perl -0pi -e 's/        - name: router-state\n          hostPath:\n            path: \/var\/lib\/pangaea\/pangaea-router\n            type: DirectoryOrCreate/        - name: router-state\n          emptyDir: {}/' "${work_dir}/router.rendered.yaml"
+fi
 "${kubectl_bin}" apply -f "${work_dir}/router.rendered.yaml"
 "${kubectl_bin}" -n "${namespace}" set image deployment/pangaea-router router="${router_image}"
 "${kubectl_bin}" -n "${namespace}" rollout restart deployment/pangaea-router
@@ -217,6 +230,16 @@ account_hint_line=""
 if [ -n "${account_hint}" ]; then
   account_hint_line="    account_hint: ${account_hint}"
 fi
+storage_block=""
+if [ "${storage_mode}" = "persistent" ]; then
+  mkdir -p "${provider_storage_root}/${provider_instance_id}"
+  storage_block="    storage:
+      mode: persistent
+      host_path: ${provider_storage_root}/${provider_instance_id}"
+else
+  storage_block="    storage:
+      mode: ephemeral"
+fi
 cat >"${node_config}" <<EOF
 version: node-agent/v1
 node:
@@ -227,12 +250,13 @@ runtime:
 providers:
   - id: ${provider_id}
     instance_id: ${provider_instance_id}
-    kind: cli-container
+    kind: app-server
     image: ${codex_image}
     image_pull_policy: never
     host_name: ${host_name}
 ${account_hint_line}
     service: codex
+${storage_block}
     models:
       - id: ${codex_model}
         aliases: [codex-default]
@@ -329,6 +353,8 @@ kind codex e2e is ready
   host name reported: ${host_name}
   auth source copied from: ${auth_path}
   provider container: pangaea-${provider_id}-${provider_instance_id}
+  storage mode: ${storage_mode}
+  provider storage root: ${provider_storage_root}/${provider_instance_id}
   artifacts: ${work_dir}
 EOF
 if truthy "${keep}"; then

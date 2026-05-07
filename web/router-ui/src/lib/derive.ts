@@ -15,9 +15,17 @@ export function providerID(provider: ProviderRegistration) {
   return provider.identity.provider_instance_id;
 }
 
+export function providerAccount(provider: ProviderRegistration) {
+  return provider.identity.account?.display || provider.identity.account?.id ? provider.identity.account : provider.auth?.account;
+}
+
+export function providerAccountLabel(provider: ProviderRegistration) {
+  return accountLabel(providerAccount(provider));
+}
+
 export function serviceHostAccount(provider: ProviderRegistration) {
   const identity = provider.identity;
-  return [identity.service, identity.host_name, accountLabel(identity.account)].filter(Boolean).join(" / ");
+  return [identity.service, identity.host_name, providerAccountLabel(provider)].filter(Boolean).join(" / ");
 }
 
 export function sessionSet(sessions: SessionSnapshot[]) {

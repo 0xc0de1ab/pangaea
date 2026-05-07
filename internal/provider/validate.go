@@ -40,7 +40,7 @@ func (r Registration) Validate() error {
 
 func (k Kind) Valid() bool {
 	switch k {
-	case KindCLIContainer, KindAPICompatible, KindSidecar, KindSimulator:
+	case KindCLIContainer, KindAppServer, KindAPICompatible, KindSidecar, KindSimulator:
 		return true
 	}
 	return false

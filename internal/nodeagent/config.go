@@ -54,6 +54,7 @@ type ProviderSpec struct {
 	Auth            AuthSpec         `json:"auth,omitempty" yaml:"auth,omitempty"`
 	Refresh         RefreshSpec      `json:"refresh,omitempty" yaml:"refresh,omitempty"`
 	Shim            ShimSpec         `json:"shim,omitempty" yaml:"shim,omitempty"`
+	Storage         StorageSpec      `json:"storage,omitempty" yaml:"storage,omitempty"`
 	Resources       ResourceSpec     `json:"resources,omitempty" yaml:"resources,omitempty"`
 	Upstream        UpstreamSpec     `json:"upstream,omitempty" yaml:"upstream,omitempty"`
 }
@@ -95,6 +96,12 @@ type ResourceSpec struct {
 	CPUs      string `json:"cpus,omitempty" yaml:"cpus,omitempty"`
 	Memory    string `json:"memory,omitempty" yaml:"memory,omitempty"`
 	PidsLimit int    `json:"pids_limit,omitempty" yaml:"pids_limit,omitempty"`
+}
+
+type StorageSpec struct {
+	Mode           string   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	HostPath       string   `json:"host_path,omitempty" yaml:"host_path,omitempty"`
+	ContainerPaths []string `json:"container_paths,omitempty" yaml:"container_paths,omitempty"`
 }
 
 type UpstreamSpec struct {
@@ -147,6 +154,13 @@ func applyConfigLoadDefaults(cfg *Config, baseDir string) error {
 				return err
 			}
 			auth.ContainerPath = expanded
+		}
+		if spec.Storage.HostPath != "" {
+			expanded, err := config.ExpandPathFromDir(baseDir, spec.Storage.HostPath)
+			if err != nil {
+				return err
+			}
+			spec.Storage.HostPath = expanded
 		}
 		if spec.Service == provider.ServiceCodex && auth.Mode == "file" {
 			if auth.HostPath == "" {
@@ -280,6 +294,9 @@ func (p ProviderSpec) Validate() error {
 	if err := validateUpstreamAdapter(p.ID, p.Upstream.Adapter); err != nil {
 		return err
 	}
+	if err := p.Storage.Validate(p.ID); err != nil {
+		return err
+	}
 	for _, raw := range []string{p.Refresh.Threshold, p.Refresh.Cooldown, p.Refresh.Timeout} {
 		if raw == "" {
 			continue
@@ -305,6 +322,33 @@ func (p ProviderSpec) validateAPIKeyAuth() error {
 		return fmt.Errorf("%w: provider %q api_key auth copy requires both auth.host_path and auth.container_path", ErrNodeAgentConfig, p.ID)
 	}
 	return fmt.Errorf("%w: provider %q api_key auth requires upstream.api_key, upstream.api_key_file, or auth.host_path copy", ErrNodeAgentConfig, p.ID)
+}
+
+func (s StorageSpec) Validate(providerID string) error {
+	mode := normalizedStorageMode(s.Mode)
+	switch mode {
+	case "", "ephemeral":
+		return nil
+	case "persistent":
+	default:
+		return fmt.Errorf("%w: provider %q unsupported storage.mode %q", ErrNodeAgentConfig, providerID, s.Mode)
+	}
+	if strings.TrimSpace(s.HostPath) == "" {
+		return fmt.Errorf("%w: provider %q storage.host_path is required for persistent storage", ErrNodeAgentConfig, providerID)
+	}
+	for _, containerPath := range s.ContainerPaths {
+		if strings.TrimSpace(containerPath) == "" {
+			return fmt.Errorf("%w: provider %q storage.container_paths must not contain blank entries", ErrNodeAgentConfig, providerID)
+		}
+		if !strings.HasPrefix(strings.TrimSpace(containerPath), "/") {
+			return fmt.Errorf("%w: provider %q storage.container_paths must be absolute", ErrNodeAgentConfig, providerID)
+		}
+	}
+	return nil
+}
+
+func normalizedStorageMode(mode string) string {
+	return strings.ToLower(strings.TrimSpace(mode))
 }
 
 func validateUpstreamAdapter(providerID string, adapter string) error {
@@ -426,7 +470,7 @@ func (c Config) ProviderByID(id string) (ProviderSpec, bool) {
 
 func validProviderKind(kind provider.Kind) bool {
 	switch kind {
-	case provider.KindCLIContainer, provider.KindAPICompatible, provider.KindSidecar, provider.KindSimulator:
+	case provider.KindCLIContainer, provider.KindAppServer, provider.KindAPICompatible, provider.KindSidecar, provider.KindSimulator:
 		return true
 	default:
 		return false

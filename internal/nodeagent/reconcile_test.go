@@ -98,7 +98,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
 		ID:          "codex-samtest",
 		InstanceID:  "codex-samtest-a1",
-		Kind:        provider.KindCLIContainer,
+		Kind:        provider.KindAppServer,
 		Image:       "pangaea/provider-codex:test",
 		AccountHint: "samtest4u@gmail.com",
 		Service:     provider.ServiceCodex,
@@ -156,7 +156,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 		t.Fatalf("missing auth env: %#v", spec.Env)
 	}
 	for key, want := range map[string]string{
-		"PANGAEA_SHIM_MODE":                    "cli-container",
+		"PANGAEA_SHIM_MODE":                    "app-server",
 		"PANGAEA_ACCOUNT_DISPLAY":              "samtest4u@gmail.com",
 		"PANGAEA_UPSTREAM_BASE_URL":            "http://127.0.0.1:8080",
 		"PANGAEA_UPSTREAM_API_KEY_FILE":        "/run/secrets/codex-api-key",
@@ -263,6 +263,50 @@ func TestContainerSpecFromProviderSpecCopiesAPIKeyAuth(t *testing.T) {
 	}
 	if got := spec.Env["PANGAEA_UPSTREAM_DIALECT"]; got != "anthropic" {
 		t.Fatalf("PANGAEA_UPSTREAM_DIALECT = %q, want anthropic", got)
+	}
+}
+
+func TestContainerSpecFromProviderSpecAddsPersistentStorageMounts(t *testing.T) {
+	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
+		ID:         "codex-kind",
+		InstanceID: "codex-kind-a1",
+		Kind:       provider.KindCLIContainer,
+		Image:      "pangaea/provider-codex:kind",
+		Service:    provider.ServiceCodex,
+		Storage: StorageSpec{
+			Mode:     "persistent",
+			HostPath: "/srv/pangaea/runtime/providers/codex-kind-a1",
+		},
+		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("container spec from persistent provider spec: %v", err)
+	}
+	if len(spec.Mounts) != 2 {
+		t.Fatalf("expected two persistent mounts, got %#v", spec.Mounts)
+	}
+	wantMounts := map[string]string{
+		"/var/lib/pangaea": "/srv/pangaea/runtime/providers/codex-kind-a1/var-lib-pangaea",
+		"/work":            "/srv/pangaea/runtime/providers/codex-kind-a1/work",
+	}
+	for _, mount := range spec.Mounts {
+		if mount.Type != "bind" || !mount.Directory {
+			t.Fatalf("unexpected mount: %#v", mount)
+		}
+		if mount.OwnerUID != 10001 || mount.OwnerGID != 10001 || mount.DirectoryMode != 0o700 {
+			t.Fatalf("persistent mount should be prepared for provider uid/gid: %#v", mount)
+		}
+		if want := wantMounts[mount.Target]; mount.Source != want {
+			t.Fatalf("mount source for %s = %q, want %q", mount.Target, mount.Source, want)
+		}
+	}
+	for _, path := range spec.Security.WritablePaths {
+		if path == "/var/lib/pangaea" || path == "/work" {
+			t.Fatalf("persistent mount target should not also be tmpfs writable path: %#v", spec.Security.WritablePaths)
+		}
+	}
+	if spec.Env["PANGAEA_STORAGE_MODE"] != "persistent" || spec.Env["PANGAEA_PROVIDER_STATE_DIR"] != "/var/lib/pangaea" {
+		t.Fatalf("missing persistent storage env: %#v", spec.Env)
 	}
 }
 

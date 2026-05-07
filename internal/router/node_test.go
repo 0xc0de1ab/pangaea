@@ -72,13 +72,14 @@ func TestApplyProviderInventoryPreservesDynamicProviderState(t *testing.T) {
 	existing := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
 	existing.Identity.ContainerID = "container-existing"
 	existing.Health = provider.Health{Status: provider.HealthDegraded, Reason: "upstream rate limited", CheckedAt: time.Now().UTC()}
-	existing.Auth = provider.AuthState{Status: provider.AuthUnavailable, LastRefreshErr: "invalid api key"}
+	existing.Auth = provider.AuthState{Status: provider.AuthUnavailable, Account: provider.Account{ID: "acct-control", Display: "control@example.test"}, LastRefreshErr: "invalid api key"}
 	existing.Limits = provider.LimitState{QueueDepth: 3}
 	if err := engine.UpsertProvider(existing); err != nil {
 		t.Fatalf("upsert existing provider: %v", err)
 	}
 
 	incoming := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	incoming.Identity.Account = provider.Account{}
 	incoming.Health = provider.Health{Status: provider.HealthUnknown, CheckedAt: time.Now().UTC()}
 	incoming.Auth = provider.AuthState{Status: provider.AuthUnknown}
 	incoming.Limits = provider.LimitState{}
@@ -102,10 +103,34 @@ func TestApplyProviderInventoryPreservesDynamicProviderState(t *testing.T) {
 	if got.Auth.Status != provider.AuthUnavailable || got.Auth.LastRefreshErr != "invalid api key" {
 		t.Fatalf("dynamic auth was not preserved: %#v", got.Auth)
 	}
+	if got.Identity.Account.Display != "control@example.test" || got.Auth.Account.Display != "control@example.test" {
+		t.Fatalf("account identity was not preserved: identity=%#v auth=%#v", got.Identity.Account, got.Auth.Account)
+	}
 	if got.Limits.QueueDepth != 3 || got.Identity.ContainerID != "container-existing" {
 		t.Fatalf("dynamic limits/container id were not preserved: limits=%#v identity=%#v", got.Limits, got.Identity)
 	}
 	if len(got.Models) != 1 || got.Models[0].ID != "gpt-5-codex-updated" {
 		t.Fatalf("inventory metadata was not applied: %#v", got.Models)
+	}
+}
+
+func TestUpdateProviderAuthBackfillsIdentityAccount(t *testing.T) {
+	engine, _ := testEngine(t)
+	reg := registration("codex-control-a1", "codex-cli", "", 10, 0)
+	reg.Identity.Account = provider.Account{}
+	if err := engine.UpsertProvider(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+
+	account := provider.Account{ID: "acct-control", Display: "control@example.test"}
+	if err := engine.UpdateProviderAuth(reg.Identity.ProviderInstanceID, provider.AuthState{Status: provider.AuthHealthy, Account: account}); err != nil {
+		t.Fatalf("update provider auth: %v", err)
+	}
+	got, ok := engine.registry.Get(reg.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("provider not found after auth update")
+	}
+	if got.Identity.Account != account {
+		t.Fatalf("identity account was not backfilled: %#v", got.Identity.Account)
 	}
 }

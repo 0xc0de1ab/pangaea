@@ -22,7 +22,7 @@ runtime:
   version: 26.1.0
 providers:
   - id: codex-samtest
-    kind: cli-container
+    kind: app-server
     image: pangaea/provider-codex:2026.05.1
     account_hint: samtest4u@gmail.com
     service: codex
@@ -75,7 +75,7 @@ providers:
 		t.Fatalf("provider auth host paths must remain distinct: %#v", cfg.Providers)
 	}
 	registration := cfg.Providers[0].Registration(cfg.Node.ID, cfg.Node.HostName, nowForTest())
-	if registration.Identity.HostName != "snowbox" || registration.Identity.Service != provider.ServiceCodex {
+	if registration.Identity.HostName != "snowbox" || registration.Identity.Service != provider.ServiceCodex || registration.Identity.Kind != provider.KindAppServer {
 		t.Fatalf("unexpected registration: %#v", registration)
 	}
 	if !registration.Auth.Refreshable {
@@ -265,6 +265,50 @@ providers:
 	}
 	if got := cfg.Providers[0].ImagePullPolicy; got != "never" {
 		t.Fatalf("image_pull_policy = %q, want never", got)
+	}
+}
+
+func TestParseConfigYAMLAcceptsPersistentProviderStorage(t *testing.T) {
+	cfg, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: codex-kind
+    kind: cli-container
+    image: pangaea/provider-codex:kind
+    service: codex
+    storage:
+      mode: persistent
+      host_path: /srv/pangaea/runtime/providers/codex-kind
+      container_paths: [/var/lib/pangaea, /work]
+    shim:
+      capabilities: [api.openai.chat]
+`))
+	if err != nil {
+		t.Fatalf("parse persistent storage config: %v", err)
+	}
+	if got := cfg.Providers[0].Storage.Mode; got != "persistent" {
+		t.Fatalf("storage mode = %q, want persistent", got)
+	}
+}
+
+func TestParseConfigYAMLRejectsPersistentProviderStorageWithoutHostPath(t *testing.T) {
+	_, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: codex-kind
+    kind: cli-container
+    image: pangaea/provider-codex:kind
+    service: codex
+    storage:
+      mode: persistent
+    shim:
+      capabilities: [api.openai.chat]
+`))
+	if err == nil {
+		t.Fatalf("expected missing persistent storage host_path error")
+	}
+	if !strings.Contains(err.Error(), "storage.host_path") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

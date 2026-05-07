@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/common"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
@@ -24,6 +28,9 @@ type routerServeOptions struct {
 	UserID         string
 	StreamTokenKey string
 	PeerToken      string
+	StateDir       string
+	StateMode      string
+	StateFlush     time.Duration
 }
 
 func newRouterCmd() *cobra.Command {
@@ -59,6 +66,9 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.UserID, "user-id", "dev", "user id assigned to --api-key")
 	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
 	cmd.Flags().StringVar(&opts.PeerToken, "peer-token", "", "optional bearer token required for node-agent and provider-shim websocket connections")
+	cmd.Flags().StringVar(&opts.StateDir, "state-dir", "", "optional directory for router state snapshots")
+	cmd.Flags().StringVar(&opts.StateMode, "state-mode", "persistent", "router state mode (persistent|ephemeral)")
+	cmd.Flags().DurationVar(&opts.StateFlush, "state-flush-interval", 10*time.Second, "interval for writing router state snapshots")
 	return cmd
 }
 
@@ -66,10 +76,17 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	opts.APIKey = stringEnvDefault(opts.APIKey, "PANGAEA_ROUTER_API_KEY")
 	opts.PeerToken = stringEnvDefault(opts.PeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
 	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
+	opts.StateDir = stringEnvDefault(opts.StateDir, "PANGAEA_ROUTER_STATE_DIR")
+	opts.StateMode = stringEnvDefaultWhenDefault(opts.StateMode, "persistent", "PANGAEA_ROUTER_STATE_MODE")
 	engine, err := buildRouterEngine(opts)
 	if err != nil {
 		return err
 	}
+	if err := restoreRouterState(opts, engine); err != nil {
+		return err
+	}
+	stateStop := startRouterStateWriter(ctx, opts, engine)
+	defer stateStop()
 	dataBroker, err := v2router.NewDataBroker([]byte(opts.StreamTokenKey))
 	if err != nil {
 		return err
@@ -92,12 +109,102 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	}()
 	select {
 	case <-ctx.Done():
+		logRouterStateError("write final router state", writeRouterState(opts, engine))
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), common.ShutdownGrace)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	case err := <-errCh:
+		logRouterStateError("write final router state", writeRouterState(opts, engine))
 		return err
 	}
+}
+
+func routerStateEnabled(opts routerServeOptions) bool {
+	if strings.TrimSpace(opts.StateDir) == "" {
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(opts.StateMode)) != "ephemeral"
+}
+
+func routerStatePath(opts routerServeOptions) string {
+	return filepath.Join(opts.StateDir, "router-state.json")
+}
+
+func restoreRouterState(opts routerServeOptions, engine *v2router.Engine) error {
+	if !routerStateEnabled(opts) || engine == nil {
+		return nil
+	}
+	data, err := os.ReadFile(routerStatePath(opts))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read router state: %w", err)
+	}
+	var snapshot v2router.StateSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return fmt.Errorf("decode router state: %w", err)
+	}
+	engine.RestoreState(snapshot)
+	return nil
+}
+
+func startRouterStateWriter(ctx context.Context, opts routerServeOptions, engine *v2router.Engine) func() {
+	if !routerStateEnabled(opts) || engine == nil {
+		return func() {}
+	}
+	interval := opts.StateFlush
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	writerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-writerCtx.Done():
+				return
+			case <-ticker.C:
+				logRouterStateError("write periodic router state", writeRouterState(opts, engine))
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+		logRouterStateError("write final router state", writeRouterState(opts, engine))
+	}
+}
+
+func logRouterStateError(action string, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: %s: %v\n", action, err)
+	}
+}
+
+func writeRouterState(opts routerServeOptions, engine *v2router.Engine) error {
+	if !routerStateEnabled(opts) || engine == nil {
+		return nil
+	}
+	if err := os.MkdirAll(opts.StateDir, 0o700); err != nil {
+		return fmt.Errorf("create router state dir: %w", err)
+	}
+	data, err := json.MarshalIndent(engine.SnapshotState(time.Now().UTC()), "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode router state: %w", err)
+	}
+	path := routerStatePath(opts)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write router state: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace router state: %w", err)
+	}
+	return nil
 }
 
 func buildRouterEngine(opts routerServeOptions) (*v2router.Engine, error) {

@@ -12,7 +12,8 @@ through Pangaea provider shim.
 
 ## Kind
 
-- `kind`: `cli-container`
+- `kind`: `app-server` when Codex runs through `codex app-server`; use
+  `cli-container` only for direct one-shot CLI execution.
 - `service`: `codex`
 
 ## Capabilities

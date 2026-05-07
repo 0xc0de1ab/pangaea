@@ -84,6 +84,14 @@ func TestProviderShimRunOptionsApplySidecarEnvMode(t *testing.T) {
 	}
 }
 
+func TestProviderShimRunOptionsApplyAppServerEnvMode(t *testing.T) {
+	t.Setenv("PANGAEA_SHIM_MODE", "app-server")
+	opts := applyProviderShimEnvDefaults(providerShimRunOptions{StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
+	if !opts.CLIContainer || opts.Simulator || opts.APICompatible || opts.Sidecar {
+		t.Fatalf("expected app-server env mode to use cli-container runner, got %#v", opts)
+	}
+}
+
 func TestProviderShimRunCommandExists(t *testing.T) {
 	cmd := newProviderShimRunCmd()
 	if cmd.Use != "run" {
@@ -232,6 +240,43 @@ func TestBuildCLIContainerProviderUsesAuthFileAndRefreshCommand(t *testing.T) {
 	}
 	if !hasCapability(registration.Models[0].Capabilities, provider.CapabilityStreamSSE) {
 		t.Fatalf("model capabilities %v missing %s", registration.Models[0].Capabilities, provider.CapabilityStreamSSE)
+	}
+}
+
+func TestBuildCLIContainerProviderReportsCodexWebSocketAsAppServer(t *testing.T) {
+	registerProviderShimTestFormat()
+	dir := t.TempDir()
+	authPath := dir + "/auth.json"
+	if err := os.WriteFile(authPath, []byte("healthy"), 0o600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	apiProvider, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
+		ProviderID:         "codex-cli",
+		ProviderInstanceID: "codex-cli",
+		NodeID:             "node-a1",
+		HostName:           "snowbox",
+		Service:            "codex",
+		UpstreamAdapter:    "websocket",
+		UpstreamBaseURL:    "ws://127.0.0.1:8080",
+		UpstreamDialect:    "openai",
+		Model:              "gpt-5.5",
+		ModelAlias:         "codex-default",
+		AuthPath:           authPath,
+		AuthFormat:         "provider-shim-test-format",
+	})
+	if err != nil {
+		t.Fatalf("build codex websocket provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindAppServer {
+		t.Fatalf("codex websocket kind = %q, want %q", registration.Identity.Kind, provider.KindAppServer)
+	}
+	if registration.Identity.Account.Display != "test@example.test" {
+		t.Fatalf("identity account display = %q, want test@example.test", registration.Identity.Account.Display)
 	}
 }
 

@@ -61,6 +61,7 @@ type ContainerSpec struct {
 	Labels             map[string]string `json:"labels,omitempty"`
 	WorkingDir         string            `json:"working_dir,omitempty"`
 	AuthCopy           *CopySpec         `json:"auth_copy,omitempty"`
+	Mounts             []MountSpec       `json:"mounts,omitempty"`
 	Security           SecurityProfile   `json:"security,omitempty"`
 	Resources          ResourceLimits    `json:"resources,omitempty"`
 }
@@ -71,6 +72,17 @@ type CopySpec struct {
 	OwnerUID      int         `json:"owner_uid,omitempty"`
 	OwnerGID      int         `json:"owner_gid,omitempty"`
 	FileMode      fs.FileMode `json:"file_mode,omitempty"`
+}
+
+type MountSpec struct {
+	Type          string      `json:"type"`
+	Source        string      `json:"source,omitempty"`
+	Target        string      `json:"target"`
+	ReadOnly      bool        `json:"read_only,omitempty"`
+	Directory     bool        `json:"directory,omitempty"`
+	OwnerUID      int         `json:"owner_uid,omitempty"`
+	OwnerGID      int         `json:"owner_gid,omitempty"`
+	DirectoryMode fs.FileMode `json:"directory_mode,omitempty"`
 }
 
 type ResourceLimits struct {

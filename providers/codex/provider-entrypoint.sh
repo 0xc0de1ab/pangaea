@@ -28,6 +28,39 @@ done
 provider_pid=""
 shim_pid=""
 
+wait_for_app_server_ready() {
+  local raw="${PANGAEA_UPSTREAM_BASE_URL:-}"
+  local ready_url=""
+  case "${raw}" in
+    ws://*) ready_url="http://${raw#ws://}/readyz" ;;
+    wss://*) ready_url="https://${raw#wss://}/readyz" ;;
+    *) return 0 ;;
+  esac
+
+  local timeout="${PANGAEA_UPSTREAM_READY_TIMEOUT:-30}"
+  case "${timeout}" in
+    ''|*[!0-9]*) timeout=30 ;;
+  esac
+  local ready_deadline=$((SECONDS + timeout))
+  while true; do
+    if command -v wget >/dev/null 2>&1; then
+      wget -q -O /dev/null "${ready_url}" >/dev/null 2>&1 && return 0
+    else
+      local hostport="${ready_url#http://}"
+      hostport="${hostport#https://}"
+      hostport="${hostport%%/*}"
+      local host="${hostport%:*}"
+      local port="${hostport##*:}"
+      { true >/dev/tcp/"${host}"/"${port}"; } >/dev/null 2>&1 && return 0
+    fi
+    if [ "${SECONDS}" -ge "${ready_deadline}" ]; then
+      echo "provider-entrypoint: app server not ready at ${ready_url}" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 cleanup() {
   if [ -n "${provider_pid}" ] && kill -0 "${provider_pid}" 2>/dev/null; then
     kill "${provider_pid}" 2>/dev/null || true
@@ -43,6 +76,7 @@ trap 'exit 143' INT TERM
 if [ "$#" -gt 0 ]; then
   "$@" &
   provider_pid="$!"
+  wait_for_app_server_ready
 fi
 
 /usr/local/bin/pangaeactl provider-shim run &

@@ -36,6 +36,11 @@ func (spec ContainerSpec) Validate() error {
 			return fmt.Errorf("%w: %w", ErrInvalidContainerSpec, err)
 		}
 	}
+	for _, mount := range spec.Mounts {
+		if err := mount.Validate(); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidContainerSpec, err)
+		}
+	}
 	if err := spec.Resources.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidContainerSpec, err)
 	}
@@ -61,6 +66,30 @@ func (spec CopySpec) Validate() error {
 	}
 	if spec.OwnerGID < 0 {
 		return fmt.Errorf("%w: owner_gid must be non-negative", ErrInvalidCopySpec)
+	}
+	return nil
+}
+
+func (spec MountSpec) Validate() error {
+	mountType := strings.ToLower(strings.TrimSpace(spec.Type))
+	switch mountType {
+	case "bind":
+	default:
+		return fmt.Errorf("mount type %q is unsupported", spec.Type)
+	}
+	if err := validateAbsolutePath("mount.target", spec.Target); err != nil {
+		return err
+	}
+	if mountType == "bind" {
+		if err := validateAbsolutePath("mount.source", spec.Source); err != nil {
+			return err
+		}
+	}
+	if spec.OwnerUID < 0 {
+		return fmt.Errorf("mount.owner_uid must be non-negative")
+	}
+	if spec.OwnerGID < 0 {
+		return fmt.Errorf("mount.owner_gid must be non-negative")
 	}
 	return nil
 }

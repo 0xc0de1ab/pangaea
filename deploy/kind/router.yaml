@@ -20,6 +20,18 @@ spec:
       labels:
         app.kubernetes.io/name: pangaea-router
     spec:
+      initContainers:
+        - name: init-router-state
+          image: alpine:3.22
+          command:
+            - sh
+            - -c
+            - mkdir -p /var/lib/pangaea/router && chown -R 10001:10001 /var/lib/pangaea/router && chmod 0700 /var/lib/pangaea/router
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: router-state
+              mountPath: /var/lib/pangaea/router
       containers:
         - name: router
           image: pangaea/router:kind
@@ -34,6 +46,8 @@ spec:
             - --stream-token-key=$(PANGAEA_STREAM_TOKEN_KEY)
             - --tenant-id=kind
             - --user-id=e2e
+            - --state-dir=/var/lib/pangaea/router
+            - --state-mode=$(PANGAEA_ROUTER_STATE_MODE)
           env:
             - name: PANGAEA_ROUTER_API_KEY
               valueFrom:
@@ -50,6 +64,8 @@ spec:
                 secretKeyRef:
                   name: pangaea-router-secrets
                   key: stream-token-key
+            - name: PANGAEA_ROUTER_STATE_MODE
+              value: persistent
           ports:
             - name: http
               containerPort: 8080
@@ -57,6 +73,8 @@ spec:
             - name: router-policy
               mountPath: /etc/pangaea
               readOnly: true
+            - name: router-state
+              mountPath: /var/lib/pangaea/router
           readinessProbe:
             httpGet:
               path: /healthz
@@ -72,6 +90,10 @@ spec:
         - name: router-policy
           configMap:
             name: pangaea-router-policy
+        - name: router-state
+          hostPath:
+            path: /var/lib/pangaea/pangaea-router
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

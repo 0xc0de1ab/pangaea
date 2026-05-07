@@ -284,6 +284,14 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 			PIDsLimit: spec.Resources.PidsLimit,
 		},
 	}
+	containerSpec.Mounts = persistentStorageMounts(spec)
+	if len(containerSpec.Mounts) > 0 {
+		env["PANGAEA_STORAGE_MODE"] = "persistent"
+		env["PANGAEA_PROVIDER_STATE_DIR"] = "/var/lib/pangaea"
+		containerSpec.Security.WritablePaths = writablePathsWithoutMountTargets(containerSpec.Security.WritablePaths, containerSpec.Mounts)
+	} else if normalizedStorageMode(spec.Storage.Mode) != "" {
+		env["PANGAEA_STORAGE_MODE"] = normalizedStorageMode(spec.Storage.Mode)
+	}
 	if spec.Auth.Mode == "file" || apiKeyAuthCopyConfigured(spec.Auth) {
 		perm, err := spec.Auth.FilePerm()
 		if err != nil {
@@ -323,6 +331,65 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 
 func apiKeyAuthCopyConfigured(auth AuthSpec) bool {
 	return auth.Mode == "api_key" && strings.TrimSpace(auth.HostPath) != "" && strings.TrimSpace(auth.ContainerPath) != ""
+}
+
+func persistentStorageMounts(spec ProviderSpec) []runtime.MountSpec {
+	if normalizedStorageMode(spec.Storage.Mode) != "persistent" {
+		return nil
+	}
+	root := strings.TrimSpace(spec.Storage.HostPath)
+	if root == "" {
+		return nil
+	}
+	paths := spec.Storage.ContainerPaths
+	if len(paths) == 0 {
+		paths = []string{"/var/lib/pangaea", "/work"}
+	}
+	mounts := make([]runtime.MountSpec, 0, len(paths))
+	for _, containerPath := range paths {
+		containerPath = strings.TrimSpace(containerPath)
+		if containerPath == "" {
+			continue
+		}
+		hostPath := filepath.Join(root, storagePathToken(containerPath))
+		mounts = append(mounts, runtime.MountSpec{
+			Type:          "bind",
+			Source:        hostPath,
+			Target:        containerPath,
+			Directory:     true,
+			OwnerUID:      runtime.DefaultSecurityProfile().RunAsUser,
+			OwnerGID:      runtime.DefaultSecurityProfile().RunAsGroup,
+			DirectoryMode: 0o700,
+		})
+	}
+	return mounts
+}
+
+func storagePathToken(containerPath string) string {
+	token := strings.Trim(strings.TrimSpace(containerPath), "/")
+	if token == "" {
+		token = "root"
+	}
+	token = strings.ReplaceAll(token, "/", "-")
+	return sanitizeContainerToken(token)
+}
+
+func writablePathsWithoutMountTargets(paths []string, mounts []runtime.MountSpec) []string {
+	targets := make(map[string]struct{}, len(mounts))
+	for _, mount := range mounts {
+		target := strings.TrimSpace(mount.Target)
+		if target != "" {
+			targets[target] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := targets[strings.TrimSpace(path)]; ok {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 func routerDataURLForProvider(raw string, providerInstanceID string) (string, error) {

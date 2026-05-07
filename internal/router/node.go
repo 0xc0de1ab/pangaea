@@ -153,12 +153,15 @@ func mergeInventoryRegistration(existing provider.Registration, incoming provide
 	if incoming.Identity.ContainerID == "" {
 		incoming.Identity.ContainerID = existing.Identity.ContainerID
 	}
+	incoming.Identity.Account = accountWithFallback(incoming.Identity.Account, existing.Identity.Account)
+	incoming.Identity.Account = accountWithFallback(incoming.Identity.Account, existing.Auth.Account)
 	if incoming.Health.Status == "" || incoming.Health.Status == provider.HealthUnknown {
 		incoming.Health = existing.Health
 	}
 	if incoming.Auth.Status == "" || incoming.Auth.Status == provider.AuthUnknown {
 		incoming.Auth = existing.Auth
 	}
+	incoming.Auth.Account = accountWithFallback(incoming.Auth.Account, incoming.Identity.Account)
 	if incoming.Limits == (provider.LimitState{}) {
 		incoming.Limits = existing.Limits
 	}

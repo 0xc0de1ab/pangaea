@@ -5,8 +5,8 @@ import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { MetricTile } from "../components/MetricTile";
 import { Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
-import { capacityRows, deriveIncidents, failedTraceRate, quotaPressure, quotaPressureLabel } from "../lib/derive";
-import { accountLabel, age, compactNumber, fmtTime, hasText, middleEllipsis, n, scopeLabel } from "../lib/format";
+import { capacityRows, deriveIncidents, failedTraceRate, providerAccountLabel, quotaPressure, quotaPressureLabel } from "../lib/derive";
+import { age, compactNumber, fmtTime, hasText, middleEllipsis, n, scopeLabel } from "../lib/format";
 import type { Incident, ProviderRegistration, QuotaSnapshot, RequestTrace } from "../lib/types";
 
 export function Overview({ data, queries, search }: DashboardViewProps) {
@@ -73,7 +73,7 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
 
   const authColumns: DashboardColumn<ProviderRegistration>[] = [
     { id: "provider", header: "Provider", sortValue: (row) => row.identity.provider_instance_id, cell: (row) => <span className="mono">{middleEllipsis(row.identity.provider_instance_id)}</span> },
-    { id: "scope", header: "Service / Host / Account", sortValue: (row) => `${row.identity.service}:${row.identity.host_name}:${accountLabel(row.identity.account)}`, cell: (row) => [row.identity.service, row.identity.host_name, accountLabel(row.identity.account)].filter(Boolean).join(" / ") },
+    { id: "scope", header: "Service / Host / Account", sortValue: (row) => `${row.identity.service}:${row.identity.host_name}:${providerAccountLabel(row)}`, cell: (row) => [row.identity.service, row.identity.host_name, providerAccountLabel(row)].filter(Boolean).join(" / ") },
     { id: "auth", header: "Auth", sortValue: (row) => row.auth?.status, cell: (row) => <StatusBadge value={row.auth?.status} />, width: "132px" },
     { id: "expires", header: "Expires", sortValue: (row) => row.auth?.expires_at, cell: (row) => fmtTime(row.auth?.expires_at), width: "136px" },
   ];

@@ -83,6 +83,10 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 		args = append(args, "--workdir", spec.WorkingDir)
 	}
 	args = appendResourceArgs(args, spec.Resources)
+	if err := prepareMountSources(spec.Mounts); err != nil {
+		return "", err
+	}
+	args = appendMountArgs(args, spec.Mounts)
 	if len(spec.Entrypoint) > 0 {
 		args = append(args, "--entrypoint", strings.Join(spec.Entrypoint, " "))
 	}
@@ -98,6 +102,64 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 		return "", fmt.Errorf("docker create returned empty container id")
 	}
 	return ContainerID(id), nil
+}
+
+func prepareMountSources(mounts []MountSpec) error {
+	for _, mount := range mounts {
+		if strings.ToLower(strings.TrimSpace(mount.Type)) != "bind" || strings.TrimSpace(mount.Source) == "" {
+			continue
+		}
+		if !mount.Directory {
+			continue
+		}
+		mode := mount.DirectoryMode.Perm()
+		if mode == 0 {
+			mode = 0o700
+		}
+		if err := os.MkdirAll(mount.Source, mode); err != nil {
+			return err
+		}
+		if mount.OwnerUID > 0 || mount.OwnerGID > 0 {
+			uid := mount.OwnerUID
+			if uid <= 0 {
+				uid = -1
+			}
+			gid := mount.OwnerGID
+			if gid <= 0 {
+				gid = -1
+			}
+			if err := os.Chown(mount.Source, uid, gid); err != nil {
+				if !os.IsPermission(err) {
+					return err
+				}
+				// Rootless node-agents cannot chown bind sources for non-root
+				// containers. Limit the fallback to this mount source so the
+				// provider can still bootstrap copied auth/state files.
+				if chmodErr := os.Chmod(mount.Source, 0o777); chmodErr != nil {
+					return chmodErr
+				}
+				continue
+			}
+		}
+		if err := os.Chmod(mount.Source, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func appendMountArgs(args []string, mounts []MountSpec) []string {
+	for _, mount := range mounts {
+		switch strings.ToLower(strings.TrimSpace(mount.Type)) {
+		case "bind":
+			value := "type=bind,source=" + mount.Source + ",target=" + mount.Target
+			if mount.ReadOnly {
+				value += ",readonly"
+			}
+			args = append(args, "--mount", value)
+		}
+	}
+	return args
 }
 
 func isManagedPangaeaLabel(key string) bool {

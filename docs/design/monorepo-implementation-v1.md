@@ -65,7 +65,7 @@ runtime:
   rootless: true
 providers:
   - id: codex-samtest
-    kind: cli-container
+    kind: app-server
     service: codex
     account_hint: samtest4u@gmail.com
     image: pangaea/provider-codex:2026.05.1
