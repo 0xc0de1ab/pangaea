@@ -25,7 +25,34 @@ Likely:
 
 ## Auth
 
-Secret reference/API key.
+MiniMAX uses API-key auth. In isolated mode, copy a host key file into the
+container instead of mounting it:
+
+```yaml
+providers:
+  - id: minimax-anthropic
+    instance_id: minimax-anthropic-a1
+    kind: api-compatible
+    image: pangaea/provider-api-compatible:2026.05.1
+    service: minimax
+    account_hint: minimax-prod
+    models:
+      - id: minimax-m1
+        aliases: [minimax-default]
+        capabilities: [api.anthropic.messages, stream.sse]
+    upstream:
+      base_url: https://api.minimax.io/anthropic
+      compat: anthropic
+      api_key_mode: bearer
+    auth:
+      mode: api_key
+      bootstrap: copy
+      host_path: /srv/pangaea/secrets/minimax.key
+      container_path: /run/pangaea/secrets/minimax.key
+    shim:
+      protocols: [anthropic]
+      capabilities: [api.anthropic.messages, stream.sse, usage.read, models.read, auth.api_key]
+```
 
 ## Bootstrap
 
@@ -39,7 +66,7 @@ Secret reload/key rotation only.
 
 ## Runtime / Local Server
 
-Generic API-compatible shim.
+Generic `pangaea/provider-api-compatible` shim.
 
 ## Models
 

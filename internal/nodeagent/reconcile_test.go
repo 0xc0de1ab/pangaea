@@ -215,6 +215,57 @@ func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T
 	}
 }
 
+func TestContainerSpecFromProviderSpecCopiesAPIKeyAuth(t *testing.T) {
+	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
+		ID:         "glm-api",
+		InstanceID: "glm-api-a1",
+		Kind:       provider.KindAPICompatible,
+		Image:      "pangaea/provider-api-compatible:test",
+		Service:    provider.ServiceGLM,
+		Models: []provider.Model{{
+			ID:      "glm-4.6",
+			Aliases: []string{"glm-default"},
+		}},
+		Auth: AuthSpec{
+			Mode:          "api_key",
+			Bootstrap:     "copy",
+			HostPath:      "/srv/pangaea/secrets/glm.key",
+			ContainerPath: "/run/pangaea/secrets/glm.key",
+			FileMode:      "0600",
+		},
+		Shim: ShimSpec{
+			Protocols:    []string{"anthropic"},
+			Capabilities: []provider.Capability{provider.CapabilityAnthropicMessages, provider.CapabilityAuthAPIKey},
+		},
+		Upstream: UpstreamSpec{
+			BaseURL:    "https://open.bigmodel.cn/api/anthropic",
+			Compat:     "anthropic",
+			APIKeyMode: "bearer",
+		},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("container spec from api key provider spec: %v", err)
+	}
+	if spec.AuthCopy == nil {
+		t.Fatalf("expected api key auth copy")
+	}
+	if spec.AuthCopy.HostPath != "/srv/pangaea/secrets/glm.key" || spec.AuthCopy.ContainerPath != "/run/pangaea/secrets/glm.key" || spec.AuthCopy.FileMode != 0o600 {
+		t.Fatalf("unexpected api key auth copy: %#v", spec.AuthCopy)
+	}
+	if got := spec.Env["PANGAEA_UPSTREAM_API_KEY_FILE"]; got != "/run/pangaea/secrets/glm.key" {
+		t.Fatalf("PANGAEA_UPSTREAM_API_KEY_FILE = %q, want copied key path", got)
+	}
+	if _, ok := spec.Env["PANGAEA_AUTH_PATH"]; ok {
+		t.Fatalf("api_key auth should not expose PANGAEA_AUTH_PATH: %#v", spec.Env)
+	}
+	if got := spec.Env["PANGAEA_AUTH_DIR"]; got != "/run/pangaea/secrets" {
+		t.Fatalf("PANGAEA_AUTH_DIR = %q, want /run/pangaea/secrets", got)
+	}
+	if got := spec.Env["PANGAEA_UPSTREAM_DIALECT"]; got != "anthropic" {
+		t.Fatalf("PANGAEA_UPSTREAM_DIALECT = %q, want anthropic", got)
+	}
+}
+
 func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T) {
 	uid := 10001
 	rt := &fakeContainerRuntime{stats: runtime.Stats{CPUPercent: 12.5, MemoryBytes: 64 * 1024 * 1024, MemoryPeakBytes: 96 * 1024 * 1024, OOMCount: 1}}

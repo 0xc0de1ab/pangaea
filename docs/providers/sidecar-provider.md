@@ -78,8 +78,13 @@ The first implemented Pangaea sidecar shim path is `--sidecar`
 (`PANGAEA_SHIM_MODE=sidecar-agent`) against a local HTTP-compatible bridge.
 The bridge endpoint is configured with `upstream.base_url` and is invoked
 through the same canonical OpenAI/Anthropic/Gemini request model as API
-providers. Service-specific sidecar protocols can be added behind this
-provider contract later.
+providers. Current wrapper images include:
+
+- `pangaea/provider-github-copilot-sidecar`
+- `pangaea/provider-antigravity-sidecar`
+
+Service-specific sidecar protocols can be added behind this provider contract
+later.
 
 ## Models
 

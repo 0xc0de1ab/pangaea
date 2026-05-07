@@ -33,9 +33,50 @@ Shim must report account and auth status without leaking tokens.
 
 ## Bootstrap
 
-May require:
+Current wrapper image:
 
-- server bundle
+- `pangaea/provider-antigravity-sidecar`
+
+Node-agent passes `shim.command` as the Antigravity relay/local server command.
+The container entrypoint starts that command in the background, starts
+`pangaeactl provider-shim run` in `sidecar-agent` mode, and exits if either
+process exits.
+
+Example:
+
+```yaml
+providers:
+  - id: antigravity-default
+    instance_id: antigravity-a1
+    kind: sidecar-agent
+    image: pangaea/provider-antigravity-sidecar:2026.05.1
+    service: antigravity
+    host_name: snowbox
+    account_hint: operator@example.test
+    models:
+      - id: antigravity-default
+        aliases: [antigravity-default]
+        capabilities: [api.openai.chat, stream.sse]
+    shim:
+      command: [/usr/local/bin/antigravity-compat-proxy, serve, --proxy-addr, 127.0.0.1:8080]
+      protocols: [openai]
+      capabilities:
+        - api.openai.chat
+        - stream.sse
+        - usage.read
+        - models.read
+        - provider.antigravity.sidecar
+        - agent.tool_use
+        - agent.workspace.read
+        - agent.workspace.write
+    upstream:
+      base_url: http://127.0.0.1:8080
+      compat: openai
+```
+
+Additional bootstrap may require:
+
+- relay/server bundle supplied in the image or bind-free artifact layer
 - local state copy
 - sidecar process launch
 - protocol verification
@@ -50,7 +91,9 @@ Reference implementation:
 
 - `/workspace/antigravity-cli/antigravity-compat-proxy`
 
-Bridge likely uses local server files, state DB, and sidecar protocol.
+The Pangaea repo provides the wrapper/supervisor image. The actual
+Antigravity-compatible relay binary can be supplied by an image extension or
+through the configured `shim.command` path.
 
 ## Models
 

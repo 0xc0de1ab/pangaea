@@ -274,6 +274,9 @@ func (p ProviderSpec) Validate() error {
 	if err := p.Auth.Validate(p.ID); err != nil {
 		return err
 	}
+	if err := p.validateAPIKeyAuth(); err != nil {
+		return err
+	}
 	if err := validateUpstreamAdapter(p.ID, p.Upstream.Adapter); err != nil {
 		return err
 	}
@@ -286,6 +289,22 @@ func (p ProviderSpec) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (p ProviderSpec) validateAPIKeyAuth() error {
+	if p.Auth.Mode != "api_key" {
+		return nil
+	}
+	if strings.TrimSpace(p.Upstream.APIKey) != "" || strings.TrimSpace(p.Upstream.APIKeyFile) != "" {
+		return nil
+	}
+	if strings.TrimSpace(p.Auth.HostPath) != "" && strings.TrimSpace(p.Auth.ContainerPath) != "" {
+		return nil
+	}
+	if strings.TrimSpace(p.Auth.HostPath) != "" || strings.TrimSpace(p.Auth.ContainerPath) != "" {
+		return fmt.Errorf("%w: provider %q api_key auth copy requires both auth.host_path and auth.container_path", ErrNodeAgentConfig, p.ID)
+	}
+	return fmt.Errorf("%w: provider %q api_key auth requires upstream.api_key, upstream.api_key_file, or auth.host_path copy", ErrNodeAgentConfig, p.ID)
 }
 
 func validateUpstreamAdapter(providerID string, adapter string) error {
@@ -322,9 +341,11 @@ func (a AuthSpec) Validate(providerID string) error {
 	switch mode {
 	case "file":
 	case "api_key":
-		return nil
 	default:
 		return fmt.Errorf("%w: provider %q unsupported auth mode %q", ErrNodeAgentConfig, providerID, mode)
+	}
+	if mode == "api_key" && strings.TrimSpace(a.HostPath) == "" && strings.TrimSpace(a.ContainerPath) == "" {
+		return nil
 	}
 	bootstrap := a.Bootstrap
 	if bootstrap == "" {
@@ -334,10 +355,10 @@ func (a AuthSpec) Validate(providerID string) error {
 		return fmt.Errorf("%w: provider %q unsupported auth bootstrap %q", ErrNodeAgentConfig, providerID, bootstrap)
 	}
 	if strings.TrimSpace(a.HostPath) == "" {
-		return fmt.Errorf("%w: provider %q auth.host_path is required for file bootstrap", ErrNodeAgentConfig, providerID)
+		return fmt.Errorf("%w: provider %q auth.host_path is required for %s bootstrap", ErrNodeAgentConfig, providerID, mode)
 	}
 	if strings.TrimSpace(a.ContainerPath) == "" {
-		return fmt.Errorf("%w: provider %q auth.container_path is required for file bootstrap", ErrNodeAgentConfig, providerID)
+		return fmt.Errorf("%w: provider %q auth.container_path is required for %s bootstrap", ErrNodeAgentConfig, providerID, mode)
 	}
 	if _, err := a.FilePerm(); err != nil {
 		return fmt.Errorf("%w: provider %q invalid auth.file_mode: %v", ErrNodeAgentConfig, providerID, err)

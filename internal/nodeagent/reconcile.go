@@ -284,7 +284,7 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 			PIDsLimit: spec.Resources.PidsLimit,
 		},
 	}
-	if spec.Auth.Mode == "file" {
+	if spec.Auth.Mode == "file" || apiKeyAuthCopyConfigured(spec.Auth) {
 		perm, err := spec.Auth.FilePerm()
 		if err != nil {
 			return runtime.ContainerSpec{}, err
@@ -301,16 +301,28 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 			copySpec.OwnerGID = *spec.Auth.OwnerGID
 		}
 		containerSpec.AuthCopy = &copySpec
-		env["PANGAEA_AUTH_PATH"] = spec.Auth.ContainerPath
-		env["PANGAEA_AUTH_DIR"] = filepath.Dir(spec.Auth.ContainerPath)
-		if spec.Auth.Format != "" {
-			env["PANGAEA_AUTH_FORMAT"] = spec.Auth.Format
+		switch spec.Auth.Mode {
+		case "file":
+			env["PANGAEA_AUTH_PATH"] = spec.Auth.ContainerPath
+			env["PANGAEA_AUTH_DIR"] = filepath.Dir(spec.Auth.ContainerPath)
+			if spec.Auth.Format != "" {
+				env["PANGAEA_AUTH_FORMAT"] = spec.Auth.Format
+			}
+		case "api_key":
+			if strings.TrimSpace(env["PANGAEA_UPSTREAM_API_KEY_FILE"]) == "" {
+				env["PANGAEA_UPSTREAM_API_KEY_FILE"] = spec.Auth.ContainerPath
+			}
+			env["PANGAEA_AUTH_DIR"] = filepath.Dir(spec.Auth.ContainerPath)
 		}
 	}
 	if err := containerSpec.Validate(); err != nil {
 		return runtime.ContainerSpec{}, err
 	}
 	return containerSpec, nil
+}
+
+func apiKeyAuthCopyConfigured(auth AuthSpec) bool {
+	return auth.Mode == "api_key" && strings.TrimSpace(auth.HostPath) != "" && strings.TrimSpace(auth.ContainerPath) != ""
 }
 
 func routerDataURLForProvider(raw string, providerInstanceID string) (string, error) {

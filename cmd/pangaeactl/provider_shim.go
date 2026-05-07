@@ -304,7 +304,8 @@ func defaultAuthBootstrapTimeout(value time.Duration) time.Duration {
 
 func buildAPICompatibleProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {
 	account := provider.Account{Display: opts.Account}
-	return buildCompatibleProvider(opts, provider.KindAPICompatible, provider.AuthState{Status: provider.AuthHealthy, Account: account}, nil)
+	extraCaps := []provider.Capability{provider.CapabilityAuthAPIKey}
+	return buildCompatibleProvider(opts, provider.KindAPICompatible, provider.AuthState{Status: provider.AuthHealthy, Account: account}, extraCaps)
 }
 
 func buildSidecarProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {
@@ -560,6 +561,13 @@ func buildProviderRegistrationWithOptions(opts providerShimRunOptions, kind prov
 
 func defaultSidecarCapabilities(service provider.Service) []provider.Capability {
 	switch service {
+	case provider.ServiceAntigravity:
+		return []provider.Capability{
+			provider.CapabilityAntigravitySidecar,
+			provider.CapabilityAgentToolUse,
+			provider.CapabilityAgentWorkspaceRead,
+			provider.CapabilityAgentWorkspaceWrite,
+		}
 	case provider.ServiceGitHubCopilot:
 		return []provider.Capability{
 			provider.CapabilityCodeCompletion,

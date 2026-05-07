@@ -247,19 +247,23 @@ API provider example:
 providers:
   - id: glm-anthropic
     kind: api-compatible
-    image: pangaea/provider-api-shim:2026.05.1
+    image: pangaea/provider-api-compatible:2026.05.1
     service: glm
     upstream:
       base_url: https://api.example.invalid/anthropic
       compat: anthropic
+      api_key_mode: bearer
     auth:
       mode: api_key
-      secret_ref: glm_api_key
+      bootstrap: copy
+      host_path: /srv/pangaea/secrets/glm_api_key
+      container_path: /run/pangaea/secrets/glm_api_key
     shim:
       protocols: [anthropic, openai]
       capabilities:
         - api.anthropic.messages
         - api.openai.chat
+        - auth.api_key
         - usage.read
 ```
 

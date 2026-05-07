@@ -26,9 +26,37 @@ Depends on configured upstream:
 
 ## Auth
 
-API key secret reference.
+GLM uses API-key auth. For isolated containers, configure `auth.mode: api_key`
+with copy bootstrap:
 
-No file bootstrap.
+```yaml
+providers:
+  - id: glm-anthropic
+    instance_id: glm-anthropic-a1
+    kind: api-compatible
+    image: pangaea/provider-api-compatible:2026.05.1
+    service: glm
+    account_hint: glm-prod
+    models:
+      - id: glm-4.6
+        aliases: [glm-default]
+        capabilities: [api.anthropic.messages, stream.sse]
+    upstream:
+      base_url: https://open.bigmodel.cn/api/anthropic
+      compat: anthropic
+      api_key_mode: bearer
+    auth:
+      mode: api_key
+      bootstrap: copy
+      host_path: /srv/pangaea/secrets/glm.key
+      container_path: /run/pangaea/secrets/glm.key
+    shim:
+      protocols: [anthropic]
+      capabilities: [api.anthropic.messages, stream.sse, usage.read, models.read, auth.api_key]
+```
+
+Node-agent copies the key once during container creation and can re-copy it on
+reconcile when `auth.sync.host_to_container: reconcile` is set.
 
 ## Bootstrap
 
@@ -42,7 +70,8 @@ No OAuth refresh. Supports secret reload/key rotation.
 
 ## Runtime / Local Server
 
-Shim acts as egress proxy and compatibility normalizer.
+Shim uses the generic `api-compatible` image and acts as egress proxy plus
+compatibility normalizer.
 
 ## Models
 

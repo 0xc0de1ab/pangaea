@@ -394,6 +394,234 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 	}
 }
 
+func TestE2E_V2APICompatibleProviderShimAnthropicGLMAndMiniMAX(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		var request compat.AnthropicMessagesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		var text string
+		switch request.Model {
+		case "glm-4.6":
+			text = "glm-compatible: ok"
+		case "minimax-m1":
+			text = "minimax-compatible: ok"
+		default:
+			t.Fatalf("unexpected upstream model: %#v", request)
+		}
+		_ = json.NewEncoder(w).Encode(compat.AnthropicMessagesResponse{
+			ID:         "msg-api-compatible-" + request.Model,
+			Type:       "message",
+			Role:       "assistant",
+			Model:      request.Model,
+			Content:    []compat.AnthropicContentBlock{{Type: "text", Text: text}},
+			StopReason: "end_turn",
+			Usage:      compat.AnthropicUsage{InputTokens: 9, OutputTokens: 6},
+		})
+	}))
+	defer upstream.Close()
+
+	tokenKey := []byte("test-v2-api-compatible-anthropic-token-key")
+	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2APICompatibleAnthropicPolicy))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	engine, err := v2router.NewEngine(policy, provider.NewRegistry(), quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	dataBroker, err := v2router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	engine.SetInvoker(dataBroker)
+	server := httptest.NewServer(v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, DataBroker: dataBroker}))
+	defer server.Close()
+
+	glmProvider, err := apiprovider.New(apiprovider.Options{
+		Registration: apiCompatibleAnthropicE2ERegistration(time.Now(), provider.ServiceGLM, "glm-api", "glm-api-0001", "api-host", "glm-api@example.test", "glm-4.6", "glm-default"),
+		BaseURL:      upstream.URL,
+		Dialect:      compat.APIDialectAnthropic,
+		APIKey:       "glm_test_e2e",
+	})
+	if err != nil {
+		t.Fatalf("new GLM api provider: %v", err)
+	}
+	minimaxProvider, err := apiprovider.New(apiprovider.Options{
+		Registration: apiCompatibleAnthropicE2ERegistration(time.Now(), provider.ServiceMiniMAX, "minimax-api", "minimax-api-0001", "api-host", "minimax-api@example.test", "minimax-m1", "minimax-default"),
+		BaseURL:      upstream.URL,
+		Dialect:      compat.APIDialectAnthropic,
+		APIKey:       "minimax_test_e2e",
+	})
+	if err != nil {
+		t.Fatalf("new MiniMAX api provider: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 2)
+	for _, apiProvider := range []*apiprovider.Provider{glmProvider, minimaxProvider} {
+		apiProvider := apiProvider
+		go func() {
+			done <- providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
+				ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
+				HeartbeatInterval: 20 * time.Millisecond,
+				TokenKey:          tokenKey,
+				Provider:          apiProvider,
+			})
+		}()
+	}
+	defer func() {
+		cancel()
+		for i := 0; i < 2; i++ {
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("api-compatible anthropic shim exited with error: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("api-compatible anthropic shim did not stop")
+			}
+		}
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitForV2Provider(t, client, server.URL, "glm-api-0001")
+	waitForV2Provider(t, client, server.URL, "minimax-api-0001")
+	glmResponse := waitForV2AnthropicMessagesModel(t, client, server.URL, "glm-default", "glm provider hello", "req_e2e_v2_glm_api")
+	if len(glmResponse.Content) != 1 || glmResponse.Content[0].Text != "glm-compatible: ok" || glmResponse.Usage.InputTokens+glmResponse.Usage.OutputTokens != 15 {
+		t.Fatalf("unexpected GLM response: %#v", glmResponse)
+	}
+	minimaxResponse := waitForV2AnthropicMessagesModel(t, client, server.URL, "minimax-default", "minimax provider hello", "req_e2e_v2_minimax_api")
+	if len(minimaxResponse.Content) != 1 || minimaxResponse.Content[0].Text != "minimax-compatible: ok" || minimaxResponse.Usage.InputTokens+minimaxResponse.Usage.OutputTokens != 15 {
+		t.Fatalf("unexpected MiniMAX response: %#v", minimaxResponse)
+	}
+	glmUsage := waitForV2ProviderUsage(t, client, server.URL, "glm-api-0001")
+	if glmUsage.HostName != "api-host" || glmUsage.Account.Display != "glm-api@example.test" || glmUsage.Usage.TotalTokens != 15 {
+		t.Fatalf("unexpected GLM usage: %#v", glmUsage)
+	}
+	minimaxUsage := waitForV2ProviderUsage(t, client, server.URL, "minimax-api-0001")
+	if minimaxUsage.HostName != "api-host" || minimaxUsage.Account.Display != "minimax-api@example.test" || minimaxUsage.Usage.TotalTokens != 15 {
+		t.Fatalf("unexpected MiniMAX usage: %#v", minimaxUsage)
+	}
+}
+
+func TestE2E_V2SidecarProviderShimAntigravityAndCopilot(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		var request compat.OpenAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		var text string
+		switch request.Model {
+		case "antigravity-default":
+			text = "antigravity-sidecar: ok"
+		case "github-copilot-default":
+			text = "copilot-sidecar: ok"
+		default:
+			t.Fatalf("unexpected sidecar upstream request: %#v", request)
+		}
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-sidecar-" + request.Model,
+			Object: "chat.completion",
+			Model:  request.Model,
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: text},
+				FinishReason: "stop",
+			}},
+			Usage: &compat.OpenAIUsage{PromptTokens: 8, CompletionTokens: 5, TotalTokens: 13},
+		})
+	}))
+	defer upstream.Close()
+
+	tokenKey := []byte("test-v2-sidecar-compatible-token-key")
+	policy, err := v2router.ParseRoutingPolicyYAML([]byte(routerV2SidecarPolicy))
+	if err != nil {
+		t.Fatalf("parse policy: %v", err)
+	}
+	engine, err := v2router.NewEngine(policy, provider.NewRegistry(), quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	dataBroker, err := v2router.NewDataBroker(tokenKey)
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	engine.SetInvoker(dataBroker)
+	server := httptest.NewServer(v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, DataBroker: dataBroker}))
+	defer server.Close()
+
+	antigravityProvider, err := apiprovider.New(apiprovider.Options{
+		Registration: sidecarE2ERegistration(time.Now(), provider.ServiceAntigravity, "antigravity-sidecar", "antigravity-sidecar-0001", "sidecar-host", "antigravity@example.test", "antigravity-default", "antigravity-default"),
+		BaseURL:      upstream.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new Antigravity sidecar provider: %v", err)
+	}
+	copilotProvider, err := apiprovider.New(apiprovider.Options{
+		Registration: sidecarE2ERegistration(time.Now(), provider.ServiceGitHubCopilot, "github-copilot-sidecar", "github-copilot-sidecar-0001", "sidecar-host", "copilot@example.test", "github-copilot-default", "copilot-default"),
+		BaseURL:      upstream.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new Copilot sidecar provider: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 2)
+	for _, apiProvider := range []*apiprovider.Provider{antigravityProvider, copilotProvider} {
+		apiProvider := apiProvider
+		go func() {
+			done <- providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
+				ControlURL:        httpURLToWS(server.URL) + "/router/v1/control/ws",
+				HeartbeatInterval: 20 * time.Millisecond,
+				TokenKey:          tokenKey,
+				Provider:          apiProvider,
+			})
+		}()
+	}
+	defer func() {
+		cancel()
+		for i := 0; i < 2; i++ {
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("sidecar shim exited with error: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("sidecar shim did not stop")
+			}
+		}
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	waitForV2Provider(t, client, server.URL, "antigravity-sidecar-0001")
+	waitForV2Provider(t, client, server.URL, "github-copilot-sidecar-0001")
+	antigravityResponse := waitForV2OpenAIChatModel(t, client, server.URL, "antigravity-default", "sidecar provider hello", "req_e2e_v2_antigravity_sidecar")
+	if antigravityResponse.Choices[0].Message.Content != "antigravity-sidecar: ok" || antigravityResponse.Usage == nil || antigravityResponse.Usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Antigravity sidecar response: %#v", antigravityResponse)
+	}
+	copilotResponse := waitForV2OpenAIChatModel(t, client, server.URL, "copilot-default", "sidecar provider hello", "req_e2e_v2_copilot_sidecar")
+	if copilotResponse.Choices[0].Message.Content != "copilot-sidecar: ok" || copilotResponse.Usage == nil || copilotResponse.Usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Copilot sidecar response: %#v", copilotResponse)
+	}
+	antigravityUsage := waitForV2ProviderUsage(t, client, server.URL, "antigravity-sidecar-0001")
+	if antigravityUsage.HostName != "sidecar-host" || antigravityUsage.Account.Display != "antigravity@example.test" || antigravityUsage.Usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Antigravity usage: %#v", antigravityUsage)
+	}
+	copilotUsage := waitForV2ProviderUsage(t, client, server.URL, "github-copilot-sidecar-0001")
+	if copilotUsage.HostName != "sidecar-host" || copilotUsage.Account.Display != "copilot@example.test" || copilotUsage.Usage.TotalTokens != 13 {
+		t.Fatalf("unexpected Copilot usage: %#v", copilotUsage)
+	}
+}
+
 func TestE2E_V2APICompatibleProviderShimPropagatesUpstreamRateLimit(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
@@ -979,7 +1207,26 @@ func waitForV2OpenAIChatStreamModel(t *testing.T, client *http.Client, baseURL s
 
 func waitForV2AnthropicMessages(t *testing.T, client *http.Client, baseURL string) compat.AnthropicMessagesResponse {
 	t.Helper()
-	body := []byte(`{"model":"claude-default","max_tokens":64,"messages":[{"role":"user","content":"e2e anthropic"}]}`)
+	return waitForV2AnthropicMessagesModel(t, client, baseURL, "claude-default", "e2e anthropic", "req_e2e_v2_anthropic")
+}
+
+func waitForV2AnthropicMessagesModel(t *testing.T, client *http.Client, baseURL string, model string, content string, requestID string) compat.AnthropicMessagesResponse {
+	t.Helper()
+	rawContent, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("marshal Anthropic content: %v", err)
+	}
+	body, err := json.Marshal(compat.AnthropicMessagesRequest{
+		Model:     model,
+		MaxTokens: 64,
+		Messages: []compat.AnthropicMessage{{
+			Role:    "user",
+			Content: rawContent,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal Anthropic message request: %v", err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -988,7 +1235,7 @@ func waitForV2AnthropicMessages(t *testing.T, client *http.Client, baseURL strin
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("content-type", "application/json")
-		req.Header.Set("x-request-id", "req_e2e_v2_anthropic")
+		req.Header.Set("x-request-id", requestID)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -1355,6 +1602,80 @@ func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
 	}
 }
 
+func apiCompatibleAnthropicE2ERegistration(now time.Time, service provider.Service, providerID string, instanceID string, hostName string, accountDisplay string, modelID string, alias string) provider.Registration {
+	account := provider.Account{ID: "acct-" + providerID, Display: accountDisplay}
+	return provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderID:         providerID,
+			ProviderInstanceID: instanceID,
+			NodeID:             "api-node",
+			HostName:           hostName,
+			Service:            service,
+			Kind:               provider.KindAPICompatible,
+			Account:            account,
+		},
+		Capabilities: []provider.Capability{
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityStreamSSE,
+			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
+			provider.CapabilityAuthAPIKey,
+		},
+		Models: []provider.Model{{
+			ID:           modelID,
+			Aliases:      []string{alias},
+			Capabilities: []provider.Capability{provider.CapabilityAnthropicMessages, provider.CapabilityStreamSSE},
+		}},
+		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
+		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},
+		RegisteredAt: now,
+	}
+}
+
+func sidecarE2ERegistration(now time.Time, service provider.Service, providerID string, instanceID string, hostName string, accountDisplay string, modelID string, alias string) provider.Registration {
+	account := provider.Account{ID: "acct-" + providerID, Display: accountDisplay}
+	capabilities := []provider.Capability{
+		provider.CapabilityOpenAIChat,
+		provider.CapabilityStreamSSE,
+		provider.CapabilityUsageRead,
+		provider.CapabilityModelsRead,
+	}
+	switch service {
+	case provider.ServiceAntigravity:
+		capabilities = append(capabilities,
+			provider.CapabilityAntigravitySidecar,
+			provider.CapabilityAgentToolUse,
+			provider.CapabilityAgentWorkspaceRead,
+			provider.CapabilityAgentWorkspaceWrite,
+		)
+	case provider.ServiceGitHubCopilot:
+		capabilities = append(capabilities,
+			provider.CapabilityCodeCompletion,
+			provider.CapabilityAgentWorkspaceRead,
+		)
+	}
+	return provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderID:         providerID,
+			ProviderInstanceID: instanceID,
+			NodeID:             "sidecar-node",
+			HostName:           hostName,
+			Service:            service,
+			Kind:               provider.KindSidecar,
+			Account:            account,
+		},
+		Capabilities: capabilities,
+		Models: []provider.Model{{
+			ID:           modelID,
+			Aliases:      []string{alias},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+		}},
+		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
+		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account, SelectedSource: "sidecar"},
+		RegisteredAt: now,
+	}
+}
+
 func cliContainerE2ERegistration(now time.Time) provider.Registration {
 	account := provider.Account{ID: "acct-codex-cli", Display: "codex-cli@example.test"}
 	return provider.Registration{
@@ -1544,6 +1865,82 @@ routes:
       - provider: deepseek-api
         account: deepseek-api@example.test
         host_name: api-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
+`
+
+const routerV2APICompatibleAnthropicPolicy = `
+version: routing-policy/v1
+model_aliases:
+  glm-default:
+    canonical_model: glm-4.6
+    required_capabilities:
+      - api.anthropic.messages
+  minimax-default:
+    canonical_model: minimax-m1
+    required_capabilities:
+      - api.anthropic.messages
+routes:
+  - id: glm-anthropic
+    match:
+      models: [glm-default]
+      api_dialects: [anthropic]
+    candidates:
+      - provider: glm-api
+        account: glm-api@example.test
+        host_name: api-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
+  - id: minimax-anthropic
+    match:
+      models: [minimax-default]
+      api_dialects: [anthropic]
+    candidates:
+      - provider: minimax-api
+        account: minimax-api@example.test
+        host_name: api-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
+`
+
+const routerV2SidecarPolicy = `
+version: routing-policy/v1
+model_aliases:
+  antigravity-default:
+    canonical_model: antigravity-default
+    required_capabilities:
+      - api.openai.chat
+  copilot-default:
+    canonical_model: github-copilot-default
+    required_capabilities:
+      - api.openai.chat
+routes:
+  - id: antigravity-openai
+    match:
+      models: [antigravity-default]
+      api_dialects: [openai]
+    candidates:
+      - provider: antigravity-sidecar
+        account: antigravity@example.test
+        host_name: sidecar-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
+  - id: copilot-openai
+    match:
+      models: [copilot-default]
+      api_dialects: [openai]
+    candidates:
+      - provider: github-copilot-sidecar
+        account: copilot@example.test
+        host_name: sidecar-host
         weight: 100
     constraints:
       auth_status: [healthy]

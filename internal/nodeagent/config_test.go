@@ -188,6 +188,62 @@ providers:
 	}
 }
 
+func TestParseConfigYAMLAcceptsAPIKeyAuthCopyProvider(t *testing.T) {
+	cfg, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: glm-api
+    kind: api-compatible
+    service: glm
+    image: pangaea/provider-api-compatible:test
+    models:
+      - id: glm-4.6
+    upstream:
+      base_url: https://open.bigmodel.cn/api/anthropic
+      compat: anthropic
+      api_key_mode: bearer
+    auth:
+      mode: api_key
+      bootstrap: copy
+      host_path: /srv/pangaea/secrets/glm.key
+      container_path: /run/pangaea/secrets/glm.key
+    shim:
+      protocols: [anthropic]
+      capabilities: [api.anthropic.messages, auth.api_key]
+`))
+	if err != nil {
+		t.Fatalf("parse api key copy provider config: %v", err)
+	}
+	if len(cfg.Providers) != 1 || cfg.Providers[0].Auth.HostPath != "/srv/pangaea/secrets/glm.key" || cfg.Providers[0].Auth.ContainerPath != "/run/pangaea/secrets/glm.key" {
+		t.Fatalf("unexpected api key copy provider config: %#v", cfg.Providers)
+	}
+}
+
+func TestParseConfigYAMLRejectsAPIKeyAuthWithoutSource(t *testing.T) {
+	_, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: minimax-api
+    kind: api-compatible
+    service: minimax
+    image: pangaea/provider-api-compatible:test
+    upstream:
+      base_url: https://api.minimax.io/anthropic
+      compat: anthropic
+    auth:
+      mode: api_key
+    shim:
+      protocols: [anthropic]
+      capabilities: [api.anthropic.messages, auth.api_key]
+`))
+	if err == nil {
+		t.Fatalf("expected missing api key source error")
+	}
+	if !strings.Contains(err.Error(), "api_key auth requires") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestParseConfigYAMLAcceptsImagePullPolicyNever(t *testing.T) {
 	cfg, err := ParseConfigYAML([]byte(`
 version: node-agent/v1

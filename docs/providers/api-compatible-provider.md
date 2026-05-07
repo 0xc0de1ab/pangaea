@@ -37,6 +37,7 @@ Depending on upstream:
 ## Auth
 
 API provider auth is secret/API-key based, not file-auth based.
+The current container image is `pangaea/provider-api-compatible`.
 
 Config:
 
@@ -44,19 +45,22 @@ Config:
 providers:
   - id: glm-anthropic
     kind: api-compatible
+    image: pangaea/provider-api-compatible:2026.05.1
     service: glm
     upstream:
       base_url: https://api.example.invalid/anthropic
       compat: anthropic
-      api_key_file: /run/secrets/glm_api_key
       api_key_mode: bearer
     auth:
       mode: api_key
-      secret_ref: glm_api_key
+      bootstrap: copy
+      host_path: /srv/pangaea/secrets/glm_api_key
+      container_path: /run/pangaea/secrets/glm_api_key
 ```
 
-Secrets are loaded by node-agent/shim from approved secret store or local config.
-Raw secrets are never reported to router.
+Node-agent copies the key file into the container before startup and sets
+`PANGAEA_UPSTREAM_API_KEY_FILE` to `auth.container_path` when no explicit
+`upstream.api_key_file` is configured. Raw secrets are never reported to router.
 
 Supported API key placements:
 
@@ -70,11 +74,15 @@ Supported API key placements:
 
 ## Bootstrap
 
-No auth file copy is required.
+API-key providers may bootstrap in either of two modes:
+
+- `upstream.api_key_file`: a container-local path already provided by runtime.
+- `auth.mode: api_key` with `auth.host_path` and `auth.container_path`: node-agent
+  copies the host key file into the container, then shim reads it per request.
 
 Bootstrap validates:
 
-- secret reference exists
+- API key source exists
 - upstream base URL is allowed
 - model discovery or configured model list works
 - provider shim can reach upstream
