@@ -90,6 +90,56 @@ func TestRoutingPolicyEvaluateRejectsMissingCapability(t *testing.T) {
 	}
 }
 
+func TestRoutingPolicyEvaluateRoutesSameProviderAcrossDialects(t *testing.T) {
+	policy := RoutingPolicy{
+		Version: RoutingPolicyVersion,
+		ModelAliases: map[string]ModelAlias{
+			"codex-default": {CanonicalModel: "gpt-5.5"},
+		},
+		Routes: []Route{
+			{
+				ID:          "codex-openai",
+				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
+				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
+			},
+			{
+				ID:          "codex-anthropic",
+				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectAnthropic}},
+				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityAnthropicMessages}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
+			},
+			{
+				ID:          "codex-gemini",
+				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectGemini}},
+				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
+			},
+		},
+	}
+	reg := registration("codex-cli", "codex-cli", "samtest4u@gmail.com", 100, 0)
+	reg.Capabilities = []provider.Capability{
+		provider.CapabilityOpenAIChat,
+		provider.CapabilityAnthropicMessages,
+		provider.CapabilityGeminiGenerateContent,
+		provider.CapabilityStreamSSE,
+	}
+
+	for _, tc := range []struct {
+		dialect compat.APIDialect
+		routeID string
+	}{
+		{dialect: compat.APIDialectOpenAI, routeID: "codex-openai"},
+		{dialect: compat.APIDialectAnthropic, routeID: "codex-anthropic"},
+		{dialect: compat.APIDialectGemini, routeID: "codex-gemini"},
+	} {
+		decision := policy.Evaluate(RouteRequest{Model: "codex-default", APIDialect: tc.dialect, Stream: true}, []provider.Registration{reg})
+		if !decision.Allowed || decision.RouteID != tc.routeID || decision.Selected != "codex-cli" {
+			t.Fatalf("dialect %s decision = %#v, want route %s selected codex-cli", tc.dialect, decision, tc.routeID)
+		}
+	}
+}
+
 func TestRoutingPolicyEvaluateFiltersQueueDepth(t *testing.T) {
 	policy := validPolicy()
 	registrations := []provider.Registration{

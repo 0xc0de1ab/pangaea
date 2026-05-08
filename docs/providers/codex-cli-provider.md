@@ -102,6 +102,25 @@ Preferred:
 Pangaea shim adapter selection:
 
 ```yaml
+models:
+  - id: gpt-5.5
+    aliases: [codex-default]
+    capabilities:
+      - api.openai.chat
+      - api.anthropic.messages
+      - api.gemini.generateContent
+      - stream.sse
+shim:
+  protocols: [openai, anthropic, gemini]
+  capabilities:
+    - api.openai.chat
+    - api.anthropic.messages
+    - api.gemini.generateContent
+    - stream.sse
+    - usage.read
+    - models.read
+    - auth.file
+    - auth.refresh.oneshot
 upstream:
   adapter: websocket
   base_url: ws://127.0.0.1:8080
@@ -109,9 +128,11 @@ upstream:
 ```
 
 `adapter: websocket` makes the provider shim speak Codex AppServer JSON-RPC
-directly. `adapter: reverse-http` keeps the generic HTTP-compatible provider
-path and expects `base_url` to point at a local OpenAI/Anthropic/Gemini
-compatibility bridge.
+directly. The AppServer remains the upstream transport, while public
+OpenAI/Anthropic/Gemini requests are decoded to Pangaea canonical IR and encoded
+back to the requested public dialect at the router boundary. `adapter:
+reverse-http` keeps the generic HTTP-compatible provider path and expects
+`base_url` to point at a local OpenAI/Anthropic/Gemini compatibility bridge.
 
 Fallback:
 

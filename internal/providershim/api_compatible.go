@@ -3,6 +3,8 @@ package providershim
 import (
 	"context"
 	"fmt"
+	"os"
+	"reflect"
 	"sync"
 	"time"
 
@@ -50,8 +52,6 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 			return err
 		}
 	}
-
-	eg, ctx := errgroup.WithContext(ctx)
 	var dynamicHealth healthReporter
 	if reporter, ok := any(opts.Provider).(healthReporter); ok {
 		dynamicHealth = reporter
@@ -62,7 +62,38 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 			dynamicAuth = reporter
 		}
 	}
+
+	backoff := time.Second
+	for {
+		err := runAPICompatibleShimSession(ctx, opts, registration, dataURL, dynamicHealth, dynamicAuth)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err == nil {
+			return nil
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "provider shim session disconnected: %v; reconnecting in %s\n", err, backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		if backoff < 10*time.Second {
+			backoff *= 2
+			if backoff > 10*time.Second {
+				backoff = 10 * time.Second
+			}
+		}
+	}
+}
+
+func runAPICompatibleShimSession(ctx context.Context, opts APICompatibleShimOptions, registration provider.Registration, dataURL string, dynamicHealth healthReporter, dynamicAuth authReporter) error {
+	eg, ctx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
+		authSnapshotReporter, _ := opts.Provider.(authSnapshotReporter)
+		authPushApplier, _ := opts.Provider.(authPushApplier)
 		return RunStaticControlClient(ctx, StaticControlClientOptions{
 			ControlURL:           opts.ControlURL,
 			PeerToken:            opts.PeerToken,
@@ -72,6 +103,8 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 			HealthReporter:       dynamicHealth,
 			AuthReporter:         dynamicAuth,
 			ModelReporter:        opts.Provider,
+			AuthSnapshotReporter: authSnapshotReporter,
+			AuthPushApplier:      authPushApplier,
 			AuthRefresher:        opts.AuthRefresher,
 			AutoRefreshThreshold: opts.AutoRefreshThreshold,
 			AutoRefreshCooldown:  opts.AutoRefreshCooldown,
@@ -97,6 +130,8 @@ type StaticControlClientOptions struct {
 	HealthReporter       healthReporter
 	AuthReporter         authReporter
 	ModelReporter        modelReporter
+	AuthSnapshotReporter authSnapshotReporter
+	AuthPushApplier      authPushApplier
 	AuthRefresher        AuthRefresher
 	AutoRefreshThreshold time.Duration
 	AutoRefreshCooldown  time.Duration
@@ -116,6 +151,21 @@ type authReporter interface {
 
 type modelReporter interface {
 	Models(context.Context) ([]provider.Model, error)
+}
+
+type AuthSnapshotReport struct {
+	Raw         []byte
+	Fingerprint string
+	Filename    string
+	Format      string
+}
+
+type authSnapshotReporter interface {
+	AuthSnapshot(context.Context) (AuthSnapshotReport, error)
+}
+
+type authPushApplier interface {
+	ApplyAuthPush(context.Context, control.AuthPush, provider.Registration) (provider.AuthState, error)
 }
 
 func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions) error {
@@ -145,7 +195,7 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 	if err := writeStaticInventoryReport(ctx, client, state, "provider_inventory_initial"); err != nil {
 		return err
 	}
-	if err := writeStaticAuthReport(ctx, client, state, "provider_auth_initial"); err != nil {
+	if err := writeStaticAuthReport(ctx, client, state, opts.AuthSnapshotReporter, "provider_auth_initial"); err != nil {
 		return err
 	}
 	if err := writeStaticUsageReport(ctx, client, state, opts.UsageReporter, "provider_usage_initial"); err != nil {
@@ -164,7 +214,7 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 			}
 			return err
 		case env := <-client.incoming:
-			if err := handleStaticControlRequest(ctx, client, state, opts.AuthRefresher, env); err != nil {
+			if err := handleStaticControlRequest(ctx, client, state, opts.AuthRefresher, opts.AuthSnapshotReporter, opts.AuthPushApplier, env); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
@@ -191,7 +241,7 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 				}
 				return err
 			}
-			if err := maybeStaticAutoAuthRefresh(ctx, client, state, opts.AuthRefresher, opts.AutoRefreshThreshold, opts.AutoRefreshCooldown); err != nil {
+			if err := maybeStaticAutoAuthRefresh(ctx, client, state, opts.AuthRefresher, opts.AuthSnapshotReporter, opts.AutoRefreshThreshold, opts.AutoRefreshCooldown); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
@@ -287,7 +337,9 @@ func refreshStaticModels(ctx context.Context, state *staticControlState, reporte
 	if state == nil || reporter == nil {
 		return false
 	}
-	if len(state.registrationSnapshot().Models) > 0 {
+	registration := state.registrationSnapshot()
+	current := registration.Models
+	if len(current) > 0 && !shouldAugmentConfiguredModels(registration) {
 		return false
 	}
 	if _, ok := ctx.Deadline(); !ok && defaultModelDiscoveryTimeout > 0 {
@@ -299,8 +351,100 @@ func refreshStaticModels(ctx context.Context, state *staticControlState, reporte
 	if err != nil || len(models) == 0 {
 		return false
 	}
-	state.setModels(models)
+	merged := mergeDiscoveredModels(current, models)
+	if reflect.DeepEqual(current, merged) {
+		return false
+	}
+	state.setModels(merged)
 	return true
+}
+
+func shouldAugmentConfiguredModels(registration provider.Registration) bool {
+	return registration.Identity.Kind == provider.KindAppServer || registration.Identity.Kind == provider.KindSidecar
+}
+
+func mergeDiscoveredModels(current []provider.Model, discovered []provider.Model) []provider.Model {
+	out := cloneProviderModels(current)
+	index := make(map[string]int, len(out))
+	for i, model := range out {
+		index[model.ID] = i
+	}
+	for _, model := range discovered {
+		if model.ID == "" {
+			continue
+		}
+		if i, ok := index[model.ID]; ok {
+			out[i] = mergeDiscoveredModel(out[i], model)
+			continue
+		}
+		index[model.ID] = len(out)
+		out = append(out, cloneProviderModels([]provider.Model{model})[0])
+	}
+	return out
+}
+
+func mergeDiscoveredModel(current provider.Model, discovered provider.Model) provider.Model {
+	current.Aliases = mergeStrings(current.Aliases, discovered.Aliases)
+	current.Capabilities = mergeProviderCapabilities(current.Capabilities, discovered.Capabilities)
+	if current.ContextTokens == 0 {
+		current.ContextTokens = discovered.ContextTokens
+	}
+	if current.MaxContextTokens == 0 {
+		current.MaxContextTokens = discovered.MaxContextTokens
+	}
+	return current
+}
+
+func mergeStrings(current []string, discovered []string) []string {
+	if len(current) == 0 {
+		return append([]string(nil), discovered...)
+	}
+	seen := make(map[string]struct{}, len(current)+len(discovered))
+	out := make([]string, 0, len(current)+len(discovered))
+	for _, value := range current {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, value := range discovered {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func mergeProviderCapabilities(current []provider.Capability, discovered []provider.Capability) []provider.Capability {
+	if len(current) == 0 {
+		return append([]provider.Capability(nil), discovered...)
+	}
+	seen := make(map[provider.Capability]struct{}, len(current)+len(discovered))
+	out := make([]provider.Capability, 0, len(current)+len(discovered))
+	for _, capability := range current {
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	for _, capability := range discovered {
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	return out
 }
 
 func writeStaticInventoryReport(ctx context.Context, client *controlClientConn, state *staticControlState, id string) error {
@@ -315,16 +459,25 @@ func writeStaticInventoryReport(ctx context.Context, client *controlClientConn, 
 	})
 }
 
-func writeStaticAuthReport(ctx context.Context, client *controlClientConn, state *staticControlState, id string) error {
+func writeStaticAuthReport(ctx context.Context, client *controlClientConn, state *staticControlState, reporter authSnapshotReporter, id string) error {
 	registration := state.registrationSnapshot()
 	now := time.Now().UTC()
-	return client.sendAndWaitAck(ctx, control.MessageTypeAuthSnapshot, id, control.AuthSnapshot{
+	snapshot := control.AuthSnapshot{
 		ProviderInstanceID: registration.Identity.ProviderInstanceID,
 		Auth:               registration.Auth,
 		Source:             registration.Auth.SelectedSource,
 		ObservedAt:         now,
 		ReportedAt:         now,
-	})
+	}
+	if reporter != nil {
+		if report, err := reporter.AuthSnapshot(ctx); err == nil {
+			snapshot.Raw = append([]byte(nil), report.Raw...)
+			snapshot.Fingerprint = report.Fingerprint
+			snapshot.Filename = report.Filename
+			snapshot.Format = report.Format
+		}
+	}
+	return client.sendAndWaitAck(ctx, control.MessageTypeAuthSnapshot, id, snapshot)
 }
 
 func writeStaticHeartbeat(ctx context.Context, client *controlClientConn, state *staticControlState, healthReporter healthReporter, authReporter authReporter, id string) error {
@@ -364,7 +517,7 @@ func writeStaticUsageReport(ctx context.Context, client *controlClientConn, stat
 	})
 }
 
-func handleStaticControlRequest(ctx context.Context, client *controlClientConn, state *staticControlState, refresher AuthRefresher, env control.Envelope) error {
+func handleStaticControlRequest(ctx context.Context, client *controlClientConn, state *staticControlState, refresher AuthRefresher, reporter authSnapshotReporter, pushApplier authPushApplier, env control.Envelope) error {
 	switch env.Type {
 	case control.MessageTypeProviderDrain:
 		request, err := control.Decode[control.ProviderDrain](env, control.MessageTypeProviderDrain)
@@ -385,7 +538,10 @@ func handleStaticControlRequest(ctx context.Context, client *controlClientConn, 
 			return err
 		}
 		result := executeStaticAuthRefresh(ctx, state, refresher, request)
-		return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
+		if err := client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result); err != nil {
+			return err
+		}
+		return writeStaticAuthReport(ctx, client, state, reporter, "auth_snapshot_refresh_"+time.Now().UTC().Format("20060102150405.000000000"))
 	case control.MessageTypeAuthPush:
 		push, err := control.Decode[control.AuthPush](env, control.MessageTypeAuthPush)
 		if err != nil {
@@ -395,7 +551,17 @@ func handleStaticControlRequest(ctx context.Context, client *controlClientConn, 
 		if push.ProviderInstanceID != registration.Identity.ProviderInstanceID {
 			return fmt.Errorf("%w: auth push provider_instance_id does not match this shim", ErrShimConfig)
 		}
-		if push.Auth.Status != "" {
+		if pushApplier != nil && len(push.Raw) > 0 {
+			auth, err := pushApplier.ApplyAuthPush(ctx, push, registration)
+			if err != nil {
+				auth := registration.Auth
+				auth.Status = provider.AuthUnavailable
+				auth.LastRefreshErr = err.Error()
+				state.setAuth(auth)
+				return writeStaticAuthReport(ctx, client, state, reporter, "auth_snapshot_push_failed_"+time.Now().UTC().Format("20060102150405.000000000"))
+			}
+			state.setAuth(auth)
+		} else if push.Auth.Status != "" {
 			auth := push.Auth
 			if auth.Account == (provider.Account{}) {
 				auth.Account = registration.Identity.Account
@@ -405,13 +571,13 @@ func handleStaticControlRequest(ctx context.Context, client *controlClientConn, 
 			}
 			state.setAuth(auth)
 		}
-		return writeStaticAuthReport(ctx, client, state, "auth_snapshot_push_"+time.Now().UTC().Format("20060102150405.000000000"))
+		return writeStaticAuthReport(ctx, client, state, reporter, "auth_snapshot_push_"+time.Now().UTC().Format("20060102150405.000000000"))
 	default:
 		return nil
 	}
 }
 
-func maybeStaticAutoAuthRefresh(ctx context.Context, client *controlClientConn, state *staticControlState, refresher AuthRefresher, threshold time.Duration, cooldown time.Duration) error {
+func maybeStaticAutoAuthRefresh(ctx context.Context, client *controlClientConn, state *staticControlState, refresher AuthRefresher, reporter authSnapshotReporter, threshold time.Duration, cooldown time.Duration) error {
 	if refresher == nil || threshold <= 0 {
 		return nil
 	}
@@ -422,6 +588,13 @@ func maybeStaticAutoAuthRefresh(ctx context.Context, client *controlClientConn, 
 	}
 	if !state.claimAutoRefresh(now, cooldown) {
 		return nil
+	}
+	auth := registration.Auth
+	auth.Status = provider.AuthRefreshing
+	auth.LastRefreshErr = ""
+	state.setAuth(auth)
+	if err := writeStaticAuthReport(ctx, client, state, reporter, "auth_snapshot_auto_refreshing_"+now.Format("20060102150405.000000000")); err != nil {
+		return err
 	}
 	refreshID := "auto_refresh_" + registration.Identity.ProviderInstanceID + "_" + now.Format("20060102150405.000000000")
 	result := executeStaticAuthRefresh(ctx, state, refresher, control.AuthRefreshRequest{

@@ -31,6 +31,7 @@ export type ProviderModel = {
   aliases?: string[];
   capabilities?: string[];
   context_tokens?: number;
+  max_context_tokens?: number;
 };
 
 export type ProviderRegistration = {
@@ -131,6 +132,65 @@ export type ProviderUsageSnapshot = {
   };
   reported_at?: string;
   updated_at?: string;
+};
+
+export type AuthReplica = {
+  provider_id?: string;
+  provider_instance_id: string;
+  node_id?: string;
+  host_name?: string;
+  service?: string;
+  account?: Account;
+  status?: AuthStatus;
+  fingerprint?: string;
+  source?: string;
+  observed_at?: string;
+  updated_at?: string;
+  has_download?: boolean;
+};
+
+export type AuthRecord = {
+  id: string;
+  service: string;
+  account?: Account;
+  status?: AuthStatus;
+  expires_at?: string;
+  refreshable?: boolean;
+  last_refresh_at?: string;
+  last_refresh_error?: string;
+  selected_source?: string;
+  bootstrap_source?: string;
+  fingerprint?: string;
+  source?: string;
+  filename: string;
+  format?: string;
+  latest_provider_id?: string;
+  provider_instance_id?: string;
+  node_id?: string;
+  host_name?: string;
+  observed_at?: string;
+  reported_at?: string;
+  updated_at?: string;
+  has_download?: boolean;
+  download_url?: string;
+  replicas?: AuthReplica[];
+};
+
+export type AuthEvent = {
+  id: string;
+  auth_id: string;
+  type: string;
+  service?: string;
+  account?: Account;
+  provider_id?: string;
+  provider_instance_id?: string;
+  node_id?: string;
+  host_name?: string;
+  status?: AuthStatus;
+  fingerprint?: string;
+  source?: string;
+  message?: string;
+  at?: string;
 };
 
 export type QuotaScope = {
@@ -276,6 +336,7 @@ export type DashboardData = {
   nodes: NodeSnapshot[];
   containers: ContainerSnapshot[];
   usage: ProviderUsageSnapshot[];
+  auth: AuthRecord[];
   controlSessions: SessionSnapshot[];
   dataSessions: SessionSnapshot[];
   traces: RequestTrace[];

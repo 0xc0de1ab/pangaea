@@ -69,20 +69,22 @@ type Account struct {
 }
 
 type Model struct {
-	ID            string       `json:"id"`
-	Aliases       []string     `json:"aliases,omitempty"`
-	Capabilities  []Capability `json:"capabilities,omitempty"`
-	ContextTokens int          `json:"context_tokens,omitempty"`
+	ID               string       `json:"id"`
+	Aliases          []string     `json:"aliases,omitempty"`
+	Capabilities     []Capability `json:"capabilities,omitempty"`
+	ContextTokens    int          `json:"context_tokens,omitempty"`
+	MaxContextTokens int          `json:"max_context_tokens,omitempty"`
 }
 
 type HealthStatus string
 
 const (
-	HealthUnknown  HealthStatus = "unknown"
-	HealthReady    HealthStatus = "ready"
-	HealthDegraded HealthStatus = "degraded"
-	HealthDraining HealthStatus = "draining"
-	HealthDown     HealthStatus = "down"
+	HealthUnknown      HealthStatus = "unknown"
+	HealthReady        HealthStatus = "ready"
+	HealthDegraded     HealthStatus = "degraded"
+	HealthDraining     HealthStatus = "draining"
+	HealthAuthUpdating HealthStatus = "auth-updating"
+	HealthDown         HealthStatus = "down"
 )
 
 type Health struct {

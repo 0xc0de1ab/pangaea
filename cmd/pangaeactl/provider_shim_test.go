@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/0xc0de1ab/pangaea/internal/apiprovider"
+	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
+	"github.com/0xc0de1ab/pangaea/internal/providerfactory"
+	"github.com/0xc0de1ab/pangaea/internal/providershim"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
@@ -44,7 +49,10 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_UPSTREAM_API_KEY_MODE", "header")
 	t.Setenv("PANGAEA_UPSTREAM_API_KEY_HEADER", "x-api-key")
 	t.Setenv("PANGAEA_UPSTREAM_API_KEY_QUERY_PARAM", "key")
+	t.Setenv("PANGAEA_SHIM_PROTOCOLS", "openai,anthropic,gemini")
+	t.Setenv("PANGAEA_SHIM_CAPABILITIES", "api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse,usage.read,models.read")
 	t.Setenv("PANGAEA_MODEL_ALIAS", "codex-default")
+	t.Setenv("PANGAEA_MODEL_CAPABILITIES", "api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse")
 	t.Setenv("PANGAEA_AUTH_PATH", "/var/lib/pangaea/auth/codex/auth.json")
 	t.Setenv("PANGAEA_AUTH_FORMAT", "codex-auth-json-format")
 	t.Setenv("PANGAEA_REFRESH_COMMAND", "codex exec ping")
@@ -67,6 +75,9 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	}
 	if opts.UpstreamAPIKeyMode != "header" || opts.UpstreamAPIKeyHeader != "x-api-key" || opts.UpstreamAPIKeyQueryParam != "key" {
 		t.Fatalf("env defaults did not populate upstream api key auth config: %#v", opts)
+	}
+	if opts.ShimProtocols != "openai,anthropic,gemini" || !strings.Contains(opts.ShimCapabilities, "api.gemini.generateContent") || !strings.Contains(opts.ModelCapabilities, "api.anthropic.messages") {
+		t.Fatalf("env defaults did not populate shim/model capabilities: %#v", opts)
 	}
 	if opts.AuthPath != "/var/lib/pangaea/auth/codex/auth.json" || opts.AuthFormat != "codex-auth-json-format" || opts.RefreshCommand != "codex exec ping" {
 		t.Fatalf("env defaults did not populate auth config: %#v", opts)
@@ -113,7 +124,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "cli-container", "sidecar", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-adapter", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "model", "model-alias", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "cli-request-timeout", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
+	for _, name := range []string{"api-compatible", "cli-container", "sidecar", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-adapter", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "shim-protocols", "shim-capabilities", "model", "model-alias", "model-capabilities", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "cli-request-timeout", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -280,6 +291,111 @@ func TestBuildCLIContainerProviderReportsCodexWebSocketAsAppServer(t *testing.T)
 	}
 }
 
+func TestBuildCLIContainerProviderUsesConfiguredMultiDialectCapabilities(t *testing.T) {
+	registerProviderShimTestFormat()
+	dir := t.TempDir()
+	authPath := dir + "/auth.json"
+	if err := os.WriteFile(authPath, []byte("healthy"), 0o600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	apiProvider, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
+		ProviderID:           "codex-cli",
+		ProviderInstanceID:   "codex-cli",
+		NodeID:               "node-a1",
+		HostName:             "snowbox",
+		Service:              "codex",
+		UpstreamAdapter:      "websocket",
+		UpstreamBaseURL:      "ws://127.0.0.1:8080",
+		UpstreamDialect:      "openai",
+		ShimCapabilities:     "api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse,usage.read,models.read",
+		Model:                "gpt-5.5",
+		ModelAlias:           "codex-default",
+		ModelCapabilities:    "api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse",
+		AuthPath:             authPath,
+		AuthFormat:           "provider-shim-test-format",
+		RefreshCommand:       "codex exec ping",
+		RefreshLoginShell:    true,
+		RefreshTimeout:       time.Minute,
+		RefreshThreshold:     5 * time.Minute,
+		RefreshCooldown:      5 * time.Minute,
+		CLIRequestTimeout:    time.Minute,
+		AuthBootstrapTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("build codex websocket provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	for _, capability := range []provider.Capability{
+		provider.CapabilityOpenAIChat,
+		provider.CapabilityAnthropicMessages,
+		provider.CapabilityGeminiGenerateContent,
+		provider.CapabilityStreamSSE,
+		provider.CapabilityUsageRead,
+		provider.CapabilityModelsRead,
+		provider.CapabilityAuthFile,
+		provider.CapabilityAuthRefreshOneshot,
+	} {
+		if !hasCapability(registration.Capabilities, capability) {
+			t.Fatalf("registration capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+	if len(registration.Models) != 1 {
+		t.Fatalf("unexpected models: %#v", registration.Models)
+	}
+	for _, capability := range []provider.Capability{
+		provider.CapabilityOpenAIChat,
+		provider.CapabilityAnthropicMessages,
+		provider.CapabilityGeminiGenerateContent,
+		provider.CapabilityStreamSSE,
+	} {
+		if !hasCapability(registration.Models[0].Capabilities, capability) {
+			t.Fatalf("model capabilities %v missing %s", registration.Models[0].Capabilities, capability)
+		}
+	}
+	if hasCapability(registration.Models[0].Capabilities, provider.CapabilityUsageRead) {
+		t.Fatalf("model capabilities should not include provider-only usage capability: %v", registration.Models[0].Capabilities)
+	}
+}
+
+func TestNativeUsageProbeProviderPreservesStreaming(t *testing.T) {
+	base := &streamingUsageProbeTestProvider{}
+	wrapped := wrapNativeUsageProbe(base, "/tmp/auth.json", providerShimTestUsageProbeFormat{})
+	streamInvoker, ok := wrapped.(interface {
+		InvokeStream(context.Context, provider.Registration, compat.Request, func(compat.Event) error) (compat.Response, error)
+	})
+	if !ok {
+		t.Fatalf("wrapped provider does not implement InvokeStream")
+	}
+	var deltas []string
+	response, err := streamInvoker.InvokeStream(context.Background(), provider.Registration{}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "stream-model",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "ping"}},
+		}},
+		Stream: true,
+	}, func(event compat.Event) error {
+		if event.Type == compat.EventContentDelta && event.ContentDelta != nil {
+			deltas = append(deltas, event.ContentDelta.Text)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("InvokeStream: %v", err)
+	}
+	if !base.streamCalled {
+		t.Fatalf("expected native stream provider to be called")
+	}
+	if response.Message.Content[0].Text != "hello stream" || strings.Join(deltas, "") != "hello stream" {
+		t.Fatalf("unexpected stream response=%#v deltas=%#v", response, deltas)
+	}
+}
+
 func TestBuildCLIContainerProviderUsesClaudeCLIOneshotWithoutUpstreamURL(t *testing.T) {
 	registerProviderShimTestFormat()
 	dir := t.TempDir()
@@ -354,6 +470,51 @@ func TestBuildSidecarProviderForGitHubCopilot(t *testing.T) {
 		if !hasCapability(registration.Capabilities, capability) {
 			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
 		}
+	}
+}
+
+func TestBuildSidecarProviderForAntigravity(t *testing.T) {
+	apiProvider, err := buildSidecarProvider(providerShimRunOptions{
+		ProviderID:         "antigravity-sidecar",
+		ProviderInstanceID: "antigravity-sidecar-a1",
+		NodeID:             "node-a1",
+		HostName:           "snowbox",
+		Service:            "antigravity",
+		Account:            "antigravity@example.test",
+		UpstreamBaseURL:    "http://127.0.0.1:8080",
+		UpstreamDialect:    "openai",
+		ShimProtocols:      "openai,anthropic,gemini",
+		Model:              "antigravity-default",
+		ModelAlias:         "antigravity-default",
+	})
+	if err != nil {
+		t.Fatalf("build antigravity sidecar provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindSidecar || registration.Identity.Service != provider.ServiceAntigravity {
+		t.Fatalf("unexpected registration identity: %#v", registration.Identity)
+	}
+	for _, capability := range []provider.Capability{
+		provider.CapabilityOpenAIChat,
+		provider.CapabilityAnthropicMessages,
+		provider.CapabilityGeminiGenerateContent,
+		provider.CapabilityStreamSSE,
+		provider.CapabilityUsageRead,
+		provider.CapabilityModelsRead,
+		provider.CapabilityAntigravitySidecar,
+		provider.CapabilityAgentToolUse,
+		provider.CapabilityAgentWorkspaceRead,
+		provider.CapabilityAgentWorkspaceWrite,
+	} {
+		if !hasCapability(registration.Capabilities, capability) {
+			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+	if !hasCapability(registration.Models[0].Capabilities, provider.CapabilityAgentToolUse) {
+		t.Fatalf("antigravity model capabilities missing agent tool-use: %v", registration.Models[0].Capabilities)
 	}
 }
 
@@ -435,6 +596,27 @@ func TestRefreshCommandArgsSourcesBashRC(t *testing.T) {
 	}
 }
 
+func buildAPICompatibleProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {
+	return providerfactory.BuildAPICompatibleProvider(providerFactoryConfigFromOptions(opts))
+}
+
+func buildSidecarProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {
+	return providerfactory.BuildSidecarProvider(providerFactoryConfigFromOptions(opts))
+}
+
+func buildCLIContainerProvider(ctx context.Context, opts providerShimRunOptions) (providershim.APICompatibleProvider, providershim.AuthRefresher, error) {
+	result, err := providerfactory.BuildCLIContainerProvider(ctx, providerFactoryConfigFromOptions(opts))
+	return result.Provider, result.AuthRefresher, err
+}
+
+func wrapNativeUsageProbe(base providershim.APICompatibleProvider, authPath string, format formats.Format) providershim.APICompatibleProvider {
+	return providerfactory.WrapNativeUsageProbe(base, authPath, format)
+}
+
+func refreshCommandArgs(command string, loginShell bool) []string {
+	return providerfactory.RefreshCommandArgs(command, loginShell)
+}
+
 func hasCapability(capabilities []provider.Capability, want provider.Capability) bool {
 	for _, capability := range capabilities {
 		if capability == want {
@@ -485,6 +667,61 @@ func (providerShimTestFormat) Account(context.Context, formats.Snapshot, string)
 }
 func (providerShimTestFormat) AccountDisplay(context.Context, formats.Snapshot, string) (string, error) {
 	return "test@example.test", nil
+}
+
+type providerShimTestUsageProbeFormat struct {
+	providerShimTestFormat
+}
+
+func (providerShimTestUsageProbeFormat) Probe(context.Context, formats.Snapshot, string, *http.Client) (formats.UsageReport, error) {
+	return formats.UsageReport{RemainingPct: 99}, nil
+}
+
+type streamingUsageProbeTestProvider struct {
+	streamCalled bool
+}
+
+func (p *streamingUsageProbeTestProvider) Registration() (provider.Registration, error) {
+	return provider.Registration{}, nil
+}
+
+func (p *streamingUsageProbeTestProvider) Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error) {
+	return compat.Response{
+		ID:      "buffered-test",
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "stream-model",
+		Message: compat.Message{Role: compat.MessageRoleAssistant, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "buffered"}}},
+	}, nil
+}
+
+func (p *streamingUsageProbeTestProvider) InvokeStream(_ context.Context, _ provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	p.streamCalled = true
+	events := []compat.Event{
+		{ResponseID: "stream-test", Dialect: request.Dialect, Model: request.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}},
+		{ResponseID: "stream-test", Dialect: request.Dialect, Model: request.Model, Type: compat.EventContentDelta, ContentDelta: &compat.ContentPart{Type: compat.ContentPartText, Text: "hello "}},
+		{ResponseID: "stream-test", Dialect: request.Dialect, Model: request.Model, Type: compat.EventContentDelta, ContentDelta: &compat.ContentPart{Type: compat.ContentPartText, Text: "stream"}},
+		{ResponseID: "stream-test", Dialect: request.Dialect, Model: request.Model, Type: compat.EventDone, DoneReason: "stop"},
+	}
+	response := compat.Response{ID: "stream-test", Dialect: request.Dialect, Model: request.Model, Message: compat.Message{Role: compat.MessageRoleAssistant}}
+	for _, event := range events {
+		if emit != nil {
+			if err := emit(event); err != nil {
+				return compat.Response{}, err
+			}
+		}
+		if err := compat.ApplyEventToResponse(&response, event); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	return response, nil
+}
+
+func (p *streamingUsageProbeTestProvider) Usage() (provider.UsageReport, error) {
+	return provider.UsageReport{}, nil
+}
+
+func (p *streamingUsageProbeTestProvider) Models(context.Context) ([]provider.Model, error) {
+	return []provider.Model{{ID: "stream-model"}}, nil
 }
 
 type providerShimTestSnapshot struct {

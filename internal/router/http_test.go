@@ -635,6 +635,30 @@ func TestHTTPGeminiGenerateContentWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPDashboardCompatGeminiGenerateContentAlias(t *testing.T) {
+	engine, sim := testDialectEngine(t, compat.APIDialectGemini, provider.CapabilityGeminiGenerateContent, provider.ServiceGemini, "gemini-sim", "gemini-native")
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/router/v1/compat/v1beta/models/gemini-sim:generateContent", bytes.NewReader([]byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello gemini compat"}]}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response compat.GeminiGenerateContentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Candidates) != 1 || response.Candidates[0].Content.Parts[0].Text != "providersim: hello gemini compat" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
 func TestHTTPGeminiStreamGenerateContentWithSimulator(t *testing.T) {
 	engine, sim := testDialectEngine(t, compat.APIDialectGemini, provider.CapabilityGeminiGenerateContent, provider.ServiceGemini, "gemini-sim", "gemini-native")
 	engine.SetInvoker(sim)

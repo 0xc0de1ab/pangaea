@@ -114,6 +114,44 @@ func TestApplyProviderInventoryPreservesDynamicProviderState(t *testing.T) {
 	}
 }
 
+func TestApplyProviderInventoryMergesDynamicDiscoveredModels(t *testing.T) {
+	engine, _ := testEngine(t)
+	existing := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	existing.Models = []provider.Model{
+		{ID: "gpt-5.5", Aliases: []string{"codex-default"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+		{ID: "gpt-5.4", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+	}
+	if err := engine.UpsertProvider(existing); err != nil {
+		t.Fatalf("upsert existing provider: %v", err)
+	}
+
+	incoming := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	incoming.Models = []provider.Model{{
+		ID:           "gpt-5.5",
+		Aliases:      []string{"codex-default"},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+	}}
+	if err := engine.ApplyProviderInventoryReport(control.ProviderInventoryReport{
+		Mode:      "full",
+		NodeID:    "node-a1",
+		HostName:  "snowbox",
+		Providers: []control.ProviderRegisterPayload{incoming},
+	}); err != nil {
+		t.Fatalf("apply provider inventory: %v", err)
+	}
+
+	got, ok := engine.registry.Get(existing.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("provider not found after inventory")
+	}
+	if len(got.Models) != 2 {
+		t.Fatalf("models were not merged: %#v", got.Models)
+	}
+	if got.Models[0].ID != "gpt-5.5" || len(got.Models[0].Capabilities) != 2 || got.Models[1].ID != "gpt-5.4" {
+		t.Fatalf("unexpected merged models: %#v", got.Models)
+	}
+}
+
 func TestUpdateProviderAuthBackfillsIdentityAccount(t *testing.T) {
 	engine, _ := testEngine(t)
 	reg := registration("codex-control-a1", "codex-cli", "", 10, 0)

@@ -1,17 +1,23 @@
 import { useMemo, useState } from "react";
-import { Activity, Clipboard, KeyRound, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
+import { Activity, Clipboard, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { Section } from "../components/Section";
+import { ServiceBadge } from "../components/ServiceIcon";
 import { StatusBadge } from "../components/StatusBadge";
+import { ChatWorkbench, type ChatWorkbenchTarget } from "./ChatWorkbench";
+import { EndpointDataWorkbench, type EndpointDataWorkbenchTarget } from "./EndpointDataWorkbench";
 import { api } from "../lib/api";
 import { providerAccountLabel, providerID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
 import { age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
-import type { ProviderRegistration } from "../lib/types";
+import { providerServiceEndpoints, type ServiceEndpoint } from "../lib/service-endpoints";
+import type { ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
 
 export function ProvidersView({ data, queries, search, token, onAction, refresh }: DashboardViewProps) {
   const [selected, setSelected] = useState<ProviderRegistration | null>(null);
+  const [chatTarget, setChatTarget] = useState<ChatWorkbenchTarget | null>(null);
+  const [dataTarget, setDataTarget] = useState<EndpointDataWorkbenchTarget | null>(null);
   const rows = useMemo(() => {
     return [...data.providers]
       .sort((a, b) => `${a.identity.service}:${a.identity.host_name}:${providerAccountLabel(a)}:${providerID(a)}`.localeCompare(`${b.identity.service}:${b.identity.host_name}:${providerAccountLabel(b)}:${providerID(b)}`))
@@ -64,6 +70,13 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     },
     { id: "service", header: "Service", sortValue: (row) => row.identity.service, cell: (row) => row.identity.service, width: "105px" },
     { id: "kind", header: "Kind", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
+    {
+      id: "apis",
+      header: "Service APIs",
+      sortValue: (row) => providerServiceEndpoints(row).map((endpoint) => endpoint.label).join(","),
+      cell: (row) => <ServiceBadgeRow provider={row} />,
+      width: "122px",
+    },
     { id: "host", header: "Host", sortValue: (row) => row.identity.host_name, cell: (row) => row.identity.host_name, width: "150px" },
     { id: "account", header: "Account", sortValue: (row) => providerAccountLabel(row), cell: (row) => providerAccountLabel(row), width: "190px" },
     { id: "health", header: "Health", sortValue: (row) => row.health?.status, cell: (row) => <StatusBadge value={row.health?.status} title={row.health?.reason} />, width: "128px" },
@@ -142,9 +155,28 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
             onDrain={() => providerAction(selected, "drain")}
             onResume={() => providerAction(selected, "resume")}
             onRefreshAuth={() => providerAction(selected, "refresh")}
+            onOpenChat={(endpoint) => setChatTarget({ provider: selected, endpoint })}
+            onOpenModels={(endpoint) => setDataTarget({ kind: "models", provider: selected, endpoint })}
+            onOpenUsage={(endpoint) => setDataTarget({ kind: "usage", provider: selected, endpoint, usage: usage.get(providerID(selected)) })}
           />
         ) : null}
       </Drawer>
+      <ChatWorkbench target={chatTarget} token={token} onClose={() => setChatTarget(null)} />
+      <EndpointDataWorkbench target={dataTarget} token={token} onClose={() => setDataTarget(null)} />
+    </div>
+  );
+}
+
+function ServiceBadgeRow({ provider }: { provider: ProviderRegistration }) {
+  const endpoints = providerServiceEndpoints(provider);
+  if (!endpoints.length) {
+    return <span className="muted">none</span>;
+  }
+  return (
+    <div className="service-icon-row">
+      {endpoints.map((endpoint) => (
+        <ServiceBadge endpoint={endpoint} compact key={endpoint.id} />
+      ))}
     </div>
   );
 }
@@ -153,13 +185,16 @@ type ProviderDetailProps = {
   provider: ProviderRegistration;
   controlConnected: boolean;
   dataConnected: boolean;
-  usage?: ReturnType<typeof providerUsageMap> extends Map<string, infer T> ? T : never;
+  usage?: ProviderUsageSnapshot;
   onDrain: () => void;
   onResume: () => void;
   onRefreshAuth: () => void;
+  onOpenChat: (endpoint: ServiceEndpoint) => void;
+  onOpenModels: (endpoint: ServiceEndpoint) => void;
+  onOpenUsage: (endpoint: ServiceEndpoint) => void;
 };
 
-function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDrain, onResume, onRefreshAuth }: ProviderDetailProps) {
+function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDrain, onResume, onRefreshAuth, onOpenChat, onOpenModels, onOpenUsage }: ProviderDetailProps) {
   return (
     <div className="detail-stack">
       <div className="drawer-action-row">
@@ -206,6 +241,8 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
         </div>
       </div>
 
+      <ProviderEndpointTable provider={provider} onOpenChat={onOpenChat} onOpenModels={onOpenModels} onOpenUsage={onOpenUsage} />
+
       <div className="detail-section">
         <h3>Models</h3>
         <div className="tag-list">
@@ -236,13 +273,63 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
           ))}
         </div>
       </div>
+    </div>
+  );
+}
 
-      <div className="detail-section">
-        <h3>Operational Notes</h3>
-        <div className="note-row">
-          <Activity aria-hidden="true" size={15} />
-          <span>Preview/execute action endpoints are not exposed yet; this shell uses current drain and auth-refresh endpoints with confirmation and audit flow.</span>
-        </div>
+function ProviderEndpointTable({ provider, onOpenChat, onOpenModels, onOpenUsage }: { provider: ProviderRegistration; onOpenChat: (endpoint: ServiceEndpoint) => void; onOpenModels: (endpoint: ServiceEndpoint) => void; onOpenUsage: (endpoint: ServiceEndpoint) => void }) {
+  const endpoints = providerServiceEndpoints(provider);
+
+  return (
+    <div className="detail-section">
+      <h3>Service Endpoints</h3>
+      <div className="endpoint-table-frame">
+        <table className="endpoint-action-table">
+          <thead>
+            <tr>
+              <th>API</th>
+              <th>Model</th>
+              <th>Chat</th>
+              <th>Models</th>
+              <th>Usage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {endpoints.map((endpoint) => (
+              <tr key={endpoint.id}>
+                <td>
+                  <ServiceBadge endpoint={endpoint} />
+                </td>
+                <td>
+                  <span className="mono">{endpoint.model || "no model"}</span>
+                  <span className="endpoint-path mono">{endpoint.chatPath}</span>
+                </td>
+                <td>
+                  <button className="icon-button small" type="button" title={`${endpoint.label} chat`} disabled={!endpoint.supportsChat || !endpoint.model} onClick={() => onOpenChat(endpoint)}>
+                    <MessageSquare aria-hidden="true" size={15} />
+                  </button>
+                </td>
+                <td>
+                  <button className="icon-button small" type="button" title={`${endpoint.label} models`} onClick={() => onOpenModels(endpoint)}>
+                    <ListChecks aria-hidden="true" size={15} />
+                  </button>
+                </td>
+                <td>
+                  <button className="icon-button small" type="button" title={`${endpoint.label} usage`} onClick={() => onOpenUsage(endpoint)}>
+                    <Activity aria-hidden="true" size={15} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!endpoints.length ? (
+              <tr>
+                <td colSpan={5}>
+                  <span className="muted">No service endpoints reported</span>
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
     </div>
   );

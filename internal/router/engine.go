@@ -31,6 +31,10 @@ type Engine struct {
 	auditEvents        map[string]AuditEvent
 	auditIDs           []string
 	auditSeq           uint64
+	authMu             sync.RWMutex
+	authRecords        map[string]AuthRecord
+	authRaw            map[string][]byte
+	authEvents         []AuthEvent
 	nodeMu             sync.RWMutex
 	nodes              map[string]NodeSnapshot
 	containers         map[string]ContainerSnapshot
@@ -90,6 +94,8 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 		usages:             make(map[string]ProviderUsageSnapshot),
 		traces:             make(map[string]RequestTrace),
 		auditEvents:        make(map[string]AuditEvent),
+		authRecords:        make(map[string]AuthRecord),
+		authRaw:            make(map[string][]byte),
 		nodes:              make(map[string]NodeSnapshot),
 		containers:         make(map[string]ContainerSnapshot),
 		controlSessions:    make(map[string]*controlSession),
@@ -203,6 +209,18 @@ func (e *Engine) UpdateProviderAuth(providerInstanceID string, auth provider.Aut
 	registration, ok := e.registry.Get(providerInstanceID)
 	if !ok {
 		return provider.ErrProviderNotFound
+	}
+	switch auth.Status {
+	case provider.AuthRefreshing:
+		registration.Health.Status = provider.HealthAuthUpdating
+		registration.Health.Reason = "auth updating"
+		registration.Health.CheckedAt = time.Now().UTC()
+	default:
+		if registration.Health.Status == provider.HealthAuthUpdating {
+			registration.Health.Status = provider.HealthReady
+			registration.Health.Reason = ""
+			registration.Health.CheckedAt = time.Now().UTC()
+		}
 	}
 	registration.Auth = auth
 	registration.Identity.Account = accountWithFallback(registration.Identity.Account, auth.Account)

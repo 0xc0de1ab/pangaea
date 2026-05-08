@@ -1,11 +1,15 @@
 package compat
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type OpenAIChatRequest struct {
 	Model               string              `json:"model"`
 	Messages            []OpenAIChatMessage `json:"messages"`
 	Temperature         *float64            `json:"temperature,omitempty"`
+	ReasoningEffort     string              `json:"reasoning_effort,omitempty"`
 	MaxTokens           int                 `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
 	Stream              bool                `json:"stream,omitempty"`
@@ -13,10 +17,20 @@ type OpenAIChatRequest struct {
 
 type OpenAIChatMessage struct {
 	Role       string               `json:"role"`
-	Content    string               `json:"content,omitempty"`
+	Content    any                  `json:"content,omitempty"`
 	Name       string               `json:"name,omitempty"`
 	ToolCalls  []OpenAIChatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string               `json:"tool_call_id,omitempty"`
+}
+
+type OpenAIContentPart struct {
+	Type     string              `json:"type"`
+	Text     string              `json:"text,omitempty"`
+	ImageURL *OpenAIImageURLPart `json:"image_url,omitempty"`
+}
+
+type OpenAIImageURLPart struct {
+	URL string `json:"url"`
 }
 
 type OpenAIChatToolCall struct {
@@ -56,6 +70,7 @@ func OpenAIChatRequestToCanonical(in OpenAIChatRequest) (Request, error) {
 		Model:               in.Model,
 		Messages:            make([]Message, 0, len(in.Messages)),
 		Temperature:         in.Temperature,
+		ReasoningEffort:     in.ReasoningEffort,
 		Stream:              in.Stream,
 		UnsupportedFeatures: UnsupportedFeatureReject,
 	}
@@ -65,7 +80,11 @@ func OpenAIChatRequestToCanonical(in OpenAIChatRequest) (Request, error) {
 		out.MaxOutputTokens = in.MaxTokens
 	}
 	for _, message := range in.Messages {
-		out.Messages = append(out.Messages, openAIMessageToCanonical(message))
+		converted, err := openAIMessageToCanonical(message)
+		if err != nil {
+			return Request{}, err
+		}
+		out.Messages = append(out.Messages, converted)
 	}
 	if err := out.Validate(); err != nil {
 		return Request{}, err
@@ -81,6 +100,7 @@ func OpenAIChatRequestFromCanonical(in Request) (OpenAIChatRequest, error) {
 		Model:               in.Model,
 		Messages:            make([]OpenAIChatMessage, 0, len(in.Messages)),
 		Temperature:         in.Temperature,
+		ReasoningEffort:     in.ReasoningEffort,
 		MaxCompletionTokens: in.MaxOutputTokens,
 		Stream:              in.Stream,
 	}
@@ -133,7 +153,10 @@ func OpenAIChatResponseToCanonical(in OpenAIChatResponse) (Response, error) {
 		return Response{}, ErrInvalidResponse
 	}
 	choice := in.Choices[0]
-	message := openAIMessageToCanonical(choice.Message)
+	message, err := openAIMessageToCanonical(choice.Message)
+	if err != nil {
+		return Response{}, err
+	}
 	if message.Role == "" {
 		message.Role = MessageRoleAssistant
 	}
@@ -165,16 +188,18 @@ func OpenAIChatResponseToCanonical(in OpenAIChatResponse) (Response, error) {
 	return out, nil
 }
 
-func openAIMessageToCanonical(in OpenAIChatMessage) Message {
+func openAIMessageToCanonical(in OpenAIChatMessage) (Message, error) {
 	out := Message{
 		Role:       MessageRole(in.Role),
 		Name:       in.Name,
 		ToolCallID: in.ToolCallID,
 		ToolCalls:  make([]ToolCall, 0, len(in.ToolCalls)),
 	}
-	if in.Content != "" {
-		out.Content = []ContentPart{{Type: ContentPartText, Text: in.Content}}
+	parts, err := openAIContentToCanonical(in.Content)
+	if err != nil {
+		return Message{}, err
 	}
+	out.Content = parts
 	for index, toolCall := range in.ToolCalls {
 		callType := ToolCallType(toolCall.Type)
 		if callType == "" {
@@ -188,11 +213,11 @@ func openAIMessageToCanonical(in OpenAIChatMessage) Message {
 			Arguments: toolCall.Function.Arguments,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func canonicalMessageToOpenAI(in Message) (OpenAIChatMessage, error) {
-	content, err := contentText(in.Content)
+	content, err := openAIContentFromCanonical(in.Content)
 	if err != nil {
 		return OpenAIChatMessage{}, err
 	}
@@ -214,6 +239,110 @@ func canonicalMessageToOpenAI(in Message) (OpenAIChatMessage, error) {
 		})
 	}
 	return out, nil
+}
+
+func openAIContentToCanonical(content any) ([]ContentPart, error) {
+	switch value := content.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		if value == "" {
+			return nil, nil
+		}
+		return []ContentPart{{Type: ContentPartText, Text: value}}, nil
+	case []OpenAIContentPart:
+		return openAIBlocksToCanonical(value)
+	case []any:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, ErrInvalidRequest
+		}
+		var blocks []OpenAIContentPart
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			return nil, ErrInvalidRequest
+		}
+		return openAIBlocksToCanonical(blocks)
+	case map[string]any:
+		raw, err := json.Marshal([]any{value})
+		if err != nil {
+			return nil, ErrInvalidRequest
+		}
+		var blocks []OpenAIContentPart
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			return nil, ErrInvalidRequest
+		}
+		return openAIBlocksToCanonical(blocks)
+	case json.RawMessage:
+		var text string
+		if err := json.Unmarshal(value, &text); err == nil {
+			return openAIContentToCanonical(text)
+		}
+		var blocks []OpenAIContentPart
+		if err := json.Unmarshal(value, &blocks); err != nil {
+			return nil, ErrInvalidRequest
+		}
+		return openAIBlocksToCanonical(blocks)
+	default:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, ErrInvalidRequest
+		}
+		return openAIContentToCanonical(json.RawMessage(raw))
+	}
+}
+
+func openAIBlocksToCanonical(blocks []OpenAIContentPart) ([]ContentPart, error) {
+	parts := make([]ContentPart, 0, len(blocks))
+	for _, block := range blocks {
+		switch block.Type {
+		case "text", "input_text":
+			if block.Text != "" {
+				parts = append(parts, ContentPart{Type: ContentPartText, Text: block.Text})
+			}
+		case "image_url", "input_image":
+			if block.ImageURL == nil || strings.TrimSpace(block.ImageURL.URL) == "" {
+				return nil, ErrInvalidRequest
+			}
+			parts = append(parts, imageURLContentPart(block.ImageURL.URL))
+		default:
+			return nil, ErrInvalidRequest
+		}
+	}
+	return parts, nil
+}
+
+func openAIContentFromCanonical(parts []ContentPart) (any, error) {
+	if onlyTextContent(parts) {
+		return contentText(parts)
+	}
+	blocks := make([]OpenAIContentPart, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case ContentPartText:
+			blocks = append(blocks, OpenAIContentPart{Type: "text", Text: part.Text})
+		case ContentPartImage:
+			url := part.URL
+			if url == "" && part.Data != "" {
+				url = dataURL(part.MIME, part.Data)
+			}
+			if url == "" {
+				return nil, ErrInvalidRequest
+			}
+			blocks = append(blocks, OpenAIContentPart{Type: "image_url", ImageURL: &OpenAIImageURLPart{URL: url}})
+		default:
+			return nil, ErrInvalidRequest
+		}
+	}
+	return blocks, nil
+}
+
+func onlyTextContent(parts []ContentPart) bool {
+	for _, part := range parts {
+		if part.Type != ContentPartText {
+			return false
+		}
+	}
+	return true
 }
 
 func contentText(parts []ContentPart) (string, error) {

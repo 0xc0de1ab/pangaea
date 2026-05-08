@@ -7,7 +7,6 @@ import {
   Command,
   KeyRound,
   Loader2,
-  Network,
   RefreshCw,
   RouteIcon,
   Search,
@@ -25,14 +24,28 @@ import { RoutesView } from "../features/RoutesView";
 import { ProvidersView } from "../features/ProvidersView";
 import { RequestsView } from "../features/RequestsView";
 import { AdminView } from "../features/AdminView";
+import { AuthView } from "../features/AuthView";
+import pangaeaIcon from "../assets/images/pangaea.128x128.png";
 
 const navItems = [
   { to: "/", label: "Overview", icon: Activity },
   { to: "/routes", label: "Routes", icon: RouteIcon },
   { to: "/providers", label: "Providers", icon: Boxes },
+  { to: "/auth", label: "Auth", icon: KeyRound },
   { to: "/requests", label: "Requests", icon: Signal },
   { to: "/admin", label: "Admin", icon: Shield },
 ];
+
+function localDevBearerDefault() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const host = window.location.hostname;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    return "1";
+  }
+  return "";
+}
 
 function useDashboardQueries(token: string | undefined, authVersion: number): DashboardQueries {
   const authedKey = authVersion;
@@ -65,6 +78,11 @@ function useDashboardQueries(token: string | undefined, authVersion: number): Da
     usage: useQuery({
       queryKey: ["usage", authedKey],
       queryFn: () => api.usage(token),
+      ...common,
+    }),
+    auth: useQuery({
+      queryKey: ["auth", authedKey],
+      queryFn: () => api.auth(token),
       ...common,
     }),
     controlSessions: useQuery({
@@ -113,6 +131,7 @@ function dataFromQueries(queries: DashboardQueries): DashboardData {
     nodes: queries.nodes.data ?? [],
     containers: queries.containers.data ?? [],
     usage: queries.usage.data ?? [],
+    auth: queries.auth.data ?? [],
     controlSessions: queries.controlSessions.data ?? [],
     dataSessions: queries.dataSessions.data ?? [],
     traces: queries.traces.data ?? [],
@@ -138,8 +157,9 @@ function queryErrorCount(queries: DashboardQueries) {
 }
 
 export default function App() {
-  const [tokenDraft, setTokenDraft] = useState("");
-  const [adminToken, setAdminToken] = useState("");
+  const defaultBearer = useMemo(localDevBearerDefault, []);
+  const [tokenDraft, setTokenDraft] = useState(defaultBearer);
+  const [adminToken, setAdminToken] = useState(defaultBearer);
   const [authVersion, setAuthVersion] = useState(0);
   const [search, setSearch] = useState("");
   const [commandOpen, setCommandOpen] = useState(false);
@@ -182,7 +202,7 @@ export default function App() {
       <aside className="left-rail" aria-label="Primary">
         <div className="brand">
           <div className="brand-mark">
-            <Network aria-hidden="true" size={18} />
+            <img src={pangaeaIcon} alt="" aria-hidden="true" />
           </div>
           <div className="brand-text">
             <strong>Pangaea</strong>
@@ -250,6 +270,9 @@ export default function App() {
                   <button type="button" onClick={() => { navigate("/providers"); setCommandOpen(false); }}>
                     Open provider actions
                   </button>
+                  <button type="button" onClick={() => { navigate("/auth"); setCommandOpen(false); }}>
+                    Open auth inventory
+                  </button>
                   <button type="button" onClick={() => { navigate("/routes"); setCommandOpen(false); }}>
                     Dry run route
                   </button>
@@ -277,6 +300,7 @@ export default function App() {
             <Route path="/" element={<Overview {...viewProps} />} />
             <Route path="/routes" element={<RoutesView {...viewProps} />} />
             <Route path="/providers" element={<ProvidersView {...viewProps} />} />
+            <Route path="/auth" element={<AuthView {...viewProps} />} />
             <Route path="/requests" element={<RequestsView {...viewProps} />} />
             <Route path="/admin" element={<AdminView {...viewProps} />} />
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -729,7 +729,7 @@ func testRegistration() provider.Registration {
 			Kind:               provider.KindAPICompatible,
 			Account:            account,
 		},
-		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityUsageRead},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityStreamSSE, provider.CapabilityUsageRead},
 		Models:       []provider.Model{{ID: "gpt-upstream", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}}},
 		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
 		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},

@@ -647,7 +647,8 @@ func defaultRegistration(mode Mode, now time.Time) provider.Registration {
 				provider.CapabilityOpenAIChat,
 				provider.CapabilityStreamSSE,
 			},
-			ContextTokens: 128000,
+			ContextTokens:    128000,
+			MaxContextTokens: 128000,
 		}},
 		Health: provider.Health{
 			Status:    provider.HealthReady,

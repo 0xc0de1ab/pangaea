@@ -2,6 +2,7 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type { ConfirmAction } from "../components/ActionModal";
 import type {
   APIKeyPrincipal,
+  AuthRecord,
   AuditEvent,
   ContainerSnapshot,
   DashboardData,
@@ -20,6 +21,7 @@ export type DashboardQueries = {
   nodes: UseQueryResult<NodeSnapshot[], Error>;
   containers: UseQueryResult<ContainerSnapshot[], Error>;
   usage: UseQueryResult<ProviderUsageSnapshot[], Error>;
+  auth: UseQueryResult<AuthRecord[], Error>;
   controlSessions: UseQueryResult<SessionSnapshot[], Error>;
   dataSessions: UseQueryResult<SessionSnapshot[], Error>;
   traces: UseQueryResult<RequestTrace[], Error>;

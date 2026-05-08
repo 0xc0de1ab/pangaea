@@ -21,6 +21,9 @@ func (r Request) Validate() error {
 	if r.Temperature != nil && *r.Temperature < 0 {
 		return ErrInvalidRequest
 	}
+	if r.ReasoningEffort != "" && !validReasoningEffort(r.ReasoningEffort) {
+		return ErrInvalidRequest
+	}
 	if r.MaxOutputTokens < 0 {
 		return ErrInvalidRequest
 	}
@@ -67,7 +70,7 @@ func (e Event) Validate() error {
 		if e.ContentDelta == nil {
 			return ErrInvalidEvent
 		}
-		if err := e.ContentDelta.Validate(); err != nil {
+		if err := e.ContentDelta.ValidateDelta(); err != nil {
 			return ErrInvalidEvent
 		}
 	case EventToolCallDelta:
@@ -102,7 +105,27 @@ func (p ContentPart) Validate() error {
 	if !p.Type.Valid() {
 		return ErrInvalidRequest
 	}
-	if p.Type == ContentPartText && blank(p.Text) {
+	switch p.Type {
+	case ContentPartText:
+		if blank(p.Text) {
+			return ErrInvalidRequest
+		}
+	case ContentPartImage:
+		if blank(p.URL) && blank(p.Data) {
+			return ErrInvalidRequest
+		}
+		if !blank(p.MIME) && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.MIME)), "image/") {
+			return ErrInvalidRequest
+		}
+	}
+	return nil
+}
+
+func (p ContentPart) ValidateDelta() error {
+	if !p.Type.Valid() {
+		return ErrInvalidRequest
+	}
+	if p.Type == ContentPartText && p.Text == "" {
 		return ErrInvalidRequest
 	}
 	return nil
@@ -151,7 +174,7 @@ func (r MessageRole) Valid() bool {
 
 func (t ContentPartType) Valid() bool {
 	switch t {
-	case ContentPartText:
+	case ContentPartText, ContentPartImage:
 		return true
 	}
 	return false
@@ -211,4 +234,12 @@ func validateToolCallDelta(t ToolCall) error {
 
 func blank(s string) bool {
 	return strings.TrimSpace(s) == ""
+}
+
+func validReasoningEffort(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low", "medium", "high", "xhigh":
+		return true
+	}
+	return false
 }

@@ -27,7 +27,13 @@ Possible:
 
 ## Auth
 
-Auth/session state comes from Antigravity local state.
+Auth/session state comes from Antigravity local state. Container bootstrap copies
+`state.vscdb` into the runtime state volume when a source file is available.
+Supported bootstrap sources include an explicit `PANGAEA_ANTIGRAVITY_AUTH_PATH`,
+repo assets, Linux local Antigravity state, and WSL Windows user state under
+`/mnt/c/Users/<USER>/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb`.
+The shim reads the copied DB file to derive the user email for the provider
+`Account` field.
 
 Shim must report account and auth status without leaking tokens.
 
@@ -94,6 +100,19 @@ Reference implementation:
 The Pangaea repo provides the wrapper/supervisor image. The actual
 Antigravity-compatible relay binary can be supplied by an image extension or
 through the configured `shim.command` path.
+
+The wrapper exports `PANGAEA_SHIM_PROTOCOLS=openai,anthropic,gemini` by
+default. It also makes the local proxy and Pangaea shim share one upstream key:
+
+- `OPENAI_API_KEY` defaults to `PANGAEA_UPSTREAM_API_KEY` or
+  `pangaea-antigravity-openai`
+- `PANGAEA_UPSTREAM_API_KEY` defaults to `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY` and `GOOGLE_API_KEY` get deterministic container-local
+  defaults for direct proxy protocol checks
+
+When `upstream.compat: openai` is used, Pangaea can still expose OpenAI,
+Anthropic, and Gemini router endpoints because the router/shim converts public
+requests into the configured upstream dialect before calling the local proxy.
 
 ## Models
 

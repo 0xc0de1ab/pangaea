@@ -238,12 +238,47 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	r.POST("/v1/models/*modelAction", func(c *gin.Context) {
 		handleGeminiGenerateContent(c, opts)
 	})
+	r.POST("/router/v1/compat/v1beta/models/*modelAction", func(c *gin.Context) {
+		handleGeminiGenerateContent(c, opts)
+	})
+	r.POST("/router/v1/compat/v1/models/*modelAction", func(c *gin.Context) {
+		handleGeminiGenerateContent(c, opts)
+	})
 	r.GET("/router/v1/providers", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
 		if !ok {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"providers": engine.Providers()})
+	})
+	r.GET("/router/v1/auth", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"auth": engine.AuthRecords()})
+	})
+	r.GET("/router/v1/auth/:auth_id/events", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"events": engine.AuthEvents(c.Param("auth_id"))})
+	})
+	r.GET("/router/v1/auth/:auth_id/download", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		authID := c.Param("auth_id")
+		raw, filename, found := engine.AuthDownload(authID)
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "auth file is not available for download"})
+			return
+		}
+		engine.RecordAuthDownload(authID)
+		c.Header("Content-Disposition", `attachment; filename="`+downloadFilename(filename)+`"`)
+		c.Data(http.StatusOK, "application/octet-stream", raw)
 	})
 	r.GET("/router/v1/dashboard/summary", func(c *gin.Context) {
 		c.JSON(http.StatusOK, BuildDashboardSummary(opts.Engine, opts.DataBroker))
@@ -953,7 +988,9 @@ func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
 	content := ""
 	finishReason := ""
 	if len(openaiResponse.Choices) > 0 {
-		content = openaiResponse.Choices[0].Message.Content
+		if text, ok := openaiResponse.Choices[0].Message.Content.(string); ok {
+			content = text
+		}
 		finishReason = openaiResponse.Choices[0].FinishReason
 	}
 	writeSSEData(c, openAIChatStreamChunk{
@@ -1575,6 +1612,20 @@ func authenticatePublicRequest(c *gin.Context, store *security.APIKeyStore) (sec
 		return security.APIKeyPrincipal{}, false
 	}
 	return principal, true
+}
+
+func downloadFilename(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return "auth.json"
+	}
+	filename = strings.ReplaceAll(filename, `"`, "")
+	filename = strings.ReplaceAll(filename, "\\", "")
+	filename = strings.ReplaceAll(filename, "/", "")
+	if filename == "" || filename == "." || filename == ".." {
+		return "auth.json"
+	}
+	return filename
 }
 
 func bearerToken(header string) string {

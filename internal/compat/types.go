@@ -31,7 +31,8 @@ const (
 type ContentPartType string
 
 const (
-	ContentPartText ContentPartType = "text"
+	ContentPartText  ContentPartType = "text"
+	ContentPartImage ContentPartType = "image"
 )
 
 type ToolCallType string
@@ -46,6 +47,7 @@ type Request struct {
 	Model               string                   `json:"model"`
 	Messages            []Message                `json:"messages"`
 	Temperature         *float64                 `json:"temperature,omitempty"`
+	ReasoningEffort     string                   `json:"reasoning_effort,omitempty"`
 	MaxOutputTokens     int                      `json:"max_output_tokens,omitempty"`
 	Stream              bool                     `json:"stream,omitempty"`
 	UnsupportedFeatures UnsupportedFeaturePolicy `json:"unsupported_features,omitempty"`
@@ -62,6 +64,10 @@ type Message struct {
 type ContentPart struct {
 	Type ContentPartType `json:"type"`
 	Text string          `json:"text,omitempty"`
+	URL  string          `json:"url,omitempty"`
+	Data string          `json:"data,omitempty"`
+	MIME string          `json:"mime_type,omitempty"`
+	Name string          `json:"name,omitempty"`
 }
 
 type ToolCall struct {

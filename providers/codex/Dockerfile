@@ -13,7 +13,7 @@ FROM ${NODE_IMAGE}
 ARG CODEX_NPM_PACKAGE=@openai/codex
 ARG CODEX_NPM_VERSION=latest
 
-RUN apk add --no-cache bash ca-certificates git openssh-client tini \
+RUN apk add --no-cache bash bubblewrap ca-certificates git openssh-client tini \
   && npm install -g "${CODEX_NPM_PACKAGE}@${CODEX_NPM_VERSION}" \
   && addgroup -g 10001 pangaea \
   && adduser -D -u 10001 -G pangaea -h /home/pangaea pangaea \

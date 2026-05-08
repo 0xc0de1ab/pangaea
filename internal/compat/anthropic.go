@@ -6,13 +6,14 @@ import (
 )
 
 type AnthropicMessagesRequest struct {
-	Model       string                    `json:"model"`
-	MaxTokens   int                       `json:"max_tokens,omitempty"`
-	Messages    []AnthropicMessage        `json:"messages"`
-	System      json.RawMessage           `json:"system,omitempty"`
-	Temperature *float64                  `json:"temperature,omitempty"`
-	Stream      bool                      `json:"stream,omitempty"`
-	Tools       []AnthropicToolDefinition `json:"tools,omitempty"`
+	Model           string                    `json:"model"`
+	MaxTokens       int                       `json:"max_tokens,omitempty"`
+	Messages        []AnthropicMessage        `json:"messages"`
+	System          json.RawMessage           `json:"system,omitempty"`
+	Temperature     *float64                  `json:"temperature,omitempty"`
+	ReasoningEffort string                    `json:"reasoning_effort,omitempty"`
+	Stream          bool                      `json:"stream,omitempty"`
+	Tools           []AnthropicToolDefinition `json:"tools,omitempty"`
 }
 
 type AnthropicMessage struct {
@@ -21,13 +22,21 @@ type AnthropicMessage struct {
 }
 
 type AnthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
+	Type      string                `json:"type"`
+	Text      string                `json:"text,omitempty"`
+	ID        string                `json:"id,omitempty"`
+	Name      string                `json:"name,omitempty"`
+	Input     json.RawMessage       `json:"input,omitempty"`
+	ToolUseID string                `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage       `json:"content,omitempty"`
+	Source    *AnthropicImageSource `json:"source,omitempty"`
+}
+
+type AnthropicImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type AnthropicToolDefinition struct {
@@ -58,6 +67,7 @@ func AnthropicMessagesRequestToCanonical(in AnthropicMessagesRequest) (Request, 
 		Model:               in.Model,
 		MaxOutputTokens:     in.MaxTokens,
 		Temperature:         in.Temperature,
+		ReasoningEffort:     in.ReasoningEffort,
 		Stream:              in.Stream,
 		UnsupportedFeatures: UnsupportedFeatureReject,
 	}
@@ -87,11 +97,12 @@ func AnthropicMessagesRequestFromCanonical(in Request) (AnthropicMessagesRequest
 		return AnthropicMessagesRequest{}, err
 	}
 	out := AnthropicMessagesRequest{
-		Model:       in.Model,
-		MaxTokens:   in.MaxOutputTokens,
-		Messages:    make([]AnthropicMessage, 0, len(in.Messages)),
-		Temperature: in.Temperature,
-		Stream:      in.Stream,
+		Model:           in.Model,
+		MaxTokens:       in.MaxOutputTokens,
+		Messages:        make([]AnthropicMessage, 0, len(in.Messages)),
+		Temperature:     in.Temperature,
+		ReasoningEffort: in.ReasoningEffort,
+		Stream:          in.Stream,
 	}
 	var systemParts []string
 	for _, message := range in.Messages {
@@ -228,6 +239,24 @@ func anthropicMessageToCanonical(in AnthropicMessage) ([]Message, error) {
 			if block.Text != "" {
 				message.Content = append(message.Content, ContentPart{Type: ContentPartText, Text: block.Text})
 			}
+		case "image":
+			if block.Source == nil {
+				return nil, ErrInvalidRequest
+			}
+			switch block.Source.Type {
+			case "base64":
+				if block.Source.Data == "" {
+					return nil, ErrInvalidRequest
+				}
+				message.Content = append(message.Content, ContentPart{Type: ContentPartImage, MIME: block.Source.MediaType, Data: block.Source.Data})
+			case "url":
+				if block.Source.URL == "" {
+					return nil, ErrInvalidRequest
+				}
+				message.Content = append(message.Content, imageURLContentPart(block.Source.URL))
+			default:
+				return nil, ErrInvalidRequest
+			}
 		case "tool_use":
 			message.ToolCalls = append(message.ToolCalls, ToolCall{
 				Index:     len(message.ToolCalls),
@@ -265,10 +294,21 @@ func canonicalMessageToAnthropic(in Message) (AnthropicMessage, error) {
 	}
 	blocks := make([]AnthropicContentBlock, 0, len(in.Content)+len(in.ToolCalls))
 	for _, part := range in.Content {
-		if part.Type != ContentPartText {
+		switch part.Type {
+		case ContentPartText:
+			blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: part.Text})
+		case ContentPartImage:
+			source := AnthropicImageSource{Type: "base64", MediaType: part.MIME, Data: part.Data}
+			if part.URL != "" && part.Data == "" {
+				source = AnthropicImageSource{Type: "url", URL: part.URL}
+			}
+			if source.Type == "base64" && source.Data == "" {
+				return AnthropicMessage{}, ErrInvalidRequest
+			}
+			blocks = append(blocks, AnthropicContentBlock{Type: "image", Source: &source})
+		default:
 			return AnthropicMessage{}, ErrInvalidRequest
 		}
-		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: part.Text})
 	}
 	for _, toolCall := range in.ToolCalls {
 		input := json.RawMessage(`{}`)

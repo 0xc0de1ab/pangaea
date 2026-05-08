@@ -71,7 +71,7 @@ func (c Capability) Valid() bool {
 
 func (s HealthStatus) Valid() bool {
 	switch s {
-	case HealthUnknown, HealthReady, HealthDegraded, HealthDraining, HealthDown:
+	case HealthUnknown, HealthReady, HealthDegraded, HealthDraining, HealthAuthUpdating, HealthDown:
 		return true
 	}
 	return false

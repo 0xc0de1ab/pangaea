@@ -2,7 +2,6 @@ package compat
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 )
 
@@ -85,14 +84,17 @@ func TestAnthropicMessagesResponseFromCanonical(t *testing.T) {
 	}
 }
 
-func TestAnthropicMessagesRequestRejectsUnsupportedBlock(t *testing.T) {
-	_, err := AnthropicMessagesRequestToCanonical(AnthropicMessagesRequest{
+func TestAnthropicMessagesRequestToCanonicalImage(t *testing.T) {
+	request, err := AnthropicMessagesRequestToCanonical(AnthropicMessagesRequest{
 		Model: "claude-sonnet",
 		Messages: []AnthropicMessage{
-			{Role: "user", Content: json.RawMessage(`[{"type":"image","source":{"type":"base64"}}]`)},
+			{Role: "user", Content: json.RawMessage(`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YWJj"}}]`)},
 		},
 	})
-	if !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	if err != nil {
+		t.Fatalf("expected conversion to succeed: %v", err)
+	}
+	if got := request.Messages[0].Content[0]; got.Type != ContentPartImage || got.MIME != "image/png" || got.Data != "YWJj" {
+		t.Fatalf("unexpected image part: %#v", got)
 	}
 }

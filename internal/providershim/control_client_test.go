@@ -224,6 +224,68 @@ func TestRunStaticControlClientReportsDiscoveredModels(t *testing.T) {
 	t.Fatalf("discovered models were not reported")
 }
 
+func TestRunStaticControlClientMergesDiscoveredModelsWithConfiguredModel(t *testing.T) {
+	engine := testRouterEngine(t)
+	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
+	defer server.Close()
+
+	sim, err := providersim.New(providersim.Options{})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	registration, err := sim.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	registration.Identity.Service = provider.ServiceCodex
+	registration.Identity.Kind = provider.KindAppServer
+	registration.Models = []provider.Model{{
+		ID:           "configured-model",
+		Aliases:      []string{"default-model"},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+	}}
+	modelReporter := staticModelReporterFunc(func(context.Context) ([]provider.Model, error) {
+		return []provider.Model{
+			{ID: "configured-model", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+			{ID: "discovered-model", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+		}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunStaticControlClient(ctx, StaticControlClientOptions{
+			ControlURL:        controlURL(server.URL),
+			HeartbeatInterval: time.Second,
+			Registration:      registration,
+			ModelReporter:     modelReporter,
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, got := range engine.Providers() {
+			if got.Identity.ProviderInstanceID != registration.Identity.ProviderInstanceID || len(got.Models) != 2 {
+				continue
+			}
+			if got.Models[0].ID == "configured-model" &&
+				len(got.Models[0].Aliases) == 1 &&
+				got.Models[0].Aliases[0] == "default-model" &&
+				len(got.Models[0].Capabilities) == 2 &&
+				got.Models[1].ID == "discovered-model" {
+				cancel()
+				if err := <-errCh; err != nil {
+					t.Fatalf("static control client returned error: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatalf("discovered models were not merged with configured model")
+}
+
 func TestRunSimulatorControlClientSendsUsage(t *testing.T) {
 	engine := testRouterEngine(t)
 	server := httptest.NewServer(router.NewHTTPHandler(router.HTTPOptions{Engine: engine}))
@@ -424,7 +486,7 @@ func TestControlClientsIgnoreUnknownControlMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registration: %v", err)
 	}
-	if err := handleStaticControlRequest(context.Background(), nil, newStaticControlState(registration), nil, env); err != nil {
+	if err := handleStaticControlRequest(context.Background(), nil, newStaticControlState(registration), nil, nil, nil, env); err != nil {
 		t.Fatalf("static control client should ignore unknown messages: %v", err)
 	}
 }

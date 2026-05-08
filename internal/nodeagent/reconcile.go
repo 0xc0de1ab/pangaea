@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/runtime"
 )
 
@@ -223,6 +224,12 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	if spec.AccountHint != "" {
 		env["PANGAEA_ACCOUNT_DISPLAY"] = spec.AccountHint
 	}
+	if protocols := joinStringList(spec.Shim.Protocols); protocols != "" {
+		env["PANGAEA_SHIM_PROTOCOLS"] = protocols
+	}
+	if capabilities := joinCapabilityList(spec.Shim.Capabilities); capabilities != "" {
+		env["PANGAEA_SHIM_CAPABILITIES"] = capabilities
+	}
 	if spec.Upstream.Adapter != "" {
 		env["PANGAEA_UPSTREAM_ADAPTER"] = spec.Upstream.Adapter
 	}
@@ -251,6 +258,9 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		env["PANGAEA_MODEL"] = spec.Models[0].ID
 		if len(spec.Models[0].Aliases) > 0 {
 			env["PANGAEA_MODEL_ALIAS"] = spec.Models[0].Aliases[0]
+		}
+		if capabilities := joinCapabilityList(spec.Models[0].Capabilities); capabilities != "" {
+			env["PANGAEA_MODEL_CAPABILITIES"] = capabilities
 		}
 	}
 	if len(spec.Refresh.Command) > 0 {
@@ -416,6 +426,27 @@ func providerDialect(spec ProviderSpec) string {
 		}
 	}
 	return ""
+}
+
+func joinStringList(items []string) string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func joinCapabilityList(capabilities []provider.Capability) string {
+	out := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if capability != "" {
+			out = append(out, string(capability))
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func shellJoin(args []string) string {

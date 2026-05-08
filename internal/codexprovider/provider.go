@@ -4,12 +4,14 @@ package codexprovider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +26,7 @@ import (
 const (
 	defaultRequestTimeout = 2 * time.Minute
 	usageSource           = "codex-appserver-websocket"
+	maxCodexImageBytes    = 20 << 20
 )
 
 var ErrCodexProviderConfig = errors.New("invalid codex appserver provider config")
@@ -96,11 +99,19 @@ func (p *Provider) Registration() (provider.Registration, error) {
 	return p.registration, nil
 }
 
-func (p *Provider) Models(context.Context) ([]provider.Model, error) {
+func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 	if p == nil {
 		return nil, ErrCodexProviderConfig
 	}
-	return cloneModels(p.registration.Models), nil
+	models, err := p.discoverAppServerModels(ctx)
+	if err != nil || len(models) == 0 {
+		fallback := cloneModels(p.registration.Models)
+		if len(fallback) > 0 {
+			return fallback, nil
+		}
+		return nil, err
+	}
+	return mergeCodexModels(p.registration.Models, models), nil
 }
 
 func (p *Provider) Usage() (provider.UsageReport, error) {
@@ -187,10 +198,11 @@ func (p *Provider) invokeAppServer(ctx context.Context, request compat.Request, 
 		return compat.Response{}, fmt.Errorf("%w: thread/start response missing thread id", ErrCodexProviderConfig)
 	}
 
-	turnParams, err := turnStartParamsFromCanonical(request, threadID)
+	turnParams, cleanup, err := turnStartParamsFromCanonical(request, threadID)
 	if err != nil {
 		return compat.Response{}, err
 	}
+	defer cleanup()
 	var turnResp turnStartResponse
 	if err := client.call(ctx, "turn/start", turnParams, &turnResp); err != nil {
 		return compat.Response{}, err
@@ -259,6 +271,259 @@ func (p *Provider) invokeAppServer(ctx context.Context, request compat.Request, 
 			}
 		}
 	}
+}
+
+func (p *Provider) discoverAppServerModels(ctx context.Context) ([]provider.Model, error) {
+	token, err := readCodexAccessToken(p.authPath)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newRPCClient(ctx, p.appServerURL, token, p.dialer)
+	if err != nil {
+		return nil, err
+	}
+	defer client.close()
+	if err := client.initialize(ctx); err != nil {
+		return nil, err
+	}
+	var response codexModelListResponse
+	if err := client.call(ctx, "model/list", map[string]any{"forceRefetch": true}, &response); err != nil {
+		return nil, err
+	}
+	cache := readCodexModelsCache(filepath.Dir(p.authPath))
+	return codexModelsFromAppServer(response.Data, cache, codexModelCapabilities(p.registration)), nil
+}
+
+type codexModelListResponse struct {
+	Data []codexAppServerModel `json:"data"`
+}
+
+type codexAppServerModel struct {
+	ID               string `json:"id"`
+	Model            string `json:"model"`
+	DisplayName      string `json:"displayName"`
+	Hidden           bool   `json:"hidden"`
+	ContextWindow    int    `json:"contextWindow"`
+	MaxContextWindow int    `json:"maxContextWindow"`
+}
+
+type codexModelsCache struct {
+	Models []codexCachedModel `json:"models"`
+}
+
+type codexCachedModel struct {
+	Slug             string `json:"slug"`
+	DisplayName      string `json:"display_name"`
+	ContextWindow    int    `json:"context_window"`
+	MaxContextWindow int    `json:"max_context_window"`
+}
+
+func readCodexModelsCache(dir string) map[string]codexCachedModel {
+	path := filepath.Join(strings.TrimSpace(dir), "models_cache.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cache codexModelsCache
+	if err := json.Unmarshal(raw, &cache); err != nil {
+		return nil
+	}
+	out := make(map[string]codexCachedModel, len(cache.Models))
+	for _, model := range cache.Models {
+		slug := strings.TrimSpace(model.Slug)
+		if slug == "" {
+			continue
+		}
+		out[slug] = model
+	}
+	return out
+}
+
+func codexModelsFromAppServer(items []codexAppServerModel, cache map[string]codexCachedModel, capabilities []provider.Capability) []provider.Model {
+	models := make([]provider.Model, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		if item.Hidden {
+			continue
+		}
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			id = strings.TrimSpace(item.Model)
+		}
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		cached := cache[id]
+		contextWindow := item.ContextWindow
+		if contextWindow == 0 {
+			contextWindow = cached.ContextWindow
+		}
+		maxContextWindow := item.MaxContextWindow
+		if maxContextWindow == 0 {
+			maxContextWindow = cached.MaxContextWindow
+		}
+		if maxContextWindow == 0 {
+			maxContextWindow = contextWindow
+		}
+		aliases := []string(nil)
+		displayName := item.DisplayName
+		if strings.TrimSpace(displayName) == "" {
+			displayName = cached.DisplayName
+		}
+		if displayName := codexDisplayAlias(id, displayName); displayName != "" && displayName != id {
+			aliases = []string{displayName}
+		}
+		models = append(models, provider.Model{
+			ID:               id,
+			Aliases:          aliases,
+			Capabilities:     append([]provider.Capability(nil), capabilities...),
+			ContextTokens:    contextWindow,
+			MaxContextTokens: maxContextWindow,
+		})
+	}
+	return models
+}
+
+func codexDisplayAlias(id string, displayName string) string {
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(id)
+	}
+	if displayName == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(displayName), "gpt-") {
+		displayName = "GPT-" + strings.TrimPrefix(strings.TrimPrefix(displayName, "gpt-"), "GPT-")
+	}
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{"-Mini", " Mini"},
+		{"-mini", " Mini"},
+		{"-Codex", " Codex"},
+		{"-codex", " Codex"},
+		{"-Spark", " Spark"},
+		{"-spark", " Spark"},
+	}
+	for _, replacement := range replacements {
+		displayName = strings.ReplaceAll(displayName, replacement.old, replacement.new)
+	}
+	return displayName
+}
+
+func codexModelCapabilities(registration provider.Registration) []provider.Capability {
+	for _, model := range registration.Models {
+		if len(model.Capabilities) > 0 {
+			return append([]provider.Capability(nil), model.Capabilities...)
+		}
+	}
+	allowed := map[provider.Capability]bool{
+		provider.CapabilityOpenAIChat:            true,
+		provider.CapabilityOpenAIResponses:       true,
+		provider.CapabilityAnthropicMessages:     true,
+		provider.CapabilityGeminiGenerateContent: true,
+		provider.CapabilityStreamSSE:             true,
+	}
+	capabilities := make([]provider.Capability, 0, len(registration.Capabilities))
+	for _, capability := range registration.Capabilities {
+		if allowed[capability] {
+			capabilities = append(capabilities, capability)
+		}
+	}
+	return capabilities
+}
+
+func mergeCodexModels(configured []provider.Model, discovered []provider.Model) []provider.Model {
+	out := cloneModels(configured)
+	index := make(map[string]int, len(out))
+	for i, model := range out {
+		index[model.ID] = i
+	}
+	for _, model := range discovered {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		model.ID = id
+		if i, ok := index[id]; ok {
+			out[i] = mergeCodexModel(out[i], model)
+			continue
+		}
+		index[id] = len(out)
+		out = append(out, cloneModels([]provider.Model{model})[0])
+	}
+	return out
+}
+
+func mergeCodexModel(base provider.Model, discovered provider.Model) provider.Model {
+	base.Aliases = mergeModelAliases(base.Aliases, discovered.Aliases)
+	base.Capabilities = mergeCapabilities(base.Capabilities, discovered.Capabilities)
+	if base.ContextTokens == 0 {
+		base.ContextTokens = discovered.ContextTokens
+	}
+	if base.MaxContextTokens == 0 {
+		base.MaxContextTokens = discovered.MaxContextTokens
+	}
+	return base
+}
+
+func mergeModelAliases(base []string, discovered []string) []string {
+	if len(base) == 0 {
+		return append([]string(nil), discovered...)
+	}
+	seen := make(map[string]struct{}, len(base)+len(discovered))
+	out := make([]string, 0, len(base)+len(discovered))
+	for _, alias := range base {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		if _, ok := seen[alias]; ok {
+			continue
+		}
+		seen[alias] = struct{}{}
+		out = append(out, alias)
+	}
+	for _, alias := range discovered {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		if _, ok := seen[alias]; ok {
+			continue
+		}
+		seen[alias] = struct{}{}
+		out = append(out, alias)
+	}
+	return out
+}
+
+func mergeCapabilities(base []provider.Capability, discovered []provider.Capability) []provider.Capability {
+	if len(base) == 0 {
+		return append([]provider.Capability(nil), discovered...)
+	}
+	seen := make(map[provider.Capability]struct{}, len(base)+len(discovered))
+	out := make([]provider.Capability, 0, len(base)+len(discovered))
+	for _, capability := range base {
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	for _, capability := range discovered {
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	return out
 }
 
 func handleNotification(notification rpcNotification, turnID string, request compat.Request, emit func(compat.Event) error, builder *strings.Builder, usage *compat.Usage) (bool, error) {
@@ -385,33 +650,78 @@ type turnStartParams struct {
 	ThreadID       string      `json:"threadId"`
 	Input          []userInput `json:"input"`
 	Model          *string     `json:"model,omitempty"`
+	Effort         *string     `json:"effort,omitempty"`
 	ApprovalPolicy string      `json:"approvalPolicy,omitempty"`
 }
 
 type userInput struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+	URL  string `json:"url,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
-func turnStartParamsFromCanonical(request compat.Request, threadID string) (turnStartParams, error) {
+func turnStartParamsFromCanonical(request compat.Request, threadID string) (turnStartParams, func(), error) {
 	inputs := make([]userInput, 0, len(request.Messages))
+	cleanup := func() {}
 	for _, message := range request.Messages {
-		text := canonicalMessageText(message)
-		if strings.TrimSpace(text) == "" {
-			continue
+		messageInputs, messageCleanup, err := codexInputsFromCanonicalMessage(message)
+		if err != nil {
+			cleanup()
+			return turnStartParams{}, func() {}, err
 		}
-		inputs = append(inputs, userInput{Type: "text", Text: text})
+		inputs = append(inputs, messageInputs...)
+		previousCleanup := cleanup
+		cleanup = func() {
+			messageCleanup()
+			previousCleanup()
+		}
 	}
 	if len(inputs) == 0 {
-		return turnStartParams{}, fmt.Errorf("%w: no text input for codex turn", ErrCodexProviderConfig)
+		return turnStartParams{}, cleanup, fmt.Errorf("%w: no input for codex turn", ErrCodexProviderConfig)
 	}
 	model := request.Model
+	var effort *string
+	if request.ReasoningEffort != "" {
+		normalized := strings.ToLower(strings.TrimSpace(request.ReasoningEffort))
+		effort = &normalized
+	}
 	return turnStartParams{
 		ThreadID:       threadID,
 		Input:          inputs,
 		Model:          &model,
+		Effort:         effort,
 		ApprovalPolicy: "never",
-	}, nil
+	}, cleanup, nil
+}
+
+func codexInputsFromCanonicalMessage(message compat.Message) ([]userInput, func(), error) {
+	inputs := make([]userInput, 0, len(message.Content)+1)
+	cleanup := func() {}
+	text := canonicalMessageText(message)
+	if strings.TrimSpace(text) != "" {
+		inputs = append(inputs, userInput{Type: "text", Text: text})
+	}
+	for _, part := range message.Content {
+		if part.Type != compat.ContentPartImage {
+			continue
+		}
+		imageInput, imageCleanup, err := codexImageInput(part)
+		if err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+		inputs = append(inputs, imageInput)
+		previousCleanup := cleanup
+		cleanup = func() {
+			imageCleanup()
+			previousCleanup()
+		}
+	}
+	if len(inputs) == 0 {
+		return nil, cleanup, nil
+	}
+	return inputs, cleanup, nil
 }
 
 func canonicalMessageText(message compat.Message) string {
@@ -443,6 +753,67 @@ func canonicalMessageText(message compat.Message) string {
 		return "[Tool result] " + text
 	default:
 		return text
+	}
+}
+
+func codexImageInput(part compat.ContentPart) (userInput, func(), error) {
+	if part.URL != "" {
+		parsed, err := url.Parse(part.URL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return userInput{}, func() {}, fmt.Errorf("%w: codex image url must be http(s)", ErrCodexProviderConfig)
+		}
+		return userInput{Type: "image", URL: part.URL}, func() {}, nil
+	}
+	mime := strings.ToLower(strings.TrimSpace(part.MIME))
+	if !supportedCodexImageMIME(mime) {
+		return userInput{}, func() {}, fmt.Errorf("%w: unsupported codex image mime type %q", ErrCodexProviderConfig, part.MIME)
+	}
+	data, err := base64.StdEncoding.DecodeString(part.Data)
+	if err != nil {
+		return userInput{}, func() {}, fmt.Errorf("%w: decode image attachment: %v", ErrCodexProviderConfig, err)
+	}
+	if len(data) == 0 || len(data) > maxCodexImageBytes {
+		return userInput{}, func() {}, fmt.Errorf("%w: codex image attachment must be 1..%d bytes", ErrCodexProviderConfig, maxCodexImageBytes)
+	}
+	dir := filepath.Join(os.TempDir(), "pangaea-codex-attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return userInput{}, func() {}, err
+	}
+	file, err := os.CreateTemp(dir, "image-*"+codexImageExtension(mime))
+	if err != nil {
+		return userInput{}, func() {}, err
+	}
+	path := file.Name()
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return userInput{}, func() {}, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return userInput{}, func() {}, err
+	}
+	return userInput{Type: "localImage", Path: path}, func() { _ = os.Remove(path) }, nil
+}
+
+func supportedCodexImageMIME(mime string) bool {
+	switch mime {
+	case "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif":
+		return true
+	}
+	return false
+}
+
+func codexImageExtension(mime string) string {
+	switch mime {
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".png"
 	}
 }
 
@@ -603,7 +974,7 @@ func newRPCClient(ctx context.Context, rawURL string, token string, dialer *webs
 	client := &rpcClient{
 		conn:          conn,
 		requests:      make(map[string]chan rpcResponse),
-		notifications: make(chan rpcNotification, 128),
+		notifications: make(chan rpcNotification, 1024),
 		done:          make(chan struct{}),
 	}
 	go client.readLoop()
@@ -691,7 +1062,8 @@ func (c *rpcClient) readLoop() {
 		if envelope.Method != "" {
 			select {
 			case c.notifications <- rpcNotification{Method: envelope.Method, Params: envelope.Params}:
-			default:
+			case <-c.done:
+				return
 			}
 		}
 	}

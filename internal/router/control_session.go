@@ -149,12 +149,16 @@ func (e *Engine) SendAuthPush(ctx context.Context, push control.AuthPush) error 
 	if _, ok := e.registry.Get(push.ProviderInstanceID); !ok {
 		return provider.ErrProviderNotFound
 	}
+	if err := e.markProviderAuthRefreshing(push.ProviderInstanceID); err != nil {
+		return err
+	}
 	e.controlMu.RLock()
 	session := e.controlSessions[push.ProviderInstanceID]
 	e.controlMu.RUnlock()
 	if session == nil {
 		return fmt.Errorf("%w: %s", ErrProviderControlSessionNotFound, push.ProviderInstanceID)
 	}
+	e.RecordAuthPush(push, firstNonEmpty(push.Reason, "router pushed latest auth to provider"))
 	return session.write(control.MessageTypeAuthPush, push.PushID, push)
 }
 
@@ -163,11 +167,12 @@ func (e *Engine) bindProviderControlSession(providerInstanceID string, session *
 		return
 	}
 	e.controlMu.Lock()
-	defer e.controlMu.Unlock()
 	if e.controlSessions == nil {
 		e.controlSessions = make(map[string]*controlSession)
 	}
 	e.controlSessions[providerInstanceID] = session
+	e.controlMu.Unlock()
+	e.markProviderControlConnected(providerInstanceID)
 }
 
 func (e *Engine) removeControlSession(session *controlSession) {
@@ -255,8 +260,15 @@ func (e *Engine) markProviderAuthRefreshing(providerInstanceID string) error {
 	auth := registration.Auth
 	auth.Status = provider.AuthRefreshing
 	auth.LastRefreshErr = ""
+	registration.Health.Status = provider.HealthAuthUpdating
+	registration.Health.Reason = "auth updating"
+	registration.Health.CheckedAt = time.Now().UTC()
 	registration.Auth = auth
-	return e.registry.Upsert(registration)
+	if err := e.registry.Upsert(registration); err != nil {
+		return err
+	}
+	e.RecordProviderAuthReport(providerInstanceID, auth, time.Now().UTC())
+	return nil
 }
 
 func (e *Engine) markProviderDrainState(providerInstanceID string, drain bool, reason string) error {
@@ -278,12 +290,35 @@ func (e *Engine) markProviderControlDisconnected(providerInstanceID string) {
 	if e == nil || e.registry == nil {
 		return
 	}
+	e.controlMu.RLock()
+	active := e.controlSessions[providerInstanceID] != nil
+	e.controlMu.RUnlock()
+	if active {
+		return
+	}
 	registration, ok := e.registry.Get(providerInstanceID)
 	if !ok {
 		return
 	}
 	registration.Health.Status = provider.HealthDown
 	registration.Health.Reason = "control session disconnected"
+	registration.Health.CheckedAt = time.Now().UTC()
+	_ = e.registry.Upsert(registration)
+}
+
+func (e *Engine) markProviderControlConnected(providerInstanceID string) {
+	if e == nil || e.registry == nil {
+		return
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return
+	}
+	if registration.Health.Status != provider.HealthDown || registration.Health.Reason != "control session disconnected" {
+		return
+	}
+	registration.Health.Status = provider.HealthReady
+	registration.Health.Reason = ""
 	registration.Health.CheckedAt = time.Now().UTC()
 	_ = e.registry.Upsert(registration)
 }

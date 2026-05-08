@@ -11,6 +11,7 @@ type GeminiGenerateContentRequest struct {
 	GenerationConfig  *GeminiGenerationConfig  `json:"generationConfig,omitempty"`
 	Tools             []GeminiToolDeclaration  `json:"tools,omitempty"`
 	ToolConfig        *GeminiToolConfiguration `json:"toolConfig,omitempty"`
+	ReasoningEffort   string                   `json:"reasoning_effort,omitempty"`
 }
 
 type GeminiContent struct {
@@ -45,6 +46,7 @@ type GeminiFunctionResponse struct {
 type GeminiGenerationConfig struct {
 	Temperature     *float64 `json:"temperature,omitempty"`
 	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
+	ReasoningEffort string   `json:"reasoningEffort,omitempty"`
 	StopSequences   []string `json:"stopSequences,omitempty"`
 }
 
@@ -89,6 +91,7 @@ func GeminiGenerateContentRequestToCanonical(in GeminiGenerateContentRequest, mo
 	out := Request{
 		Dialect:             APIDialectGemini,
 		Model:               model,
+		ReasoningEffort:     in.ReasoningEffort,
 		UnsupportedFeatures: UnsupportedFeatureReject,
 	}
 	if in.SystemInstruction != nil {
@@ -106,6 +109,9 @@ func GeminiGenerateContentRequestToCanonical(in GeminiGenerateContentRequest, mo
 	if in.GenerationConfig != nil {
 		out.Temperature = in.GenerationConfig.Temperature
 		out.MaxOutputTokens = in.GenerationConfig.MaxOutputTokens
+		if out.ReasoningEffort == "" {
+			out.ReasoningEffort = in.GenerationConfig.ReasoningEffort
+		}
 	}
 	for _, content := range in.Contents {
 		converted, err := geminiContentToCanonical(content)
@@ -127,12 +133,14 @@ func GeminiGenerateContentRequestFromCanonical(in Request) (GeminiGenerateConten
 	out := GeminiGenerateContentRequest{
 		Contents: make([]GeminiContent, 0, len(in.Messages)),
 	}
-	if in.Temperature != nil || in.MaxOutputTokens > 0 {
+	if in.Temperature != nil || in.MaxOutputTokens > 0 || in.ReasoningEffort != "" {
 		out.GenerationConfig = &GeminiGenerationConfig{
 			Temperature:     in.Temperature,
 			MaxOutputTokens: in.MaxOutputTokens,
+			ReasoningEffort: in.ReasoningEffort,
 		}
 	}
+	out.ReasoningEffort = in.ReasoningEffort
 	var systemParts []GeminiPart
 	for _, message := range in.Messages {
 		if message.Role == MessageRoleSystem || message.Role == MessageRoleDeveloper {
@@ -252,7 +260,10 @@ func geminiContentToCanonical(in GeminiContent) ([]Message, error) {
 	for _, part := range in.Parts {
 		switch {
 		case part.InlineData != nil:
-			return nil, ErrInvalidRequest
+			if part.InlineData.Data == "" {
+				return nil, ErrInvalidRequest
+			}
+			message.Content = append(message.Content, ContentPart{Type: ContentPartImage, MIME: part.InlineData.MIMEType, Data: part.InlineData.Data})
 		case part.Text != "":
 			message.Content = append(message.Content, ContentPart{Type: ContentPartText, Text: part.Text})
 		case part.FunctionCall != nil:
@@ -296,10 +307,17 @@ func canonicalMessageToGemini(in Message) (GeminiContent, error) {
 	}
 	out := GeminiContent{Role: canonicalRoleToGemini(in.Role)}
 	for _, part := range in.Content {
-		if part.Type != ContentPartText {
+		switch part.Type {
+		case ContentPartText:
+			out.Parts = append(out.Parts, GeminiPart{Text: part.Text})
+		case ContentPartImage:
+			if part.Data == "" {
+				return GeminiContent{}, ErrInvalidRequest
+			}
+			out.Parts = append(out.Parts, GeminiPart{InlineData: &GeminiInlineData{MIMEType: part.MIME, Data: part.Data}})
+		default:
 			return GeminiContent{}, ErrInvalidRequest
 		}
-		out.Parts = append(out.Parts, GeminiPart{Text: part.Text})
 	}
 	for _, toolCall := range in.ToolCalls {
 		var args map[string]any

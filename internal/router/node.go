@@ -165,10 +165,101 @@ func mergeInventoryRegistration(existing provider.Registration, incoming provide
 	if incoming.Limits == (provider.LimitState{}) {
 		incoming.Limits = existing.Limits
 	}
+	incoming.Models = mergeInventoryModels(existing.Models, incoming.Models)
 	if incoming.RegisteredAt.IsZero() {
 		incoming.RegisteredAt = existing.RegisteredAt
 	}
 	return incoming
+}
+
+func mergeInventoryModels(existing []provider.Model, incoming []provider.Model) []provider.Model {
+	if len(existing) == 0 {
+		return cloneProviderModels(incoming)
+	}
+	if len(incoming) == 0 {
+		return cloneProviderModels(existing)
+	}
+	out := cloneProviderModels(incoming)
+	index := make(map[string]int, len(out))
+	for i, model := range out {
+		index[model.ID] = i
+	}
+	for _, model := range existing {
+		if model.ID == "" {
+			continue
+		}
+		if i, ok := index[model.ID]; ok {
+			out[i] = mergeInventoryModel(model, out[i])
+			continue
+		}
+		index[model.ID] = len(out)
+		out = append(out, cloneProviderModels([]provider.Model{model})[0])
+	}
+	return out
+}
+
+func mergeInventoryModel(existing provider.Model, incoming provider.Model) provider.Model {
+	incoming.Aliases = mergeStringSet(incoming.Aliases, existing.Aliases)
+	incoming.Capabilities = mergeCapabilitySet(incoming.Capabilities, existing.Capabilities)
+	if incoming.ContextTokens == 0 {
+		incoming.ContextTokens = existing.ContextTokens
+	}
+	if incoming.MaxContextTokens == 0 {
+		incoming.MaxContextTokens = existing.MaxContextTokens
+	}
+	return incoming
+}
+
+func mergeStringSet(primary []string, secondary []string) []string {
+	if len(primary) == 0 {
+		return append([]string(nil), secondary...)
+	}
+	seen := make(map[string]struct{}, len(primary)+len(secondary))
+	out := make([]string, 0, len(primary)+len(secondary))
+	for _, value := range primary {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, value := range secondary {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func mergeCapabilitySet(primary []provider.Capability, secondary []provider.Capability) []provider.Capability {
+	if len(primary) == 0 {
+		return append([]provider.Capability(nil), secondary...)
+	}
+	seen := make(map[provider.Capability]struct{}, len(primary)+len(secondary))
+	out := make([]provider.Capability, 0, len(primary)+len(secondary))
+	for _, capability := range primary {
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	for _, capability := range secondary {
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	return out
 }
 
 func (e *Engine) Nodes() []NodeSnapshot {

@@ -26,6 +26,7 @@ ENV HOME=/var/lib/pangaea/home/antigravity \
     PANGAEA_SERVICE=antigravity \
     PANGAEA_UPSTREAM_DIALECT=openai \
     PANGAEA_UPSTREAM_BASE_URL=http://127.0.0.1:8080 \
+    PANGAEA_SHIM_PROTOCOLS=openai,anthropic,gemini \
     PANGAEA_MODEL=antigravity-default \
     PANGAEA_MODEL_ALIAS=antigravity-default
 

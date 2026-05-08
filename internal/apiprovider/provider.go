@@ -116,7 +116,7 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 		if err := p.doGETJSON(ctx, "/v1/models", &response); err != nil {
 			return nil, err
 		}
-		return compatibleModels(response.Data, p.dialect), nil
+		return compatibleModels(response.Data, p.compatibleModelCapabilities()), nil
 	case compat.APIDialectGemini:
 		var response geminiModelsResponse
 		if err := p.doGETJSON(ctx, "/v1beta/models", &response); err != nil {
@@ -148,8 +148,7 @@ type geminiModel struct {
 	OutputTokenLimit           int      `json:"outputTokenLimit,omitempty"`
 }
 
-func compatibleModels(items []compatibleModel, dialect compat.APIDialect) []provider.Model {
-	capabilities := []provider.Capability{capabilityForAPIDialect(dialect), provider.CapabilityStreamSSE}
+func compatibleModels(items []compatibleModel, capabilities []provider.Capability) []provider.Model {
 	models := make([]provider.Model, 0, len(items))
 	for _, item := range items {
 		id := strings.TrimSpace(item.ID)
@@ -162,6 +161,25 @@ func compatibleModels(items []compatibleModel, dialect compat.APIDialect) []prov
 		})
 	}
 	return models
+}
+
+func (p *Provider) compatibleModelCapabilities() []provider.Capability {
+	capabilities := []provider.Capability(nil)
+	for _, capability := range p.registration.Capabilities {
+		switch capability {
+		case provider.CapabilityOpenAIChat,
+			provider.CapabilityOpenAIResponses,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+			provider.CapabilityStreamSSE:
+			capabilities = appendProviderCapability(capabilities, capability)
+		}
+	}
+	if len(capabilities) == 0 {
+		capabilities = appendProviderCapability(capabilities, capabilityForAPIDialect(p.dialect))
+		capabilities = appendProviderCapability(capabilities, provider.CapabilityStreamSSE)
+	}
+	return capabilities
 }
 
 func geminiModels(items []geminiModel) []provider.Model {
@@ -177,10 +195,11 @@ func geminiModels(items []geminiModel) []provider.Model {
 			aliases = []string{display}
 		}
 		models = append(models, provider.Model{
-			ID:            id,
-			Aliases:       aliases,
-			Capabilities:  capabilities,
-			ContextTokens: item.InputTokenLimit,
+			ID:               id,
+			Aliases:          aliases,
+			Capabilities:     capabilities,
+			ContextTokens:    item.InputTokenLimit,
+			MaxContextTokens: item.InputTokenLimit,
 		})
 	}
 	return models

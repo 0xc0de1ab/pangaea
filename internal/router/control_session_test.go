@@ -203,3 +203,62 @@ func TestHTTPControlSessionsListsBoundProviderSession(t *testing.T) {
 		t.Fatalf("unexpected control sessions: %#v", out.Sessions)
 	}
 }
+
+func TestControlSessionReplacementIgnoresStaleDisconnect(t *testing.T) {
+	engine, _ := testEngine(t)
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	if err := engine.UpsertProvider(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+
+	oldSession := newControlSession(nil)
+	replacement := newControlSession(nil)
+	engine.bindProviderControlSession(reg.Identity.ProviderInstanceID, oldSession)
+	engine.bindProviderControlSession(reg.Identity.ProviderInstanceID, replacement)
+	engine.removeControlSession(oldSession)
+
+	got, ok := engine.registry.Get(reg.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("provider missing after stale disconnect")
+	}
+	if got.Health.Status != provider.HealthReady {
+		t.Fatalf("stale disconnect should not mark replacement down, got %#v", got.Health)
+	}
+
+	engine.removeControlSession(replacement)
+	got, ok = engine.registry.Get(reg.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("provider missing after replacement disconnect")
+	}
+	if got.Health.Status != provider.HealthDown || got.Health.Reason != "control session disconnected" {
+		t.Fatalf("expected final disconnect to mark provider down, got %#v", got.Health)
+	}
+}
+
+func TestControlSessionBindRestoresControlDisconnectedHealth(t *testing.T) {
+	engine, _ := testEngine(t)
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	if err := engine.UpsertProvider(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+
+	oldSession := newControlSession(nil)
+	engine.bindProviderControlSession(reg.Identity.ProviderInstanceID, oldSession)
+	engine.removeControlSession(oldSession)
+	got, ok := engine.registry.Get(reg.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("provider missing after disconnect")
+	}
+	if got.Health.Status != provider.HealthDown || got.Health.Reason != "control session disconnected" {
+		t.Fatalf("expected provider down after disconnect, got %#v", got.Health)
+	}
+
+	engine.bindProviderControlSession(reg.Identity.ProviderInstanceID, newControlSession(nil))
+	got, ok = engine.registry.Get(reg.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("provider missing after reconnect")
+	}
+	if got.Health.Status != provider.HealthReady || got.Health.Reason != "" {
+		t.Fatalf("expected reconnect to restore provider health, got %#v", got.Health)
+	}
+}

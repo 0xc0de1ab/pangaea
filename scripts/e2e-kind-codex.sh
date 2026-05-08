@@ -8,13 +8,13 @@ router_image="${PANGAEA_ROUTER_IMAGE:-pangaea/router:kind}"
 codex_image="${PANGAEA_CODEX_IMAGE:-pangaea/provider-codex:kind}"
 codex_npm_version="${PANGAEA_CODEX_NPM_VERSION:-latest}"
 router_port="${PANGAEA_ROUTER_PORT:-18080}"
-router_api_key="${PANGAEA_ROUTER_API_KEY:-kind-router-key}"
+router_api_key="${PANGAEA_ROUTER_API_KEY:-1}"
 router_peer_token="${PANGAEA_ROUTER_PEER_TOKEN:-kind-peer-token}"
 stream_token_key="${PANGAEA_STREAM_TOKEN_KEY:-kind-stream-token-key}"
 provider_id="${PANGAEA_PROVIDER_ID:-codex-cli}"
 provider_instance_id="${PANGAEA_PROVIDER_INSTANCE_ID:-codex-cli}"
 codex_model="${PANGAEA_CODEX_MODEL:-gpt-5.5}"
-node_id="${PANGAEA_NODE_ID:-kind-host}"
+node_id="${PANGAEA_NODE_ID:-kind-codex}"
 host_name="${PANGAEA_HOST_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 account_hint="${PANGAEA_ACCOUNT_HINT:-}"
 work_dir="${PANGAEA_E2E_WORKDIR:-${repo_root}/.tmp/kind-codex-e2e}"
@@ -22,10 +22,8 @@ keep="${PANGAEA_E2E_KEEP:-1}"
 require_route="${PANGAEA_E2E_REQUIRE_ROUTE:-0}"
 invoke="${PANGAEA_E2E_INVOKE:-0}"
 storage_mode="${PANGAEA_E2E_STORAGE_MODE:-persistent}"
-provider_storage_root="${PANGAEA_E2E_PROVIDER_STORAGE_ROOT:-${work_dir}/persistent/providers}"
 success=0
 port_forward_pid=""
-node_agent_pid=""
 
 require_tool() {
   local tool="$1"
@@ -47,10 +45,6 @@ cleanup() {
     if [ -n "${port_forward_pid}" ] && kill -0 "${port_forward_pid}" 2>/dev/null; then
       kill "${port_forward_pid}" 2>/dev/null || true
       wait "${port_forward_pid}" 2>/dev/null || true
-    fi
-    if [ -n "${node_agent_pid}" ] && kill -0 "${node_agent_pid}" 2>/dev/null; then
-      kill "${node_agent_pid}" 2>/dev/null || true
-      wait "${node_agent_pid}" 2>/dev/null || true
     fi
   fi
 }
@@ -77,10 +71,6 @@ resolve_codex_auth_path() {
   fi
   echo "codex auth not found; checked ${assets_auth} then ${home_auth}" >&2
   return 1
-}
-
-docker_bridge_gateway() {
-  docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null | head -n 1
 }
 
 kubectl_arch() {
@@ -121,9 +111,8 @@ ensure_kubectl() {
 
 wait_for_http() {
   local url="$1"
-  local header_args=("${@:2}")
-  local deadline=$((SECONDS + 90))
-  until curl -fsS "${header_args[@]}" "${url}" >/dev/null 2>&1; do
+  local deadline=$((SECONDS + 120))
+  until curl -fsS "${url}" >/dev/null 2>&1; do
     if [ "${SECONDS}" -ge "${deadline}" ]; then
       echo "timed out waiting for ${url}" >&2
       return 1
@@ -134,7 +123,7 @@ wait_for_http() {
 
 wait_for_provider_websockets() {
   local url="$1"
-  local deadline=$((SECONDS + 120))
+  local deadline=$((SECONDS + 180))
   local body=""
   while true; do
     body="$(curl -fsS -H "authorization: Bearer ${router_api_key}" "${url}" 2>/dev/null || true)"
@@ -146,7 +135,7 @@ wait_for_provider_websockets() {
     fi
     if [ "${SECONDS}" -ge "${deadline}" ]; then
       printf '%s\n' "${body}" >"${work_dir}/dashboard-providers.last.json"
-      echo "timed out waiting for provider control/data websockets; last response saved to ${work_dir}/dashboard-providers.last.json" >&2
+      echo "timed out waiting for Codex provider control/data websockets; last response saved to ${work_dir}/dashboard-providers.last.json" >&2
       return 1
     fi
     sleep 2
@@ -156,7 +145,6 @@ wait_for_provider_websockets() {
 require_tool docker
 require_tool kind
 require_tool curl
-require_tool go
 
 mkdir -p "${work_dir}"
 case "${storage_mode}" in
@@ -190,6 +178,10 @@ kind load docker-image --name "${cluster}" "${codex_image}"
   --from-literal=peer-token="${router_peer_token}" \
   --from-literal=stream-token-key="${stream_token_key}" \
   --dry-run=client -o yaml | "${kubectl_bin}" apply -f -
+"${kubectl_bin}" -n "${namespace}" create secret generic pangaea-codex-auth \
+  --from-file=auth.json="${auth_path}" \
+  --dry-run=client -o yaml | "${kubectl_bin}" apply -f -
+
 sed "s/namespace: pangaea-e2e/namespace: ${namespace}/g; s/name: pangaea-e2e/name: ${namespace}/g" \
   "${repo_root}/deploy/kind/router.yaml" >"${work_dir}/router.rendered.yaml"
 if [ "${storage_mode}" = "ephemeral" ]; then
@@ -201,165 +193,87 @@ fi
 "${kubectl_bin}" -n "${namespace}" rollout restart deployment/pangaea-router
 "${kubectl_bin}" -n "${namespace}" rollout status deployment/pangaea-router --timeout=180s
 
-pid_file="${work_dir}/port-forward.pid"
-if [ -f "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
-  kill "$(cat "${pid_file}")" 2>/dev/null || true
-fi
-if truthy "${keep}"; then
-  if command -v setsid >/dev/null 2>&1; then
-    setsid "${kubectl_bin}" -n "${namespace}" port-forward --address 0.0.0.0 service/pangaea-router "${router_port}:8080" </dev/null >"${work_dir}/port-forward.log" 2>&1 &
-  else
-    nohup "${kubectl_bin}" -n "${namespace}" port-forward --address 0.0.0.0 service/pangaea-router "${router_port}:8080" </dev/null >"${work_dir}/port-forward.log" 2>&1 &
-  fi
-else
-  "${kubectl_bin}" -n "${namespace}" port-forward --address 0.0.0.0 service/pangaea-router "${router_port}:8080" >"${work_dir}/port-forward.log" 2>&1 &
-fi
-port_forward_pid="$!"
-printf '%s\n' "${port_forward_pid}" >"${pid_file}"
-wait_for_http "http://127.0.0.1:${router_port}/healthz"
-
-provider_router_host="${PANGAEA_PROVIDER_ROUTER_HOST:-$(docker_bridge_gateway)}"
-if [ -z "${provider_router_host}" ]; then
-  provider_router_host="host.docker.internal"
-fi
-router_control_url="ws://${provider_router_host}:${router_port}/router/v1/control/ws"
-router_data_url="ws://${provider_router_host}:${router_port}/router/v1/data/ws"
-
-node_config="${work_dir}/node-agent.codex.yaml"
-account_hint_line=""
+cp "${repo_root}/deploy/kind/codex-runtime.yaml" "${work_dir}/codex-runtime.rendered.yaml"
+perl -0pi -e "s/namespace: pangaea-e2e/namespace: ${namespace}/g; s/pangaea-router\\.pangaea-e2e\\.svc\\.cluster\\.local/pangaea-router.${namespace}.svc.cluster.local/g" "${work_dir}/codex-runtime.rendered.yaml"
+perl -0pi -e "s#image: pangaea/provider-codex:kind#image: ${codex_image}#g" "${work_dir}/codex-runtime.rendered.yaml"
+perl -0pi -e "s/value: codex-provider-id/value: ${provider_id}/g; s/value: codex-provider-instance-id/value: ${provider_instance_id}/g; s/value: codex-node-id/value: ${node_id}/g; s/value: codex-host-name/value: ${host_name}/g; s/value: codex-model-id/value: ${codex_model}/g" "${work_dir}/codex-runtime.rendered.yaml"
 if [ -n "${account_hint}" ]; then
-  account_hint_line="    account_hint: ${account_hint}"
+  ACCOUNT_HINT="${account_hint}" perl -0pi -e 'my $v = $ENV{ACCOUNT_HINT}; $v =~ s/\\/\\\\/g; $v =~ s/"/\\"/g; s/value: ""/value: "$v"/' "${work_dir}/codex-runtime.rendered.yaml"
 fi
-storage_block=""
-if [ "${storage_mode}" = "persistent" ]; then
-  mkdir -p "${provider_storage_root}/${provider_instance_id}"
-  storage_block="    storage:
-      mode: persistent
-      host_path: ${provider_storage_root}/${provider_instance_id}"
+perl -0pi -e "s#/var/lib/pangaea/codex-provider-instance-id#/var/lib/pangaea/${provider_instance_id}#g" "${work_dir}/codex-runtime.rendered.yaml"
+if [ "${storage_mode}" = "ephemeral" ]; then
+  perl -0pi -e 's/        - name: codex-state\n          hostPath:\n            path: \/var\/lib\/pangaea\/[^ \n]+\n            type: DirectoryOrCreate/        - name: codex-state\n          emptyDir: {}/' "${work_dir}/codex-runtime.rendered.yaml"
+fi
+"${kubectl_bin}" apply -f "${work_dir}/codex-runtime.rendered.yaml"
+"${kubectl_bin}" -n "${namespace}" set image deployment/pangaea-codex-runtime runtime="${codex_image}" shim="${codex_image}"
+if [ "${PANGAEA_E2E_SKIP_BUILD:-0}" != "1" ] || truthy "${PANGAEA_E2E_FORCE_RESTART:-0}"; then
+  "${kubectl_bin}" -n "${namespace}" rollout restart deployment/pangaea-codex-runtime
+fi
+"${kubectl_bin}" -n "${namespace}" rollout status deployment/pangaea-codex-runtime --timeout=240s
+
+pid_file="${work_dir}/port-forward.pid"
+if curl -fsS "http://127.0.0.1:${router_port}/healthz" >/dev/null 2>&1; then
+  port_forward_pid=""
 else
-  storage_block="    storage:
-      mode: ephemeral"
-fi
-cat >"${node_config}" <<EOF
-version: node-agent/v1
-node:
-  id: ${node_id}
-  host_name: ${host_name}
-runtime:
-  kind: docker
-providers:
-  - id: ${provider_id}
-    instance_id: ${provider_instance_id}
-    kind: app-server
-    image: ${codex_image}
-    image_pull_policy: never
-    host_name: ${host_name}
-${account_hint_line}
-    service: codex
-${storage_block}
-    models:
-      - id: ${codex_model}
-        aliases: [codex-default]
-        capabilities: [api.openai.chat, stream.sse]
-    auth:
-      mode: file
-      format: codex-auth-json-format
-      bootstrap: copy
-      host_path: ${auth_path}
-      container_path: /var/lib/pangaea/auth/codex/auth.json
-      owner_uid: 10001
-      owner_gid: 10001
-      file_mode: "0600"
-    refresh:
-      threshold: 5m
-      cooldown: 5m
-      timeout: 2m
-      command: [codex, exec, --skip-git-repo-check, --sandbox, read-only, --ephemeral, --ignore-user-config, --color, never, "Reply with OK only."]
-    shim:
-      protocols: [openai]
-      capabilities: [api.openai.chat, stream.sse, usage.read, models.read, auth.file, auth.refresh.oneshot]
-      entrypoint: [/usr/local/bin/provider-entrypoint]
-      command: [codex, app-server, --listen, ws://127.0.0.1:8080]
-      working_dir: /work
-    upstream:
-      adapter: websocket
-      base_url: ws://127.0.0.1:8080
-      compat: openai
-EOF
-
-docker ps -aq \
-  --filter "label=pangaea.provider_id=${provider_id}" \
-  --filter "label=pangaea.provider_instance_id=${provider_instance_id}" \
-  | xargs -r docker rm -f >/dev/null
-
-(cd "${repo_root}" && go build -trimpath -o "${work_dir}/pangaeactl" ./cmd/pangaeactl)
-node_agent_pid_file="${work_dir}/node-agent.pid"
-if [ -f "${node_agent_pid_file}" ] && kill -0 "$(cat "${node_agent_pid_file}")" 2>/dev/null; then
-  kill "$(cat "${node_agent_pid_file}")" 2>/dev/null || true
-fi
-node_agent_args=(
-  "${work_dir}/pangaeactl"
-  node-agent
-  run
-  --config "${node_config}"
-  --node-id "${node_id}"
-  --host-name "${host_name}"
-  --router-control "${router_control_url}"
-  --router-data "${router_data_url}"
-  --router-peer-token "${router_peer_token}"
-  --stream-token-key "${stream_token_key}"
-  --runtime-kind docker
-  --reconcile-containers
-  --heartbeat-interval 10s
-  --reconcile-interval 30s
-)
-if truthy "${keep}"; then
-  if command -v setsid >/dev/null 2>&1; then
-    setsid "${node_agent_args[@]}" </dev/null >"${work_dir}/node-agent.log" 2>&1 &
-  else
-    nohup "${node_agent_args[@]}" </dev/null >"${work_dir}/node-agent.log" 2>&1 &
+  if [ -f "${pid_file}" ] && kill -0 "$(cat "${pid_file}")" 2>/dev/null; then
+    kill "$(cat "${pid_file}")" 2>/dev/null || true
   fi
-else
-  "${node_agent_args[@]}" >"${work_dir}/node-agent.log" 2>&1 &
+  if truthy "${keep}"; then
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "${kubectl_bin}" -n "${namespace}" port-forward --address 0.0.0.0 service/pangaea-router "${router_port}:8080" </dev/null >"${work_dir}/port-forward.log" 2>&1 &
+    else
+      nohup "${kubectl_bin}" -n "${namespace}" port-forward --address 0.0.0.0 service/pangaea-router "${router_port}:8080" </dev/null >"${work_dir}/port-forward.log" 2>&1 &
+    fi
+  else
+    "${kubectl_bin}" -n "${namespace}" port-forward --address 0.0.0.0 service/pangaea-router "${router_port}:8080" >"${work_dir}/port-forward.log" 2>&1 &
+  fi
+  port_forward_pid="$!"
+  printf '%s\n' "${port_forward_pid}" >"${pid_file}"
 fi
-node_agent_pid="$!"
-printf '%s\n' "${node_agent_pid}" >"${node_agent_pid_file}"
-
+wait_for_http "http://127.0.0.1:${router_port}/healthz"
 wait_for_provider_websockets "http://127.0.0.1:${router_port}/router/v1/dashboard/providers"
 
-dry_run_body='{"model":"codex-default","api_dialect":"openai","stream":true}'
-dry_run_response="$(curl -fsS -H "authorization: Bearer ${router_api_key}" -H "content-type: application/json" \
-  -d "${dry_run_body}" "http://127.0.0.1:${router_port}/router/v1/routes/dry-run" || true)"
-printf '%s\n' "${dry_run_response}" >"${work_dir}/dry-run.json"
-if truthy "${require_route}" && ! printf '%s' "${dry_run_response}" | grep -q '"allowed":true'; then
-  echo "route dry-run did not allow codex-default; response saved to ${work_dir}/dry-run.json" >&2
-  exit 1
-fi
+for dialect in openai anthropic gemini; do
+  dry_run_body="{\"model\":\"codex-default\",\"api_dialect\":\"${dialect}\",\"stream\":true}"
+  dry_run_response="$(curl -fsS -H "authorization: Bearer ${router_api_key}" -H "content-type: application/json" \
+    -d "${dry_run_body}" "http://127.0.0.1:${router_port}/router/v1/routes/dry-run" || true)"
+  printf '%s\n' "${dry_run_response}" >"${work_dir}/dry-run-${dialect}.json"
+  if truthy "${require_route}" && ! printf '%s' "${dry_run_response}" | grep -q '"allowed":true'; then
+    echo "route dry-run did not allow codex-default for ${dialect}; response saved to ${work_dir}/dry-run-${dialect}.json" >&2
+    exit 1
+  fi
+done
 
 if truthy "${invoke}"; then
   curl -fsS -H "authorization: Bearer ${router_api_key}" -H "content-type: application/json" \
     -d '{"model":"codex-default","messages":[{"role":"user","content":"Reply with OK only."}],"stream":false}' \
     "http://127.0.0.1:${router_port}/v1/chat/completions" >"${work_dir}/chat-completions.json"
+  curl -fsS -H "authorization: Bearer ${router_api_key}" -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
+    -d '{"model":"codex-default","max_tokens":64,"messages":[{"role":"user","content":"Reply with OK only."}],"stream":false}' \
+    "http://127.0.0.1:${router_port}/v1/messages" >"${work_dir}/anthropic-messages.json"
+  curl -fsS -H "authorization: Bearer ${router_api_key}" -H "content-type: application/json" \
+    -d '{"contents":[{"role":"user","parts":[{"text":"Reply with OK only."}]}]}' \
+    "http://127.0.0.1:${router_port}/v1beta/models/codex-default:generateContent" >"${work_dir}/gemini-generate-content.json"
 fi
 
 success=1
 cat <<EOF
-kind codex e2e is ready
+kind codex runtime e2e is ready
   cluster: ${cluster}
   namespace: ${namespace}
   router: http://127.0.0.1:${router_port}
   dashboard: http://127.0.0.1:${router_port}/router/ui
+  local dev bearer: ${router_api_key}
   provider instance: ${provider_instance_id}
   host name reported: ${host_name}
   auth source copied from: ${auth_path}
-  provider container: pangaea-${provider_id}-${provider_instance_id}
+  codex image: ${codex_image}
+  deployment: pangaea-codex-runtime
   storage mode: ${storage_mode}
-  provider storage root: ${provider_storage_root}/${provider_instance_id}
   artifacts: ${work_dir}
 EOF
-if truthy "${keep}"; then
+if [ -n "${port_forward_pid}" ]; then
   echo "  port-forward pid: ${port_forward_pid}"
-  echo "  node-agent pid: ${node_agent_pid}"
 else
-  echo "  port-forward will stop on exit because PANGAEA_E2E_KEEP=${keep}"
+  echo "  port-forward: reused existing listener on ${router_port}"
 fi

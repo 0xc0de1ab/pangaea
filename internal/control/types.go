@@ -159,6 +159,9 @@ type AuthSnapshot struct {
 	Auth               provider.AuthState `json:"auth"`
 	Fingerprint        string             `json:"fingerprint,omitempty"`
 	Source             string             `json:"source,omitempty"`
+	Filename           string             `json:"filename,omitempty"`
+	Format             string             `json:"format,omitempty"`
+	Raw                []byte             `json:"raw,omitempty"`
 	ObservedAt         time.Time          `json:"observed_at,omitempty"`
 	ReportedAt         time.Time          `json:"reported_at,omitempty"`
 }
@@ -170,6 +173,9 @@ type AuthPush struct {
 	Auth               provider.AuthState `json:"auth"`
 	Fingerprint        string             `json:"fingerprint,omitempty"`
 	Source             string             `json:"source,omitempty"`
+	Filename           string             `json:"filename,omitempty"`
+	Format             string             `json:"format,omitempty"`
+	Raw                []byte             `json:"raw,omitempty"`
 	Reason             string             `json:"reason,omitempty"`
 	DeadlineAt         time.Time          `json:"deadline_at,omitempty"`
 }

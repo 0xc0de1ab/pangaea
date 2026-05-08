@@ -50,6 +50,25 @@ func TestEventValidateRequiresDeltaPayload(t *testing.T) {
 	}
 }
 
+func TestEventValidateAllowsWhitespaceContentDelta(t *testing.T) {
+	event := Event{
+		Type:         EventContentDelta,
+		ContentDelta: &ContentPart{Type: ContentPartText, Text: "\n"},
+	}
+
+	if err := event.Validate(); err != nil {
+		t.Fatalf("expected whitespace stream delta to be valid: %v", err)
+	}
+}
+
+func TestMessageContentPartStillRejectsWhitespaceOnlyText(t *testing.T) {
+	part := ContentPart{Type: ContentPartText, Text: "\n"}
+
+	if err := part.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("expected message content part validation to reject whitespace-only text, got %v", err)
+	}
+}
+
 func TestEventValidateAcceptsUsageDelta(t *testing.T) {
 	event := Event{
 		Type:       EventUsageDelta,

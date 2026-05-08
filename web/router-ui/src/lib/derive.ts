@@ -181,7 +181,7 @@ export function capacityRows(providers: ProviderRegistration[]) {
       row.hosts.add(provider.identity.host_name);
       const status = provider.health?.status || "unknown";
       if (status === "ready") row.ready += 1;
-      if (status === "degraded" || status === "draining") row.degraded += 1;
+      if (status === "degraded" || status === "draining" || status === "auth-updating") row.degraded += 1;
       if (status === "down") row.down += 1;
       row.activeStreams += provider.limits?.active_streams ?? 0;
       row.queueDepth += provider.limits?.queue_depth ?? 0;

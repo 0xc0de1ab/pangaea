@@ -1,6 +1,8 @@
 import type {
   APIKeyCreateResponse,
   APIKeyPrincipal,
+  AuthEvent,
+  AuthRecord,
   AuditEvent,
   ContainerSnapshot,
   NodeSnapshot,
@@ -21,6 +23,25 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   okStatuses?: number[];
+  headers?: Record<string, string>;
+};
+
+export type DashboardChatMessage = {
+  role: "user" | "assistant";
+  content: DashboardChatContent;
+};
+
+export type DashboardChatContent = string | DashboardChatContentPart[];
+
+export type DashboardChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+export type DashboardChatProtocol = "openai" | "anthropic" | "gemini";
+
+export type DashboardChatResult = {
+  content: string;
+  raw?: unknown;
 };
 
 export class APIError extends Error {
@@ -41,10 +62,7 @@ const jsonHeaders = {
 };
 
 async function request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { ...jsonHeaders };
-  if (options.token) {
-    headers.Authorization = `Bearer ${options.token}`;
-  }
+  const headers = requestHeaders(options);
   const response = await fetch(endpoint, {
     method: options.method ?? "GET",
     cache: "no-store",
@@ -70,12 +88,273 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
   return (await response.json()) as T;
 }
 
+async function requestWithFetchFallback<T>(endpoint: string, fallbackEndpoint: string, options: RequestOptions = {}): Promise<T> {
+  try {
+    return await request<T>(endpoint, options);
+  } catch (err) {
+    if (!isFetchFailure(err)) {
+      throw err;
+    }
+    return request<T>(fallbackEndpoint, options);
+  }
+}
+
+function isFetchFailure(err: unknown) {
+  return err instanceof TypeError && /fetch/i.test(err.message);
+}
+
 async function requestText(endpoint: string): Promise<string> {
   const response = await fetch(endpoint, { cache: "no-store" });
   if (!response.ok) {
     throw new APIError(response.statusText || `HTTP ${response.status}`, response.status, endpoint);
   }
   return response.text();
+}
+
+async function requestBlob(endpoint: string, options: RequestOptions = {}): Promise<Blob> {
+  const response = await fetch(endpoint, {
+    method: options.method ?? "GET",
+    cache: "no-store",
+    headers: requestHeaders(options),
+  });
+  const okStatuses = options.okStatuses ?? [200];
+  if (!okStatuses.includes(response.status)) {
+    let detail = response.statusText || `HTTP ${response.status}`;
+    try {
+      const payload = (await response.json()) as { error?: string };
+      detail = payload.error || detail;
+    } catch {
+      detail = response.statusText || detail;
+    }
+    throw new APIError(detail, response.status, endpoint);
+  }
+  return response.blob();
+}
+
+function requestHeaders(options: RequestOptions = {}) {
+  const headers: Record<string, string> = { ...jsonHeaders, ...(options.headers ?? {}) };
+  if (options.token) {
+    headers.Authorization = `Bearer ${options.token}`;
+  }
+  return headers;
+}
+
+async function requestStream(endpoint: string, options: RequestOptions, onPayload: (payload: unknown) => void): Promise<void> {
+  const response = await fetch(endpoint, {
+    method: options.method ?? "POST",
+    cache: "no-store",
+    headers: requestHeaders(options),
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  if (!response.ok) {
+    let detail = response.statusText || `HTTP ${response.status}`;
+    try {
+      const payload = (await response.json()) as { error?: string | { message?: string } };
+      if (typeof payload.error === "string") {
+        detail = payload.error;
+      } else if (payload.error?.message) {
+        detail = payload.error.message;
+      }
+    } catch {
+      detail = response.statusText || detail;
+    }
+    throw new APIError(detail, response.status, endpoint);
+  }
+  if (!response.body) {
+    throw new APIError("stream response body is empty", response.status, endpoint);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeSSEBuffer(buffer, onPayload);
+  }
+  buffer += decoder.decode();
+  consumeSSEBuffer(buffer, onPayload, true);
+}
+
+function consumeSSEBuffer(buffer: string, onPayload: (payload: unknown) => void, flush = false) {
+  let cursor = 0;
+  for (;;) {
+    const match = /\r?\n\r?\n/g.exec(buffer.slice(cursor));
+    if (!match) break;
+    const frameEnd = cursor + match.index;
+    emitSSEFrame(buffer.slice(cursor, frameEnd), onPayload);
+    cursor = frameEnd + match[0].length;
+  }
+  if (flush && cursor < buffer.length) {
+    emitSSEFrame(buffer.slice(cursor), onPayload);
+    return "";
+  }
+  return buffer.slice(cursor);
+}
+
+function emitSSEFrame(frame: string, onPayload: (payload: unknown) => void) {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+  if (!data || data === "[DONE]") {
+    return;
+  }
+  try {
+    onPayload(JSON.parse(data));
+  } catch {
+    onPayload(data);
+  }
+}
+
+async function bufferedChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token?: string, reasoningEffort?: string): Promise<DashboardChatResult> {
+  switch (protocol) {
+    case "openai": {
+      const response = await request<{ choices?: Array<{ message?: { content?: string } }> }>("/v1/chat/completions", {
+        token,
+        method: "POST",
+        body: compactBody({ model, messages: openAIMessages(messages), max_tokens: 2048, stream: false, reasoning_effort: reasoningEffort }),
+      });
+      return { content: response.choices?.[0]?.message?.content ?? "", raw: response };
+    }
+    case "anthropic": {
+      const response = await request<{ content?: Array<{ type?: string; text?: string }> }>("/v1/messages", {
+        token,
+        method: "POST",
+        headers: { "anthropic-version": "2023-06-01" },
+        body: compactBody({ model, max_tokens: 2048, messages: anthropicMessages(messages), stream: false, reasoning_effort: reasoningEffort }),
+      });
+      return { content: extractAnthropicText(response), raw: response };
+    }
+    case "gemini": {
+      const modelPath = encodeURIComponent(model);
+      const response = await requestWithFetchFallback<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }>(`/v1beta/models/${modelPath}:generateContent`, `/router/v1/compat/v1beta/models/${modelPath}:generateContent`, {
+        token,
+        method: "POST",
+        body: compactBody({ contents: geminiContents(messages), reasoning_effort: reasoningEffort, generationConfig: reasoningEffort ? { reasoningEffort: reasoningEffort } : undefined }),
+      });
+      return { content: extractGeminiText(response), raw: response };
+    }
+  }
+}
+
+async function streamingChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token: string | undefined, onDelta: (delta: string) => void, reasoningEffort?: string): Promise<DashboardChatResult> {
+  let content = "";
+  const append = (delta: string) => {
+    if (!delta) return;
+    content += delta;
+    onDelta(delta);
+  };
+  switch (protocol) {
+    case "openai":
+      await requestStream("/v1/chat/completions", {
+        token,
+        method: "POST",
+        body: compactBody({ model, messages: openAIMessages(messages), max_tokens: 2048, stream: true, reasoning_effort: reasoningEffort }),
+      }, (payload) => append(extractOpenAIStreamDelta(payload)));
+      return { content };
+    case "anthropic":
+      await requestStream("/v1/messages", {
+        token,
+        method: "POST",
+        headers: { "anthropic-version": "2023-06-01" },
+        body: compactBody({ model, max_tokens: 2048, messages: anthropicMessages(messages), stream: true, reasoning_effort: reasoningEffort }),
+      }, (payload) => append(extractAnthropicStreamDelta(payload)));
+      return { content };
+    case "gemini":
+      await requestGeminiStreamWithFallback(model, {
+        token,
+        method: "POST",
+        body: compactBody({ contents: geminiContents(messages), reasoning_effort: reasoningEffort, generationConfig: reasoningEffort ? { reasoningEffort: reasoningEffort } : undefined }),
+      }, (payload) => append(extractGeminiText(payload)));
+      return { content };
+  }
+}
+
+async function requestGeminiStreamWithFallback(model: string, options: RequestOptions, onPayload: (payload: unknown) => void) {
+  const modelPath = encodeURIComponent(model);
+  try {
+    await requestStream(`/v1beta/models/${modelPath}:streamGenerateContent?alt=sse`, options, onPayload);
+  } catch (err) {
+    if (!isFetchFailure(err)) {
+      throw err;
+    }
+    await requestStream(`/router/v1/compat/v1beta/models/${modelPath}:streamGenerateContent?alt=sse`, options, onPayload);
+  }
+}
+
+function extractAnthropicText(payload: { content?: Array<{ type?: string; text?: string }> }) {
+  return (payload.content ?? []).map((part) => part.text ?? "").join("");
+}
+
+function extractGeminiText(payload: unknown) {
+  const response = payload as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  return (response.candidates ?? []).flatMap((candidate) => candidate.content?.parts ?? []).map((part) => part.text ?? "").join("");
+}
+
+function extractOpenAIStreamDelta(payload: unknown) {
+  const response = payload as { choices?: Array<{ delta?: { content?: string } }> };
+  return response.choices?.[0]?.delta?.content ?? "";
+}
+
+function extractAnthropicStreamDelta(payload: unknown) {
+  const response = payload as { type?: string; delta?: { type?: string; text?: string } };
+  return response.type === "content_block_delta" ? response.delta?.text ?? "" : "";
+}
+
+function openAIMessages(messages: DashboardChatMessage[]) {
+  return messages.map((message) => ({ ...message, content: normalizeChatContent(message.content) }));
+}
+
+function anthropicMessages(messages: DashboardChatMessage[]) {
+  return messages.map((message) => ({
+    role: message.role,
+    content: normalizeChatContent(message.content).map((part) => {
+      if (part.type === "text") {
+        return part;
+      }
+      const source = dataURLSource(part.image_url.url);
+      return {
+        type: "image",
+        source: source ?? { type: "url", url: part.image_url.url },
+      };
+    }),
+  }));
+}
+
+function geminiContents(messages: DashboardChatMessage[]) {
+  return messages.map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: normalizeChatContent(message.content).map((part) => {
+      if (part.type === "text") {
+        return { text: part.text };
+      }
+      const source = dataURLSource(part.image_url.url);
+      if (!source || source.type !== "base64") {
+        return { text: `[Image: ${part.image_url.url}]` };
+      }
+      return { inlineData: { mimeType: source.media_type, data: source.data } };
+    }),
+  }));
+}
+
+function normalizeChatContent(content: DashboardChatContent): DashboardChatContentPart[] {
+  if (typeof content === "string") {
+    return content ? [{ type: "text", text: content }] : [];
+  }
+  return content;
+}
+
+function dataURLSource(url: string) {
+  const match = /^data:([^;,]+);base64,(.*)$/i.exec(url);
+  if (!match) return null;
+  return { type: "base64", media_type: match[1], data: match[2] };
+}
+
+function compactBody<T extends Record<string, unknown>>(body: T) {
+  return Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined && value !== "")) as Partial<T>;
 }
 
 export const api = {
@@ -96,6 +375,15 @@ export const api = {
     const payload = await request<{ usage?: ProviderUsageSnapshot[] }>("/router/v1/usage/providers", { token });
     return payload.usage ?? [];
   },
+  auth: async (token?: string) => {
+    const payload = await request<{ auth?: AuthRecord[] }>("/router/v1/auth", { token });
+    return payload.auth ?? [];
+  },
+  authEvents: async (authID: string, token?: string) => {
+    const payload = await request<{ events?: AuthEvent[] }>(`/router/v1/auth/${encodeURIComponent(authID)}/events`, { token });
+    return payload.events ?? [];
+  },
+  authDownload: (authID: string, token?: string) => requestBlob(`/router/v1/auth/${encodeURIComponent(authID)}/download`, { token }),
   controlSessions: async (token?: string) => {
     const payload = await request<{ sessions?: SessionSnapshot[] }>("/router/v1/control/sessions", { token });
     return payload.sessions ?? [];
@@ -132,6 +420,47 @@ export const api = {
     }));
     return [...openAI, ...gemini] satisfies PublicModel[];
   },
+  openAIModels: (token?: string) => request<{ object?: string; data?: Array<{ id: string; object?: string; created?: number; owned_by?: string }> }>("/v1/models", { token }),
+  anthropicModels: (token?: string) =>
+    request<{ data?: Array<{ id: string; type?: string; display_name?: string }>; first_id?: string; last_id?: string; has_more?: boolean }>("/v1/models", {
+      token,
+      headers: { "anthropic-version": "2023-06-01", "x-api-dialect": "anthropic" },
+    }),
+  geminiModels: (token?: string) =>
+    request<{ models?: Array<{ name: string; displayName?: string; version?: string; supportedGenerationMethods?: string[] }> }>("/v1beta/models", { token }),
+  openAIChat: (model: string, token?: string) =>
+    request<unknown>("/v1/chat/completions", {
+      token,
+      method: "POST",
+      body: {
+        model,
+        messages: [{ role: "user", content: "Reply with exactly OK." }],
+        max_tokens: 8,
+      },
+    }),
+  anthropicMessage: (model: string, token?: string) =>
+    request<unknown>("/v1/messages", {
+      token,
+      method: "POST",
+      headers: { "anthropic-version": "2023-06-01" },
+      body: {
+        model,
+        max_tokens: 8,
+        messages: [{ role: "user", content: "Reply with exactly OK." }],
+      },
+    }),
+  geminiGenerateContent: (model: string, token?: string) => {
+    const modelPath = encodeURIComponent(model);
+    return requestWithFetchFallback<unknown>(`/v1beta/models/${modelPath}:generateContent`, `/router/v1/compat/v1beta/models/${modelPath}:generateContent`, {
+      token,
+      method: "POST",
+      body: {
+        contents: [{ role: "user", parts: [{ text: "Reply with exactly OK." }] }],
+      },
+    });
+  },
+  bufferedChat,
+  streamingChat,
   dryRun: (route: RouteRequest, token?: string) =>
     request<RouteDecision>("/router/v1/routes/dry-run", {
       token,

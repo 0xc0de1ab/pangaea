@@ -341,7 +341,7 @@ func buildDashboardSummary(now time.Time, engine *Engine, dataBroker *DataBroker
 			summary.Providers.Ready++
 		case provider.HealthDegraded:
 			summary.Providers.Degraded++
-		case provider.HealthDraining:
+		case provider.HealthDraining, provider.HealthAuthUpdating:
 			summary.Providers.Draining++
 		case provider.HealthDown:
 			summary.Providers.Down++

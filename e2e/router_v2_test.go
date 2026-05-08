@@ -288,6 +288,15 @@ func TestE2E_V2NodeAgentProviderInventory(t *testing.T) {
 
 func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data": []map[string]any{
+					{"id": "deepseek-chat", "object": "model"},
+				},
+			})
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}
@@ -510,6 +519,16 @@ func TestE2E_V2APICompatibleProviderShimAnthropicGLMAndMiniMAX(t *testing.T) {
 
 func TestE2E_V2SidecarProviderShimAntigravityAndCopilot(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data": []map[string]any{
+					{"id": "antigravity-default", "object": "model"},
+					{"id": "github-copilot-default", "object": "model"},
+				},
+			})
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}

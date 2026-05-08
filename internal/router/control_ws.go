@@ -83,7 +83,11 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		if report.ProviderInstanceID == "" {
 			return control.ErrInvalidPayload
 		}
-		return engine.UpdateProviderAuth(report.ProviderInstanceID, report.Auth)
+		if err := engine.UpdateProviderAuth(report.ProviderInstanceID, report.Auth); err != nil {
+			return err
+		}
+		engine.RecordProviderAuthReport(report.ProviderInstanceID, report.Auth, report.ReportedAt)
+		return nil
 	case control.MessageTypeProviderUsageReport:
 		report, err := control.Decode[control.ProviderUsageReport](env, control.MessageTypeProviderUsageReport)
 		if err != nil {
@@ -108,7 +112,12 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		if auth.SelectedSource == "" && snapshot.Source != "" {
 			auth.SelectedSource = snapshot.Source
 		}
-		return engine.UpdateProviderAuth(snapshot.ProviderInstanceID, auth)
+		snapshot.Auth = auth
+		if err := engine.UpdateProviderAuth(snapshot.ProviderInstanceID, auth); err != nil {
+			return err
+		}
+		engine.RecordAuthSnapshot(snapshot)
+		return nil
 	case control.MessageTypeAuthRefreshResult:
 		result, err := control.Decode[control.AuthRefreshResult](env, control.MessageTypeAuthRefreshResult)
 		if err != nil {
@@ -134,6 +143,8 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		if err := engine.UpdateProviderAuth(result.ProviderInstanceID, auth); err != nil {
 			return err
 		}
+		result.Auth = auth
+		engine.RecordAuthRefreshResult(result)
 		engine.completeAuthRefreshResult(result)
 		return nil
 	case control.MessageTypeNodeHello:

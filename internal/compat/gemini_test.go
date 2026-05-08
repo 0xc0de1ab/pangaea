@@ -1,9 +1,6 @@
 package compat
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
 func TestGeminiGenerateContentRequestToCanonical(t *testing.T) {
 	temperature := 0.2
@@ -81,13 +78,16 @@ func TestGeminiGenerateContentResponseFromCanonical(t *testing.T) {
 	}
 }
 
-func TestGeminiGenerateContentRequestRejectsInlineData(t *testing.T) {
-	_, err := GeminiGenerateContentRequestToCanonical(GeminiGenerateContentRequest{
+func TestGeminiGenerateContentRequestToCanonicalInlineData(t *testing.T) {
+	request, err := GeminiGenerateContentRequestToCanonical(GeminiGenerateContentRequest{
 		Contents: []GeminiContent{
 			{Role: "user", Parts: []GeminiPart{{InlineData: &GeminiInlineData{MIMEType: "image/png", Data: "abc"}}}},
 		},
 	}, "gemini-2.5-flash")
-	if !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	if err != nil {
+		t.Fatalf("expected conversion to succeed: %v", err)
+	}
+	if got := request.Messages[0].Content[0]; got.Type != ContentPartImage || got.MIME != "image/png" || got.Data != "abc" {
+		t.Fatalf("unexpected image part: %#v", got)
 	}
 }
