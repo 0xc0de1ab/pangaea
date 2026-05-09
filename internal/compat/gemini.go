@@ -55,9 +55,10 @@ type GeminiToolDeclaration struct {
 }
 
 type GeminiFunctionDeclaration struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
+	Name                 string         `json:"name"`
+	Description          string         `json:"description,omitempty"`
+	Parameters           map[string]any `json:"parameters,omitempty"`
+	ParametersJSONSchema map[string]any `json:"parametersJsonSchema,omitempty"`
 }
 
 type GeminiToolConfiguration struct {
@@ -91,6 +92,7 @@ func GeminiGenerateContentRequestToCanonical(in GeminiGenerateContentRequest, mo
 	out := Request{
 		Dialect:             APIDialectGemini,
 		Model:               model,
+		Tools:               geminiToolsToCanonical(in.Tools),
 		ReasoningEffort:     in.ReasoningEffort,
 		UnsupportedFeatures: UnsupportedFeatureReject,
 	}
@@ -132,6 +134,7 @@ func GeminiGenerateContentRequestFromCanonical(in Request) (GeminiGenerateConten
 	}
 	out := GeminiGenerateContentRequest{
 		Contents: make([]GeminiContent, 0, len(in.Messages)),
+		Tools:    geminiToolsFromCanonical(in.Tools),
 	}
 	if in.Temperature != nil || in.MaxOutputTokens > 0 || in.ReasoningEffort != "" {
 		out.GenerationConfig = &GeminiGenerationConfig{
@@ -218,6 +221,45 @@ func GeminiGenerateContentResponseFromCanonical(in Response) (GeminiGenerateCont
 	return out, nil
 }
 
+func geminiToolsToCanonical(in []GeminiToolDeclaration) []ToolDefinition {
+	out := []ToolDefinition{}
+	for _, tool := range in {
+		for _, declaration := range tool.FunctionDeclarations {
+			if strings.TrimSpace(declaration.Name) == "" {
+				continue
+			}
+			parameters := declaration.ParametersJSONSchema
+			if len(parameters) == 0 {
+				parameters = declaration.Parameters
+			}
+			out = append(out, ToolDefinition{
+				Name:        declaration.Name,
+				Description: declaration.Description,
+				Parameters:  parameters,
+			})
+		}
+	}
+	return out
+}
+
+func geminiToolsFromCanonical(in []ToolDefinition) []GeminiToolDeclaration {
+	declarations := make([]GeminiFunctionDeclaration, 0, len(in))
+	for _, tool := range in {
+		if strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		declarations = append(declarations, GeminiFunctionDeclaration{
+			Name:                 tool.Name,
+			Description:          tool.Description,
+			ParametersJSONSchema: tool.Parameters,
+		})
+	}
+	if len(declarations) == 0 {
+		return nil
+	}
+	return []GeminiToolDeclaration{{FunctionDeclarations: declarations}}
+}
+
 func GeminiGenerateContentResponseToCanonical(in GeminiGenerateContentResponse) (Response, error) {
 	if len(in.Candidates) == 0 {
 		return Response{}, ErrInvalidResponse
@@ -285,6 +327,7 @@ func geminiContentToCanonical(in GeminiContent) ([]Message, error) {
 			}
 			out = append(out, Message{
 				Role:       MessageRoleTool,
+				Name:       part.FunctionResponse.Name,
 				ToolCallID: part.FunctionResponse.ID,
 				Content:    []ContentPart{{Type: ContentPartText, Text: string(response)}},
 			})
@@ -344,6 +387,7 @@ func canonicalMessageToGemini(in Message) (GeminiContent, error) {
 			}
 		}
 		out.Parts = []GeminiPart{{FunctionResponse: &GeminiFunctionResponse{
+			Name:     in.Name,
 			ID:       in.ToolCallID,
 			Response: response,
 		}}}

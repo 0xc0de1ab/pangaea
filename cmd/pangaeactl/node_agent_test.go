@@ -41,12 +41,12 @@ func TestRunNodeAgentBootstrapAuthCopiesConfiguredProviderAuth(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hostPath), 0o700); err != nil {
 		t.Fatalf("mkdir host: %v", err)
 	}
-	if err := os.WriteFile(hostPath, []byte(`{"account":"samtest4u@gmail.com"}`), 0o600); err != nil {
+	if err := os.WriteFile(hostPath, []byte(`{"account":"primary@example.test"}`), 0o600); err != nil {
 		t.Fatalf("write host auth: %v", err)
 	}
 	config := `version: node-agent/v1
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     kind: cli-container
     service: codex
     auth:
@@ -60,14 +60,14 @@ providers:
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if err := runNodeAgentBootstrapAuth(context.Background(), nodeAgentBootstrapAuthOptions{ConfigPath: configPath, ProviderID: "codex-samtest"}); err != nil {
+	if err := runNodeAgentBootstrapAuth(context.Background(), nodeAgentBootstrapAuthOptions{ConfigPath: configPath, ProviderID: "codex-primary"}); err != nil {
 		t.Fatalf("bootstrap auth: %v", err)
 	}
 	data, err := os.ReadFile(containerPath)
 	if err != nil {
 		t.Fatalf("read container auth: %v", err)
 	}
-	if string(data) != `{"account":"samtest4u@gmail.com"}` {
+	if string(data) != `{"account":"primary@example.test"}` {
 		t.Fatalf("unexpected container auth: %s", string(data))
 	}
 }
@@ -91,7 +91,7 @@ func TestRunNodeAgentReconcileProviderDryRun(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hostPath), 0o700); err != nil {
 		t.Fatalf("mkdir host: %v", err)
 	}
-	if err := os.WriteFile(hostPath, []byte(`{"account":"samtest4u@gmail.com"}`), 0o600); err != nil {
+	if err := os.WriteFile(hostPath, []byte(`{"account":"primary@example.test"}`), 0o600); err != nil {
 		t.Fatalf("write host auth: %v", err)
 	}
 	config := `version: node-agent/v1
@@ -99,7 +99,7 @@ node:
   id: node-a1
   host_name: snowbox
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     kind: cli-container
     image: pangaea/provider-codex:test
     service: codex
@@ -116,7 +116,7 @@ providers:
 	}
 	if err := runNodeAgentReconcileProvider(context.Background(), nodeAgentReconcileProviderOptions{
 		ConfigPath: configPath,
-		ProviderID: "codex-samtest",
+		ProviderID: "codex-primary",
 		DryRun:     true,
 	}); err != nil {
 		t.Fatalf("reconcile provider dry-run: %v", err)

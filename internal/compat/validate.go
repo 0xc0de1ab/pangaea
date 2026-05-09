@@ -32,6 +32,11 @@ func (r Request) Validate() error {
 			return ErrInvalidRequest
 		}
 	}
+	for _, tool := range r.Tools {
+		if err := tool.Validate(); err != nil {
+			return ErrInvalidRequest
+		}
+	}
 	return nil
 }
 
@@ -133,6 +138,13 @@ func (p ContentPart) ValidateDelta() error {
 
 func (t ToolCall) Validate() error {
 	if !t.Type.Valid() || blank(t.Name) || t.Index < 0 {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func (t ToolDefinition) Validate() error {
+	if blank(t.Name) {
 		return ErrInvalidRequest
 	}
 	return nil

@@ -150,6 +150,49 @@ func TestCommandAuthRefresherReportsCommandFailure(t *testing.T) {
 	}
 }
 
+func TestCommandAuthRefresherAcceptsUpdatedAuthFileWhenCommandFails(t *testing.T) {
+	dir := t.TempDir()
+	authPath := dir + "/auth.json"
+	if err := os.WriteFile(authPath, []byte("refreshed"), 0o600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	format := &refreshTestFormat{
+		expiresAt: now.Add(time.Hour),
+		status:    formats.StatusOK,
+		account:   "gemini-account",
+		display:   "gemini@example.test",
+	}
+	refresher, err := NewCommandAuthRefresher(CommandAuthRefresherOptions{
+		Command:  []string{"gemini", "--prompt", "ping"},
+		AuthPath: authPath,
+		Format:   format,
+		Runner: RefreshCommandRunnerFunc(func(context.Context, RefreshCommandSpec) error {
+			return errors.New("quota exhausted after token refresh")
+		}),
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new refresher: %v", err)
+	}
+
+	auth, err := refresher.RefreshAuth(context.Background(), control.AuthRefreshRequest{}, provider.Registration{
+		Auth: provider.AuthState{Status: provider.AuthRefreshSoon},
+	})
+	if err != nil {
+		t.Fatalf("refresh auth should accept healthy file after command error: %v", err)
+	}
+	if format.parsedRaw != "refreshed" {
+		t.Fatalf("parsed raw = %q, want refreshed", format.parsedRaw)
+	}
+	if auth.Status != provider.AuthHealthy || !auth.ExpiresAt.Equal(now.Add(time.Hour)) || auth.LastRefreshErr != "" {
+		t.Fatalf("unexpected auth state: %#v", auth)
+	}
+	if auth.Account.ID != "gemini-account" || auth.Account.Display != "gemini@example.test" {
+		t.Fatalf("account = %#v", auth.Account)
+	}
+}
+
 func TestCommandAuthRefresherRejectsExpiredAuthFile(t *testing.T) {
 	dir := t.TempDir()
 	authPath := dir + "/auth.json"

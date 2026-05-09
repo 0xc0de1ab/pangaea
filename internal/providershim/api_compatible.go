@@ -57,10 +57,8 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 		dynamicHealth = reporter
 	}
 	var dynamicAuth authReporter
-	if registration.Identity.Kind == provider.KindAPICompatible {
-		if reporter, ok := any(opts.Provider).(authReporter); ok {
-			dynamicAuth = reporter
-		}
+	if reporter, ok := any(opts.Provider).(authReporter); ok {
+		dynamicAuth = reporter
 	}
 
 	backoff := time.Second
@@ -151,6 +149,10 @@ type authReporter interface {
 
 type modelReporter interface {
 	Models(context.Context) ([]provider.Model, error)
+}
+
+type forcedModelDiscoveryReporter interface {
+	ForceModelDiscovery() bool
 }
 
 type AuthSnapshotReport struct {
@@ -340,7 +342,10 @@ func refreshStaticModels(ctx context.Context, state *staticControlState, reporte
 	registration := state.registrationSnapshot()
 	current := registration.Models
 	if len(current) > 0 && !shouldAugmentConfiguredModels(registration) {
-		return false
+		force, ok := reporter.(forcedModelDiscoveryReporter)
+		if !ok || !force.ForceModelDiscovery() {
+			return false
+		}
 	}
 	if _, ok := ctx.Deadline(); !ok && defaultModelDiscoveryTimeout > 0 {
 		var cancel context.CancelFunc
@@ -391,6 +396,9 @@ func mergeDiscoveredModel(current provider.Model, discovered provider.Model) pro
 	}
 	if current.MaxContextTokens == 0 {
 		current.MaxContextTokens = discovered.MaxContextTokens
+	}
+	if discovered.Quota != nil {
+		current.Quota = cloneModelQuota(discovered.Quota)
 	}
 	return current
 }
@@ -677,6 +685,15 @@ func cloneProviderModels(models []provider.Model) []provider.Model {
 		out[i] = model
 		out[i].Aliases = append([]string(nil), model.Aliases...)
 		out[i].Capabilities = append([]provider.Capability(nil), model.Capabilities...)
+		out[i].Quota = cloneModelQuota(model.Quota)
 	}
 	return out
+}
+
+func cloneModelQuota(quota *provider.ModelQuota) *provider.ModelQuota {
+	if quota == nil {
+		return nil
+	}
+	copied := *quota
+	return &copied
 }

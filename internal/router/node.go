@@ -30,6 +30,8 @@ type ContainerSnapshot struct {
 	NodeID             string                `json:"node_id,omitempty"`
 	HostName           string                `json:"host_name,omitempty"`
 	ContainerID        string                `json:"container_id"`
+	ContainerKind      string                `json:"container_kind,omitempty"`
+	ContainerName      string                `json:"container_name,omitempty"`
 	ProviderID         string                `json:"provider_id,omitempty"`
 	ProviderInstanceID string                `json:"provider_instance_id,omitempty"`
 	Image              string                `json:"image,omitempty"`
@@ -153,6 +155,12 @@ func mergeInventoryRegistration(existing provider.Registration, incoming provide
 	if incoming.Identity.ContainerID == "" {
 		incoming.Identity.ContainerID = existing.Identity.ContainerID
 	}
+	if incoming.Identity.ContainerKind == "" {
+		incoming.Identity.ContainerKind = existing.Identity.ContainerKind
+	}
+	if incoming.Identity.ContainerName == "" {
+		incoming.Identity.ContainerName = existing.Identity.ContainerName
+	}
 	incoming.Identity.Account = accountWithFallback(incoming.Identity.Account, existing.Identity.Account)
 	incoming.Identity.Account = accountWithFallback(incoming.Identity.Account, existing.Auth.Account)
 	if incoming.Health.Status == "" || incoming.Health.Status == provider.HealthUnknown {
@@ -206,6 +214,14 @@ func mergeInventoryModel(existing provider.Model, incoming provider.Model) provi
 	}
 	if incoming.MaxContextTokens == 0 {
 		incoming.MaxContextTokens = existing.MaxContextTokens
+	}
+	if incoming.Kind == "" {
+		incoming.Kind = existing.Kind
+	}
+	if len(incoming.GroupMembers) == 0 {
+		incoming.GroupMembers = append([]string(nil), existing.GroupMembers...)
+	} else {
+		incoming.GroupMembers = mergeStringSet(incoming.GroupMembers, existing.GroupMembers)
 	}
 	return incoming
 }
@@ -318,6 +334,8 @@ func (e *Engine) upsertContainer(nodeID string, hostName string, report control.
 		NodeID:             nodeID,
 		HostName:           hostName,
 		ContainerID:        report.ContainerID,
+		ContainerKind:      report.ContainerKind,
+		ContainerName:      report.ContainerName,
 		ProviderID:         report.ProviderID,
 		ProviderInstanceID: report.ProviderInstanceID,
 		Image:              report.Image,

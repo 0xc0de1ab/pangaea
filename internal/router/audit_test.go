@@ -12,7 +12,7 @@ func TestEngineAuditEventsNewestFirstAndLimited(t *testing.T) {
 	})
 	second := engine.RecordAuditEvent(AuditEvent{
 		Type:    AuditEventProviderDrain,
-		Target:  AuditTarget{ProviderInstanceID: "codex-samtest-a1"},
+		Target:  AuditTarget{ProviderInstanceID: "codex-primary-a1"},
 		Outcome: AuditOutcomeFailed,
 		Error:   "control session not found",
 	})

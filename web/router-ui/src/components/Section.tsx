@@ -30,6 +30,6 @@ export function Section({ title, subtitle, actions, error, children }: SectionPr
   );
 }
 
-export function EmptyState({ children = "No records" }: { children?: ReactNode }) {
-  return <div className="empty-state">{children}</div>;
+export function EmptyState({ children = "No records", className }: { children?: ReactNode; className?: string }) {
+  return <div className={["empty-state", className].filter(Boolean).join(" ")}>{children}</div>;
 }

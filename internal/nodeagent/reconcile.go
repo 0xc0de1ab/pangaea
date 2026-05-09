@@ -27,6 +27,7 @@ type ContainerSpecOptions struct {
 	RouterDataURL    string
 	StreamTokenKey   string
 	RouterPeerToken  string
+	ContainerKind    string
 }
 
 type containerFinder interface {
@@ -65,7 +66,7 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 				if err := rt.Remove(ctx, status.ID, runtime.RemoveOptions{Force: true}); err != nil {
 					return ReconcileResult{}, err
 				}
-				return createProviderContainer(ctx, rt, containerSpec)
+				return createProviderContainer(ctx, rt, containerSpec, opts.ContainerKind)
 			}
 			state := status.State
 			if state != "running" {
@@ -89,6 +90,8 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 			now := time.Now().UTC()
 			report := control.ContainerReport{
 				ContainerID:        status.ID.String(),
+				ContainerKind:      opts.ContainerKind,
+				ContainerName:      firstNonBlank(status.Name, containerSpec.Name),
 				ProviderID:         containerSpec.ProviderID,
 				ProviderInstanceID: containerSpec.ProviderInstanceID,
 				Image:              status.Image.String(),
@@ -109,14 +112,14 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 			return ReconcileResult{}, err
 		}
 	}
-	return createProviderContainer(ctx, rt, containerSpec)
+	return createProviderContainer(ctx, rt, containerSpec, opts.ContainerKind)
 }
 
 func shouldPullProviderImage(spec ProviderSpec) bool {
 	return normalizedImagePullPolicy(spec.ImagePullPolicy) != "never"
 }
 
-func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerSpec runtime.ContainerSpec) (ReconcileResult, error) {
+func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerSpec runtime.ContainerSpec, containerKind string) (ReconcileResult, error) {
 	containerID, err := rt.Create(ctx, containerSpec)
 	if err != nil {
 		return ReconcileResult{}, err
@@ -132,6 +135,8 @@ func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerS
 	now := time.Now().UTC()
 	report := control.ContainerReport{
 		ContainerID:        containerID.String(),
+		ContainerKind:      containerKind,
+		ContainerName:      containerSpec.Name,
 		ProviderID:         containerSpec.ProviderID,
 		ProviderInstanceID: containerSpec.ProviderInstanceID,
 		Image:              containerSpec.Image.String(),
@@ -192,18 +197,24 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	if spec.HostName != "" {
 		hostName = spec.HostName
 	}
+	containerName := defaultContainerName(spec.ID, instanceID)
 	labels := map[string]string{
 		"pangaea.provider_id":          spec.ID,
 		"pangaea.provider_instance_id": instanceID,
 		"pangaea.service":              string(spec.Service),
 	}
 	env := map[string]string{
-		"PANGAEA_PROVIDER_ID":          spec.ID,
-		"PANGAEA_PROVIDER_INSTANCE_ID": instanceID,
-		"PANGAEA_NODE_ID":              nodeID,
-		"PANGAEA_HOST_NAME":            hostName,
-		"PANGAEA_SERVICE":              string(spec.Service),
-		"PANGAEA_SHIM_MODE":            string(spec.Kind),
+		"PANGAEA_PROVIDER_ID":           spec.ID,
+		"PANGAEA_PROVIDER_INSTANCE_ID":  instanceID,
+		"PANGAEA_NODE_ID":               nodeID,
+		"PANGAEA_HOST_NAME":             hostName,
+		"PANGAEA_CONTAINER_NAME":        containerName,
+		"PANGAEA_RUNTIME_SETTINGS_PATH": "/var/lib/pangaea/runtime/provider.env",
+		"PANGAEA_SERVICE":               string(spec.Service),
+		"PANGAEA_SHIM_MODE":             string(spec.Kind),
+	}
+	if opts.ContainerKind != "" {
+		env["PANGAEA_CONTAINER_KIND"] = opts.ContainerKind
 	}
 	if opts.RouterControlURL != "" {
 		env["PANGAEA_ROUTER_CONTROL_URL"] = opts.RouterControlURL
@@ -230,8 +241,8 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	if capabilities := joinCapabilityList(spec.Shim.Capabilities); capabilities != "" {
 		env["PANGAEA_SHIM_CAPABILITIES"] = capabilities
 	}
-	if spec.Upstream.Adapter != "" {
-		env["PANGAEA_UPSTREAM_ADAPTER"] = spec.Upstream.Adapter
+	if spec.ProviderMode != "" {
+		env["PANGAEA_PROVIDER_MODE"] = spec.ProviderMode
 	}
 	if spec.Upstream.BaseURL != "" {
 		env["PANGAEA_UPSTREAM_BASE_URL"] = spec.Upstream.BaseURL
@@ -256,6 +267,9 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	}
 	if len(spec.Models) > 0 {
 		env["PANGAEA_MODEL"] = spec.Models[0].ID
+		if models := providerModelEnv(spec.Models); models != "" {
+			env["PANGAEA_MODELS"] = models
+		}
 		if len(spec.Models[0].Aliases) > 0 {
 			env["PANGAEA_MODEL_ALIAS"] = spec.Models[0].Aliases[0]
 		}
@@ -275,17 +289,25 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	if spec.Refresh.Timeout != "" {
 		env["PANGAEA_REFRESH_TIMEOUT"] = spec.Refresh.Timeout
 	}
+	for key, value := range spec.Env {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		env[key] = value
+	}
 	containerSpec := runtime.ContainerSpec{
 		ProviderID:         spec.ID,
 		ProviderInstanceID: instanceID,
 		NodeID:             nodeID,
 		HostName:           hostName,
-		Name:               defaultContainerName(spec.ID, instanceID),
+		Name:               containerName,
 		Image:              runtime.ImageRef(spec.Image),
 		Entrypoint:         append([]string(nil), spec.Shim.Entrypoint...),
 		Command:            append([]string(nil), spec.Shim.Command...),
 		Env:                env,
 		Labels:             labels,
+		NetworkMode:        normalizedNetworkMode(spec.NetworkMode),
 		WorkingDir:         strings.TrimSpace(spec.Shim.WorkingDir),
 		Security:           runtime.DefaultSecurityProfile(),
 		Resources: runtime.ResourceLimits{
@@ -337,6 +359,29 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		return runtime.ContainerSpec{}, err
 	}
 	return containerSpec, nil
+}
+
+func providerModelEnv(models []provider.Model) string {
+	items := make([]string, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		item := id
+		aliases := make([]string, 0, len(model.Aliases))
+		for _, alias := range model.Aliases {
+			alias = strings.TrimSpace(alias)
+			if alias != "" && alias != id {
+				aliases = append(aliases, alias)
+			}
+		}
+		if len(aliases) > 0 {
+			item += "=" + strings.Join(aliases, "|")
+		}
+		items = append(items, item)
+	}
+	return strings.Join(items, ",")
 }
 
 func apiKeyAuthCopyConfigured(auth AuthSpec) bool {
@@ -464,6 +509,15 @@ func shouldSyncHostToContainerOnReconcile(policy string) bool {
 	default:
 		return false
 	}
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func shellQuote(value string) string {

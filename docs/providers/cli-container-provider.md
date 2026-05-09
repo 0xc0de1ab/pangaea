@@ -50,11 +50,11 @@ Example:
 
 ```yaml
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     service: codex
     auth:
       bootstrap: copy
-      host_path: /srv/pangaea/auth/codex/samtest/auth.json
+      host_path: /srv/pangaea/auth/codex/primary/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
 ```
 
@@ -102,16 +102,17 @@ Possible bridge modes:
 
 Local server must be private to container/shim network.
 
-`upstream.adapter` selects how the shim reaches the provider runtime:
+`provider_mode` selects how the shim reaches the provider runtime:
 
-- `websocket`: direct provider AppServer WebSocket adapter where implemented
-  today for Codex.
-- `reverse-http`: generic HTTP-compatible bridge path. `upstream.base_url`
-  must point at a local OpenAI/Anthropic/Gemini-compatible HTTP endpoint.
-- `cli-oneshot`: run the provider CLI once per request. This is implemented
+- `app-server`: direct provider AppServer adapter where implemented today for
+  Codex.
+- `http-direct`: shim constructs provider-native HTTP requests directly.
+- `cli-adapter`: run the provider CLI once per request or stream via a CLI
+  output mode when available. This is implemented
   today for Claude and Gemini and does not require `upstream.base_url`.
-- `api-compatible`: same generic HTTP-compatible path, mainly for providers
-  that are not CLI containers.
+
+No backward-compatible adapter aliases are accepted. Use `http-direct`,
+`app-server`, or `cli-adapter` explicitly.
 
 ## Models
 

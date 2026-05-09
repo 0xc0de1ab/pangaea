@@ -2,6 +2,7 @@ package cliprovider
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,81 @@ func TestProviderInvokeExtractsGeminiJSON(t *testing.T) {
 	}
 	if response.Message.Content[0].Text != "gemini ok" {
 		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestProviderInvokeExtractsGeminiJSONStats(t *testing.T) {
+	p := newTestProvider(t, provider.ServiceGemini, CommandRunnerFunc(func(_ context.Context, _ CommandSpec) (CommandResult, error) {
+		return CommandResult{Stdout: []byte(`{"response":"gemini ok","stats":{"total_tokens":11,"input_tokens":7,"output_tokens":4}}`)}, nil
+	}))
+	response, err := p.Invoke(context.Background(), mustRegistration(t, p), testRequest(compat.APIDialectGemini, "gemini-2.5-flash"))
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if response.Usage.InputTokens != 7 || response.Usage.OutputTokens != 4 || response.Usage.TotalTokens != 11 {
+		t.Fatalf("unexpected usage: %#v", response.Usage)
+	}
+}
+
+func TestExtractGeminiPrettyJSONDoesNotUseStreamParser(t *testing.T) {
+	text, err := ExtractResponseText(provider.ServiceGemini, []byte(`{
+  "response": "pretty ok",
+  "stats": {
+    "total_tokens": 3
+  }
+}`))
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if text != "pretty ok" {
+		t.Fatalf("text = %q, want pretty ok", text)
+	}
+}
+
+func TestProviderInvokeStreamUsesGeminiStreamJSON(t *testing.T) {
+	runner := &streamingCommandRunner{
+		lines: []string{
+			`{"type":"init","session_id":"session-1","model":"gemini-2.5-flash"}`,
+			`{"type":"message","role":"user","content":"hello"}`,
+			`{"type":"message","role":"assistant","content":"hello ","delta":true}`,
+			`{"type":"message","role":"assistant","content":"stream","delta":true}`,
+			`{"type":"result","status":"success","stats":{"total_tokens":9,"input_tokens":4,"output_tokens":5}}`,
+		},
+	}
+	p := newTestProvider(t, provider.ServiceGemini, runner)
+	request := testRequest(compat.APIDialectOpenAI, "gemini-2.5-flash")
+	request.Stream = true
+	var events []compat.Event
+	response, err := p.InvokeStream(context.Background(), mustRegistration(t, p), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if response.ID != request.ID || contentText(response.Message.Content) != "hello stream" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if !runner.sawStreamFormat {
+		t.Fatalf("gemini command did not switch to stream-json: %#v", runner.sawCommand)
+	}
+	if len(events) < 5 || events[0].Type != compat.EventMessageStart || events[len(events)-1].Type != compat.EventDone {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	if response.Usage.TotalTokens != 9 {
+		t.Fatalf("unexpected usage: %#v", response.Usage)
+	}
+}
+
+func TestCommandErrorFiltersGeminiAdvisories(t *testing.T) {
+	err := commandError([]string{"gemini"}, CommandResult{
+		Stderr: []byte("Warning: Basic terminal detected (TERM=dumb). Visual rendering will be limited.\nWarning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.\nRipgrep is not available. Falling back to GrepTool.\nError when talking to Gemini API\n"),
+	}, errors.New("exit status 1"))
+	if strings.Contains(err.Error(), "Basic terminal") || strings.Contains(err.Error(), "Ripgrep") {
+		t.Fatalf("advisory warnings were not filtered: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Error when talking to Gemini API") {
+		t.Fatalf("expected substantive error, got %v", err)
 	}
 }
 
@@ -128,6 +204,37 @@ func newTestProviderWithOptions(t *testing.T, opts Options) *Provider {
 		t.Fatalf("new provider: %v", err)
 	}
 	return p
+}
+
+type streamingCommandRunner struct {
+	lines           []string
+	sawCommand      []string
+	sawStreamFormat bool
+}
+
+func (r *streamingCommandRunner) RunCommand(context.Context, CommandSpec) (CommandResult, error) {
+	return CommandResult{}, errors.New("RunCommand should not be used for stream request")
+}
+
+func (r *streamingCommandRunner) StreamCommand(_ context.Context, spec CommandSpec, onStdoutLine CommandLineHandler) (CommandResult, error) {
+	r.sawCommand = append([]string(nil), spec.Command...)
+	for i, arg := range spec.Command {
+		if arg == "--output-format" && i+1 < len(spec.Command) && spec.Command[i+1] == "stream-json" {
+			r.sawStreamFormat = true
+		}
+	}
+	if spec.Env["TERM"] != "xterm-256color" || spec.Env["COLORTERM"] == "" {
+		return CommandResult{}, errors.New("missing terminal env")
+	}
+	var stdout strings.Builder
+	for _, line := range r.lines {
+		stdout.WriteString(line)
+		stdout.WriteByte('\n')
+		if err := onStdoutLine([]byte(line)); err != nil {
+			return CommandResult{Stdout: []byte(stdout.String())}, err
+		}
+	}
+	return CommandResult{Stdout: []byte(stdout.String())}, nil
 }
 
 func mustRegistration(t *testing.T, p *Provider) provider.Registration {

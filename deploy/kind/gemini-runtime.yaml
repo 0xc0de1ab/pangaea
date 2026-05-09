@@ -1,0 +1,159 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pangaea-gemini-runtime
+  namespace: pangaea-e2e
+  labels:
+    app.kubernetes.io/name: pangaea-gemini-runtime
+    app.kubernetes.io/component: provider-runtime
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pangaea-gemini-runtime
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pangaea-gemini-runtime
+        app.kubernetes.io/component: provider-runtime
+    spec:
+      initContainers:
+        - name: bootstrap-gemini
+          image: alpine:3.22
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /var/lib/pangaea/home/gemini/.gemini /var/lib/pangaea/tmp
+              cp /auth-src/oauth_creds.json /var/lib/pangaea/home/gemini/.gemini/oauth_creds.json
+              if [ -s /auth-src/settings.json ]; then
+                cp /auth-src/settings.json /var/lib/pangaea/home/gemini/.gemini/settings.json
+              else
+                printf '%s\n' '{"selectedAuthType":"oauth-personal","security":{"auth":{"selectedType":"oauth-personal"}}}' > /var/lib/pangaea/home/gemini/.gemini/settings.json
+              fi
+              chown -R 10001:10001 /var/lib/pangaea
+              chmod 0700 /var/lib/pangaea/home/gemini /var/lib/pangaea/home/gemini/.gemini /var/lib/pangaea/tmp
+              chmod 0600 /var/lib/pangaea/home/gemini/.gemini/oauth_creds.json
+              chmod 0600 /var/lib/pangaea/home/gemini/.gemini/settings.json
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: gemini-auth-secret
+              mountPath: /auth-src
+              readOnly: true
+            - name: gemini-state
+              mountPath: /var/lib/pangaea
+      containers:
+        - name: shim
+          image: pangaea/provider-gemini:kind
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /var/lib/pangaea/home/gemini
+            - name: TMPDIR
+              value: /var/lib/pangaea/tmp
+            - name: GEMINI_CLI_TRUST_WORKSPACE
+              value: "true"
+            - name: TERM
+              value: xterm-256color
+            - name: COLORTERM
+              value: truecolor
+            - name: FORCE_COLOR
+              value: "1"
+            - name: PANGAEA_SHIM_MODE
+              value: cli-container
+            - name: PANGAEA_PROVIDER_ID
+              value: gemini-cli
+            - name: PANGAEA_PROVIDER_INSTANCE_ID
+              value: gemini-cli
+            - name: PANGAEA_NODE_ID
+              value: kind-gemini
+            - name: PANGAEA_HOST_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: PANGAEA_HOST_NAME
+              value: "$(PANGAEA_HOST_HOSTNAME)"
+            - name: PANGAEA_CONTAINER_KIND
+              value: kubernetes
+            - name: PANGAEA_CONTAINER_NAME
+              value: shim
+            - name: PANGAEA_SERVICE
+              value: gemini
+            - name: PANGAEA_ACCOUNT
+              value: ""
+            - name: PANGAEA_ROUTER_CONTROL_URL
+              value: ws://pangaea-router.pangaea-e2e.svc.cluster.local:8080/router/v1/control/ws
+            - name: PANGAEA_ROUTER_PEER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pangaea-router-secrets
+                  key: peer-token
+            - name: PANGAEA_STREAM_TOKEN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pangaea-router-secrets
+                  key: stream-token-key
+            - name: PANGAEA_AUTH_PATH
+              value: /var/lib/pangaea/home/gemini/.gemini/oauth_creds.json
+            - name: PANGAEA_AUTH_FORMAT
+              value: gemini-oauth-creds-json-format
+            - name: PANGAEA_PROVIDER_MODE
+              value: http-direct
+            - name: PANGAEA_UPSTREAM_DIALECT
+              value: gemini
+            - name: PANGAEA_SHIM_PROTOCOLS
+              value: openai,anthropic,gemini
+            - name: PANGAEA_SHIM_CAPABILITIES
+              value: api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse,usage.read,models.read,auth.file,auth.refresh.oneshot
+            - name: PANGAEA_MODEL
+              value: gemini-2.5-flash
+            - name: PANGAEA_MODELS
+              value: "gemini-2.5-flash=gemini-default|Gemini 2.5 Flash,gemini-2.5-pro=Gemini 2.5 Pro,gemini-2.5-flash-lite=Gemini 2.5 Flash Lite,auto-gemini-3=Auto Gemini 3,auto-gemini-2.5=Auto Gemini 2.5,gemini-3-pro-preview=Gemini 3 Pro Preview,gemini-3-flash-preview=Gemini 3 Flash Preview,gemini-3.1-pro-preview=Gemini 3.1 Pro Preview,gemini-3.1-flash-lite-preview=Gemini 3.1 Flash Lite Preview"
+            - name: PANGAEA_MODEL_ALIAS
+              value: gemini-default
+            - name: PANGAEA_MODEL_CAPABILITIES
+              value: api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse
+            - name: PANGAEA_REFRESH_COMMAND
+              value: gemini -p 'Reply with OK only.' --skip-trust --approval-mode plan --output-format json --model gemini-2.5-flash
+            - name: PANGAEA_REFRESH_TIMEOUT
+              value: 2m
+            - name: PANGAEA_REFRESH_THRESHOLD
+              value: 5m
+            - name: PANGAEA_REFRESH_COOLDOWN
+              value: 5m
+            - name: PANGAEA_CLI_REQUEST_TIMEOUT
+              value: 5m
+          volumeMounts:
+            - name: gemini-state
+              mountPath: /var/lib/pangaea
+            - name: gemini-work
+              mountPath: /work
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -s /var/lib/pangaea/home/gemini/.gemini/oauth_creds.json && command -v gemini >/dev/null
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -s /var/lib/pangaea/home/gemini/.gemini/oauth_creds.json && pgrep -f 'pangaeactl provider-shim run' >/dev/null
+            periodSeconds: 10
+            failureThreshold: 6
+      volumes:
+        - name: gemini-auth-secret
+          secret:
+            secretName: pangaea-gemini-auth
+            defaultMode: 0400
+        - name: gemini-state
+          hostPath:
+            path: /var/lib/pangaea/gemini-cli
+            type: DirectoryOrCreate
+        - name: gemini-work
+          emptyDir: {}

@@ -15,6 +15,10 @@ type Options struct {
 	// StableWindow: required duration of stable size between two stat()
 	// samples before emitting an Event. Default: common.WatcherStableWindow.
 	StableWindow time.Duration
+	// PollInterval: stat-based fallback for filesystems that do not reliably
+	// emit fsnotify events, such as WSL DrvFs paths under /mnt/c.
+	// Default: common.WatcherPollInterval. Set negative to disable.
+	PollInterval time.Duration
 	// MaxQueue: capacity of the Events() channel. Default: common.WatcherDefaultQueue.
 	MaxQueue int
 	// Clock: optional injection for tests. Default: time.Now.
@@ -27,6 +31,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.StableWindow <= 0 {
 		o.StableWindow = common.WatcherStableWindow
+	}
+	if o.PollInterval == 0 {
+		o.PollInterval = common.WatcherPollInterval
 	}
 	if o.MaxQueue <= 0 {
 		o.MaxQueue = common.WatcherDefaultQueue

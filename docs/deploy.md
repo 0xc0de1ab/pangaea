@@ -230,7 +230,7 @@ The SSH registry lives in `server.yaml`:
 ```yaml
 ssh_nodes:
   - node_id: "a2"
-    target: "dh.kam@a2.oci.example.com"
+    target: "operator@a2.oci.example.com"
     port: 2222
 ```
 
@@ -272,11 +272,11 @@ Advanced overrides are available when needed:
 ```yaml
 ssh_nodes:
   - node_id: "a2"
-    target: "dh.kam@a2.oci.example.com"
+    target: "operator@a2.oci.example.com"
     use_ssh_config: true
     port: 2222
     command: "/usr/local/bin/pangaeactl"
-    config_path: "/home/dh.kam/pangaea-client.yaml"
+    config_path: "./pangaea-client.yaml"
     reverse_addr: "127.0.0.1:9443"
 ```
 

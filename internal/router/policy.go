@@ -29,6 +29,7 @@ type RoutingPolicy struct {
 
 type ModelAlias struct {
 	CanonicalModel       string                `json:"canonical_model" yaml:"canonical_model"`
+	CanonicalModels      []string              `json:"canonical_models,omitempty" yaml:"canonical_models,omitempty"`
 	RequiredCapabilities []provider.Capability `json:"required_capabilities,omitempty" yaml:"required_capabilities,omitempty"`
 }
 
@@ -103,6 +104,7 @@ type RouteRejection struct {
 
 type scoredCandidate struct {
 	registration provider.Registration
+	canonical    string
 	score        int
 	weight       int
 	reason       string
@@ -130,7 +132,7 @@ func (p RoutingPolicy) Validate() error {
 		return fmt.Errorf("%w: routes are required", ErrInvalidPolicy)
 	}
 	for aliasName, alias := range p.ModelAliases {
-		if strings.TrimSpace(aliasName) == "" || strings.TrimSpace(alias.CanonicalModel) == "" {
+		if strings.TrimSpace(aliasName) == "" || len(modelAliasCanonicalModels(alias)) == 0 {
 			return fmt.Errorf("%w: invalid model alias %q", ErrInvalidPolicy, aliasName)
 		}
 		if err := validateCapabilities(alias.RequiredCapabilities); err != nil {
@@ -171,12 +173,13 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 		return RouteDecision{Reason: err.Error(), Rejections: []RouteRejection{{Reason: err.Error()}}}
 	}
 	alias := p.ModelAliases[request.Model]
-	canonicalModel := request.Model
+	canonicalModels := []string{request.Model}
 	required := make([]provider.Capability, 0)
-	if alias.CanonicalModel != "" {
-		canonicalModel = alias.CanonicalModel
+	if candidates := modelAliasCanonicalModels(alias); len(candidates) > 0 {
+		canonicalModels = candidates
 		required = append(required, alias.RequiredCapabilities...)
 	}
+	canonicalModel := canonicalModels[0]
 	if request.Stream {
 		required = appendCapability(required, provider.CapabilityStreamSSE)
 	}
@@ -201,30 +204,46 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 		RequiredCapabilities: required,
 	}
 	scored := make([]scoredCandidate, 0)
-	for _, candidate := range route.Candidates {
-		candidateMatches := false
-		for _, registration := range registrations {
-			if !candidateMatchesRegistration(candidate, registration) {
-				continue
+	allRejections := make([]RouteRejection, 0)
+	for _, candidateCanonicalModel := range canonicalModels {
+		modelScored := make([]scoredCandidate, 0)
+		modelRejections := make([]RouteRejection, 0)
+		for _, candidate := range route.Candidates {
+			candidateMatches := false
+			for _, registration := range registrations {
+				if !candidateMatchesRegistration(candidate, registration) {
+					continue
+				}
+				candidateMatches = true
+				score, weight, scoreReason, rejection := evaluateRegistration(candidate, route.Constraints, required, request.Model, candidateCanonicalModel, registration)
+				if rejection != "" {
+					modelRejections = append(modelRejections, RouteRejection{
+						ProviderInstanceID: registration.Identity.ProviderInstanceID,
+						ProviderID:         registration.Identity.ProviderID,
+						Reason:             rejection,
+					})
+					continue
+				}
+				modelScored = append(modelScored, scoredCandidate{registration: registration, canonical: candidateCanonicalModel, score: score, weight: weight, reason: scoreReason})
 			}
-			candidateMatches = true
-			score, weight, scoreReason, rejection := evaluateRegistration(candidate, route.Constraints, required, registration)
-			if rejection != "" {
-				decision.Rejections = append(decision.Rejections, RouteRejection{
-					ProviderInstanceID: registration.Identity.ProviderInstanceID,
-					ProviderID:         registration.Identity.ProviderID,
-					Reason:             rejection,
+			if !candidateMatches {
+				modelRejections = append(modelRejections, RouteRejection{
+					ProviderID: candidate.Provider,
+					Reason:     "candidate provider not connected",
 				})
-				continue
 			}
-			scored = append(scored, scoredCandidate{registration: registration, score: score, weight: weight, reason: scoreReason})
 		}
-		if !candidateMatches {
-			decision.Rejections = append(decision.Rejections, RouteRejection{
-				ProviderID: candidate.Provider,
-				Reason:     "candidate provider not connected",
-			})
+		if len(modelScored) > 0 {
+			scored = modelScored
+			canonicalModel = candidateCanonicalModel
+			decision.CanonicalModel = candidateCanonicalModel
+			decision.Rejections = modelRejections
+			break
 		}
+		allRejections = append(allRejections, modelRejections...)
+	}
+	if len(scored) == 0 {
+		decision.Rejections = allRejections
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].score == scored[j].score {
@@ -270,11 +289,14 @@ func (p RoutingPolicy) matchRoute(request RouteRequest) (Route, bool) {
 	return Route{}, false
 }
 
-func evaluateRegistration(candidate Candidate, constraints Constraints, required []provider.Capability, registration provider.Registration) (int, int, string, string) {
+func evaluateRegistration(candidate Candidate, constraints Constraints, required []provider.Capability, requestedModel string, canonicalModel string, registration provider.Registration) (int, int, string, string) {
 	for _, capability := range required {
 		if !hasCapability(registration.Capabilities, capability) {
 			return 0, 0, "", "required capability missing: " + string(capability)
 		}
+	}
+	if rejection := evaluateModelSupport(requestedModel, canonicalModel, required, registration.Models); rejection != "" {
+		return 0, 0, "", rejection
 	}
 	if len(constraints.AuthStatus) > 0 && !hasAuthStatus(constraints.AuthStatus, registration.Auth.Status) {
 		return 0, 0, "", "auth status not allowed: " + string(registration.Auth.Status)
@@ -306,6 +328,53 @@ func evaluateRegistration(candidate Candidate, constraints Constraints, required
 		weight = 1
 	}
 	return weight, weight, fmt.Sprintf("candidate weight %d", weight), ""
+}
+
+func evaluateModelSupport(requestedModel string, canonicalModel string, required []provider.Capability, models []provider.Model) string {
+	if len(models) == 0 {
+		return ""
+	}
+	names := uniqueStrings([]string{requestedModel, canonicalModel})
+	if len(names) == 0 {
+		return ""
+	}
+	for _, model := range models {
+		if !modelMatchesAny(model, names) {
+			continue
+		}
+		if len(model.Capabilities) == 0 {
+			return ""
+		}
+		for _, capability := range required {
+			if capability == provider.CapabilityStreamSSE {
+				continue
+			}
+			if !hasCapability(model.Capabilities, capability) {
+				return fmt.Sprintf("model %q missing capability: %s", model.ID, capability)
+			}
+		}
+		return ""
+	}
+	return fmt.Sprintf("model not reported by provider: %s", names[0])
+}
+
+func modelMatchesAny(model provider.Model, names []string) bool {
+	for _, name := range names {
+		if model.ID == name {
+			return true
+		}
+		for _, alias := range model.Aliases {
+			if alias == name {
+				return true
+			}
+		}
+		for _, member := range model.GroupMembers {
+			if member == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func candidateMatchesRegistration(candidate Candidate, registration provider.Registration) bool {
@@ -406,6 +475,14 @@ func validateCapabilities(capabilities []provider.Capability) error {
 	return nil
 }
 
+func modelAliasCanonicalModels(alias ModelAlias) []string {
+	models := uniqueStrings(alias.CanonicalModels)
+	if len(models) > 0 {
+		return models
+	}
+	return uniqueStrings([]string{alias.CanonicalModel})
+}
+
 func appendCapability(capabilities []provider.Capability, capability provider.Capability) []provider.Capability {
 	if hasCapability(capabilities, capability) {
 		return capabilities
@@ -417,6 +494,23 @@ func uniqueCapabilities(capabilities []provider.Capability) []provider.Capabilit
 	out := make([]provider.Capability, 0, len(capabilities))
 	for _, capability := range capabilities {
 		out = appendCapability(out, capability)
+	}
+	return out
+}
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }

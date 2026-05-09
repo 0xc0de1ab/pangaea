@@ -12,8 +12,8 @@ through Pangaea provider shim.
 
 ## Kind
 
-- `kind`: `app-server` when Codex runs through `codex app-server`; use
-  `cli-container` only for direct one-shot CLI execution.
+- `kind`: `app-server` when Codex runs through `codex app-server`; `cli-container`
+  when the shim uses `provider_mode: http-direct`.
 - `service`: `codex`
 
 ## Capabilities
@@ -46,7 +46,7 @@ Host path must be configurable per provider instance:
 ```yaml
 auth:
   bootstrap: copy
-  host_path: /srv/pangaea/auth/codex/samtest/auth.json
+  host_path: /srv/pangaea/auth/codex/primary/auth.json
   container_path: /var/lib/pangaea/auth/codex/auth.json
 ```
 
@@ -121,27 +121,31 @@ shim:
     - models.read
     - auth.file
     - auth.refresh.oneshot
+provider_mode: app-server
 upstream:
-  adapter: websocket
   base_url: ws://127.0.0.1:8080
   compat: openai
 ```
 
-`adapter: websocket` makes the provider shim speak Codex AppServer JSON-RPC
+`provider_mode: app-server` makes the provider shim speak Codex AppServer JSON-RPC
 directly. The AppServer remains the upstream transport, while public
 OpenAI/Anthropic/Gemini requests are decoded to Pangaea canonical IR and encoded
-back to the requested public dialect at the router boundary. `adapter:
-reverse-http` keeps the generic HTTP-compatible provider path and expects
-`base_url` to point at a local OpenAI/Anthropic/Gemini compatibility bridge.
+back to the requested public dialect at the router boundary.
+
+`provider_mode: http-direct` uses Pangaea's native Codex direct HTTP provider. The
+shim reads the copied `auth.json`, extracts `tokens.access_token` and
+`chatgpt_account_id`, then posts Responses-shaped SSE requests to
+`https://chatgpt.com/backend-api/codex/responses` with `OpenAI-Beta:
+responses=experimental`.
+
+`setup-provider --mode app-server` selects the internal Codex AppServer
+WebSocket provider. `setup-provider --mode http-direct` selects the internal
+Codex direct HTTP provider and does not start a Codex local server process.
 
 Fallback:
 
 - oneshot `codex exec`
 - stdio/pty bridge if needed
-
-Existing reference:
-
-- `/workspace/antigravity-cli/codex-compat-proxy`
 
 ## Models
 

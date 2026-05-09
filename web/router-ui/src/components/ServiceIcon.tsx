@@ -1,6 +1,8 @@
-import chatgptIcon from "../assets/icons/chatgpt.svg";
+import antigravityIcon from "../assets/icons/antigravity-color.svg";
 import claudeIcon from "../assets/icons/claude.svg";
+import codexIcon from "../assets/icons/codex-color.svg";
 import geminiIcon from "../assets/icons/gemini.svg";
+import openaiIcon from "../assets/icons/openai.svg";
 import { serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
 import { protocolLabel, type ProviderProtocol } from "../lib/protocols";
 
@@ -47,12 +49,19 @@ function brandIcon(value: string): { src: string; label: string } | undefined {
   switch (value as ProviderProtocol | string) {
     case "openai":
     case "chatgpt":
-      return { src: chatgptIcon, label: protocolLabel("openai") };
+      return { src: openaiIcon, label: protocolLabel("openai") };
+    case "codex":
+    case "codex-cli":
+    case "codex-appserver":
+      return { src: codexIcon, label: serviceLabel("codex") };
     case "anthropic":
     case "claude":
       return { src: claudeIcon, label: protocolLabel("anthropic") };
     case "gemini":
       return { src: geminiIcon, label: protocolLabel("gemini") };
+    case "antigravity":
+    case "antigravity-sidecar":
+      return { src: antigravityIcon, label: serviceLabel("antigravity") };
     default:
       return undefined;
   }

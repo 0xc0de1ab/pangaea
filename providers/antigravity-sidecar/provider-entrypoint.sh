@@ -14,6 +14,70 @@ export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-pangaea-antigravity-anthropic}"
 export GOOGLE_API_KEY="${GOOGLE_API_KEY:-pangaea-antigravity-gemini}"
 export PANGAEA_UPSTREAM_API_KEY="${PANGAEA_UPSTREAM_API_KEY:-${OPENAI_API_KEY}}"
 
+if [ -n "${PANGAEA_HOST_HOSTNAME:-${PANGAEA_NODE_HOST_NAME:-}}" ] && { [ -z "${PANGAEA_HOST_NAME:-}" ] || [ "${PANGAEA_HOST_NAME:-}" = "${HOSTNAME:-}" ]; }; then
+  export PANGAEA_HOST_NAME="${PANGAEA_HOST_HOSTNAME:-${PANGAEA_NODE_HOST_NAME:-}}"
+fi
+
+detect_container_kind() {
+  if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+    printf '%s\n' "kubernetes"
+    return
+  fi
+  if [ -f /.dockerenv ]; then
+    printf '%s\n' "docker"
+    return
+  fi
+  if grep -qaE 'kubepods|containerd|docker' /proc/1/cgroup 2>/dev/null; then
+    printf '%s\n' "container"
+  fi
+}
+
+detect_container_id() {
+  awk -F/ '
+    /docker|containerd|kubepods/ {
+      value=$NF
+      sub(/\.scope$/, "", value)
+      sub(/^docker-/, "", value)
+      sub(/^cri-containerd-/, "", value)
+      if (length(value) >= 12) {
+        print value
+        exit
+      }
+    }
+  ' /proc/self/cgroup 2>/dev/null || true
+}
+
+export PANGAEA_CONTAINER_KIND="${PANGAEA_CONTAINER_KIND:-$(detect_container_kind)}"
+export PANGAEA_CONTAINER_NAME="${PANGAEA_CONTAINER_NAME:-${PANGAEA_POD_CONTAINER_NAME:-}}"
+if [ -z "${PANGAEA_CONTAINER_NAME}" ] && [ "${PANGAEA_CONTAINER_KIND}" != "kubernetes" ]; then
+  export PANGAEA_CONTAINER_NAME="${HOSTNAME:-}"
+fi
+export PANGAEA_CONTAINER_ID="${PANGAEA_CONTAINER_ID:-$(detect_container_id)}"
+if [ -z "${PANGAEA_CONTAINER_ID}" ] && [ "${PANGAEA_CONTAINER_KIND}" = "docker" ]; then
+  export PANGAEA_CONTAINER_ID="${HOSTNAME:-}"
+fi
+
+write_runtime_settings() {
+  local settings="${PANGAEA_RUNTIME_SETTINGS_PATH:-/var/lib/pangaea/runtime/provider.env}"
+  local dir
+  dir="$(dirname "${settings}")"
+  mkdir -p "${dir}" 2>/dev/null || return 0
+  if [ ! -s "${settings}" ]; then
+    {
+      printf 'PANGAEA_NODE_ID=%q\n' "${PANGAEA_NODE_ID:-}"
+      printf 'PANGAEA_HOST_NAME=%q\n' "${PANGAEA_HOST_NAME:-}"
+      printf 'PANGAEA_PROVIDER_ID=%q\n' "${PANGAEA_PROVIDER_ID:-}"
+      printf 'PANGAEA_PROVIDER_INSTANCE_ID=%q\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
+      printf 'PANGAEA_SERVICE=%q\n' "${PANGAEA_SERVICE:-}"
+      printf 'PANGAEA_CONTAINER_KIND=%q\n' "${PANGAEA_CONTAINER_KIND:-}"
+      printf 'PANGAEA_CONTAINER_NAME=%q\n' "${PANGAEA_CONTAINER_NAME:-}"
+      printf 'PANGAEA_CONTAINER_ID=%q\n' "${PANGAEA_CONTAINER_ID:-}"
+    } >"${settings}"
+    chmod 0600 "${settings}" 2>/dev/null || true
+  fi
+}
+write_runtime_settings
+
 sidecar_pid=""
 shim_pid=""
 

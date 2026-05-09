@@ -90,6 +90,13 @@ model_aliases:
     required_capabilities:
       - api.openai.chat
       - stream.sse
+  gemini-auto:
+    canonical_models:
+      - auto-gemini-3
+      - auto-gemini-2.5
+      - gemini-2.5-flash
+    required_capabilities:
+      - api.gemini.generateContent
 
 routes:
   - id: codex-primary
@@ -99,11 +106,11 @@ routes:
       api_dialects: [openai, anthropic]
     candidates:
       - provider: codex-cli
-        account: samtest4u@gmail.com
+        account: primary@example.test
         host_name: snowbox
         weight: 100
       - provider: codex-cli
-        account: nullcode@gmail.com
+        account: secondary@example.test
         host_name: snowbox
         weight: 50
       - provider: openai-api
@@ -210,7 +217,7 @@ Example explanation:
 
 ```json
 {
-  "selected": "codex-cli/samtest/a1",
+  "selected": "codex-cli/primary/a1",
   "score": 0.82,
   "reasons": [
     "matched model alias gpt-5-codex",
@@ -223,7 +230,7 @@ Example explanation:
   ],
   "rejected_candidates": [
     {
-      "provider": "codex-cli/nullcode/a3",
+      "provider": "codex-cli/secondary/a3",
       "reason": "queue_depth 8 > max_queue_depth 4"
     }
   ]
@@ -318,7 +325,7 @@ Output:
 ```json
 {
   "allowed": true,
-  "selected": "codex-cli/samtest/a1",
+  "selected": "codex-cli/primary/a1",
   "route_id": "codex-primary",
   "required_capabilities": ["api.openai.chat", "stream.sse"],
   "quota": {
@@ -326,8 +333,8 @@ Output:
     "remaining_after_reservation": 96000
   },
   "fallback_chain": [
-    "codex-cli/samtest/a1",
-    "codex-cli/nullcode/a3",
+    "codex-cli/primary/a1",
+    "codex-cli/secondary/a3",
     "openai-api/default"
   ],
   "rejections": []

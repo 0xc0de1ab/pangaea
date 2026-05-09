@@ -42,21 +42,24 @@ type RuntimeConfig struct {
 }
 
 type ProviderSpec struct {
-	ID              string           `json:"id" yaml:"id"`
-	InstanceID      string           `json:"instance_id,omitempty" yaml:"instance_id,omitempty"`
-	Kind            provider.Kind    `json:"kind" yaml:"kind"`
-	Image           string           `json:"image,omitempty" yaml:"image,omitempty"`
-	ImagePullPolicy string           `json:"image_pull_policy,omitempty" yaml:"image_pull_policy,omitempty"`
-	HostName        string           `json:"host_name,omitempty" yaml:"host_name,omitempty"`
-	AccountHint     string           `json:"account_hint,omitempty" yaml:"account_hint,omitempty"`
-	Service         provider.Service `json:"service" yaml:"service"`
-	Models          []provider.Model `json:"models,omitempty" yaml:"models,omitempty"`
-	Auth            AuthSpec         `json:"auth,omitempty" yaml:"auth,omitempty"`
-	Refresh         RefreshSpec      `json:"refresh,omitempty" yaml:"refresh,omitempty"`
-	Shim            ShimSpec         `json:"shim,omitempty" yaml:"shim,omitempty"`
-	Storage         StorageSpec      `json:"storage,omitempty" yaml:"storage,omitempty"`
-	Resources       ResourceSpec     `json:"resources,omitempty" yaml:"resources,omitempty"`
-	Upstream        UpstreamSpec     `json:"upstream,omitempty" yaml:"upstream,omitempty"`
+	ID              string            `json:"id" yaml:"id"`
+	InstanceID      string            `json:"instance_id,omitempty" yaml:"instance_id,omitempty"`
+	Kind            provider.Kind     `json:"kind" yaml:"kind"`
+	ProviderMode    string            `json:"provider_mode,omitempty" yaml:"provider_mode,omitempty"`
+	Image           string            `json:"image,omitempty" yaml:"image,omitempty"`
+	ImagePullPolicy string            `json:"image_pull_policy,omitempty" yaml:"image_pull_policy,omitempty"`
+	NetworkMode     string            `json:"network_mode,omitempty" yaml:"network_mode,omitempty"`
+	HostName        string            `json:"host_name,omitempty" yaml:"host_name,omitempty"`
+	AccountHint     string            `json:"account_hint,omitempty" yaml:"account_hint,omitempty"`
+	Service         provider.Service  `json:"service" yaml:"service"`
+	Models          []provider.Model  `json:"models,omitempty" yaml:"models,omitempty"`
+	Env             map[string]string `json:"env,omitempty" yaml:"env,omitempty"`
+	Auth            AuthSpec          `json:"auth,omitempty" yaml:"auth,omitempty"`
+	Refresh         RefreshSpec       `json:"refresh,omitempty" yaml:"refresh,omitempty"`
+	Shim            ShimSpec          `json:"shim,omitempty" yaml:"shim,omitempty"`
+	Storage         StorageSpec       `json:"storage,omitempty" yaml:"storage,omitempty"`
+	Resources       ResourceSpec      `json:"resources,omitempty" yaml:"resources,omitempty"`
+	Upstream        UpstreamSpec      `json:"upstream,omitempty" yaml:"upstream,omitempty"`
 }
 
 type AuthSpec struct {
@@ -105,7 +108,6 @@ type StorageSpec struct {
 }
 
 type UpstreamSpec struct {
-	Adapter          string `json:"adapter,omitempty" yaml:"adapter,omitempty"`
 	BaseURL          string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
 	Compat           string `json:"compat,omitempty" yaml:"compat,omitempty"`
 	APIKey           string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
@@ -282,6 +284,9 @@ func (p ProviderSpec) Validate() error {
 	if err := validateImagePullPolicy(p.ID, p.ImagePullPolicy); err != nil {
 		return err
 	}
+	if err := validateNetworkMode(p.ID, p.NetworkMode); err != nil {
+		return err
+	}
 	if len(p.Shim.Capabilities) == 0 {
 		return fmt.Errorf("%w: provider %q shim.capabilities is required", ErrNodeAgentConfig, p.ID)
 	}
@@ -291,7 +296,7 @@ func (p ProviderSpec) Validate() error {
 	if err := p.validateAPIKeyAuth(); err != nil {
 		return err
 	}
-	if err := validateUpstreamAdapter(p.ID, p.Upstream.Adapter); err != nil {
+	if err := validateProviderMode(p.ID, p.ProviderMode); err != nil {
 		return err
 	}
 	if err := p.Storage.Validate(p.ID); err != nil {
@@ -351,17 +356,17 @@ func normalizedStorageMode(mode string) string {
 	return strings.ToLower(strings.TrimSpace(mode))
 }
 
-func validateUpstreamAdapter(providerID string, adapter string) error {
-	switch normalizedUpstreamAdapter(adapter) {
-	case "", "api-compatible", "websocket", "reverse-http", "cli-oneshot", "codex-websocket", "codex-reverse-http", "claude-cli", "gemini-cli":
+func validateProviderMode(providerID string, mode string) error {
+	switch normalizedProviderMode(mode) {
+	case "", "http-direct", "app-server", "cli-adapter", "acp", "ls-core-sidecar":
 		return nil
 	default:
-		return fmt.Errorf("%w: provider %q unsupported upstream.adapter %q", ErrNodeAgentConfig, providerID, adapter)
+		return fmt.Errorf("%w: provider %q unsupported provider_mode %q", ErrNodeAgentConfig, providerID, mode)
 	}
 }
 
-func normalizedUpstreamAdapter(adapter string) string {
-	return strings.ToLower(strings.TrimSpace(adapter))
+func normalizedProviderMode(mode string) string {
+	return strings.ToLower(strings.TrimSpace(mode))
 }
 
 func validateImagePullPolicy(providerID string, policy string) error {
@@ -375,6 +380,19 @@ func validateImagePullPolicy(providerID string, policy string) error {
 
 func normalizedImagePullPolicy(policy string) string {
 	return strings.ToLower(strings.TrimSpace(policy))
+}
+
+func validateNetworkMode(providerID string, mode string) error {
+	switch normalizedNetworkMode(mode) {
+	case "", "bridge", "host", "none":
+		return nil
+	default:
+		return fmt.Errorf("%w: provider %q unsupported network_mode %q", ErrNodeAgentConfig, providerID, mode)
+	}
+}
+
+func normalizedNetworkMode(mode string) string {
+	return strings.ToLower(strings.TrimSpace(mode))
 }
 
 func (a AuthSpec) Validate(providerID string) error {
@@ -432,6 +450,7 @@ func (p ProviderSpec) Registration(nodeID string, hostName string, now time.Time
 	if p.HostName != "" {
 		hostName = p.HostName
 	}
+	containerName := defaultContainerName(p.ID, p.InstanceID)
 	account := provider.Account{Display: p.AccountHint}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
@@ -439,6 +458,7 @@ func (p ProviderSpec) Registration(nodeID string, hostName string, now time.Time
 			ProviderInstanceID: p.InstanceID,
 			NodeID:             nodeID,
 			HostName:           hostName,
+			ContainerName:      containerName,
 			Service:            p.Service,
 			Kind:               p.Kind,
 			Account:            account,

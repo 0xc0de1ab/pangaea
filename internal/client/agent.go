@@ -442,12 +442,13 @@ func (a *agent) writeLoop(ctx context.Context, conn transport.Conn) error {
 // appropriate snapshot.{report,absent} envelope. Any watched-file change
 // triggers a re-read of the primary credentials file.
 func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher.Event) error {
-	raw, err := readFileIfExists(a.path)
+	path := a.credentialPathForEvent(ev.Path)
+	raw, err := readFileIfExists(path)
 	if err != nil || raw == nil {
 		abs := transport.SnapshotAbsent{
 			Profile: a.profile,
 			Account: a.resolveAccountWithoutSnapshot(ctx),
-			Path:    a.path,
+			Path:    path,
 		}
 		return sendEnvelope(ctx, conn, transport.KindSnapshotAbsent, abs)
 	}
@@ -459,7 +460,7 @@ func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher
 		// logged but the server can't do anything useful with it.
 		a.log.Warn("format.Parse failed",
 			slog.String(logging.FieldEvent, logging.EvtSnapshotParsed),
-			slog.String(logging.FieldPath, a.path),
+			slog.String(logging.FieldPath, path),
 			slog.String("trigger_path", ev.Path),
 			slog.String(logging.FieldOutcome, logging.OutcomeError),
 			slog.String(logging.FieldReason, err.Error()),
@@ -467,7 +468,7 @@ func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher
 		abs := transport.SnapshotAbsent{
 			Profile: a.profile,
 			Account: a.resolveAccountWithoutSnapshot(ctx),
-			Path:    a.path,
+			Path:    path,
 		}
 		return sendEnvelope(ctx, conn, transport.KindSnapshotAbsent, abs)
 	}
@@ -483,7 +484,7 @@ func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher
 	report := transport.SnapshotReport{
 		Profile:     a.profile,
 		Account:     account,
-		Path:        a.path,
+		Path:        path,
 		Format:      a.format.Name(),
 		Fingerprint: snap.Fingerprint(),
 		Summary:     summaryRaw,
@@ -498,7 +499,7 @@ func (a *agent) reportEvent(ctx context.Context, conn transport.Conn, ev watcher
 
 	a.log.Info("snapshot parsed",
 		slog.String(logging.FieldEvent, logging.EvtSnapshotParsed),
-		slog.String(logging.FieldPath, a.path),
+		slog.String(logging.FieldPath, path),
 		slog.String("trigger_path", ev.Path),
 		slog.String(logging.FieldAccount, account),
 		slog.String(logging.FieldFingerprint, snap.Fingerprint()),
@@ -537,6 +538,18 @@ func (a *agent) enrichAccountDisplay(ctx context.Context, snap formats.Snapshot,
 
 func (a *agent) reportCurrentState(ctx context.Context, conn transport.Conn) error {
 	return a.reportEvent(ctx, conn, watcher.Event{Path: a.path})
+}
+
+func (a *agent) credentialPathForEvent(eventPath string) string {
+	resolver, ok := a.format.(formats.EventCredentialPathResolver)
+	if !ok {
+		return a.path
+	}
+	path := resolver.CredentialPathForEvent(a.dir, eventPath)
+	if path == "" {
+		return a.path
+	}
+	return path
 }
 
 // readLoop handles truth.push envelopes and writes truth.ack responses.

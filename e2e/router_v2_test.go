@@ -236,19 +236,19 @@ func TestE2E_V2NodeAgentProviderInventory(t *testing.T) {
 			HeartbeatInterval: 20 * time.Millisecond,
 			Runtime:           control.RuntimeInfo{Kind: "docker", Version: "26.1.0"},
 			ProviderSpecs: []nodeagent.ProviderSpec{{
-				ID:          "codex-samtest",
-				InstanceID:  "codex-samtest-0001",
+				ID:          "codex-primary",
+				InstanceID:  "codex-primary-0001",
 				Kind:        provider.KindCLIContainer,
 				Image:       "pangaea/provider-codex:test",
-				AccountHint: "samtest4u@gmail.com",
+				AccountHint: "primary@example.test",
 				Service:     provider.ServiceCodex,
 				Shim:        nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
 			}, {
-				ID:          "gemini-nullcode",
-				InstanceID:  "gemini-nullcode-0001",
+				ID:          "gemini-secondary",
+				InstanceID:  "gemini-secondary-0001",
 				Kind:        provider.KindCLIContainer,
 				Image:       "pangaea/provider-gemini:test",
-				AccountHint: "nullcode@gmail.com",
+				AccountHint: "secondary@example.test",
 				Service:     provider.ServiceGemini,
 				Shim:        nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityAuthRefreshOneshot}},
 			}},
@@ -267,8 +267,8 @@ func TestE2E_V2NodeAgentProviderInventory(t *testing.T) {
 	}()
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	waitForV2Provider(t, client, server.URL, "codex-samtest-0001")
-	waitForV2Provider(t, client, server.URL, "gemini-nullcode-0001")
+	waitForV2Provider(t, client, server.URL, "codex-primary-0001")
+	waitForV2Provider(t, client, server.URL, "gemini-secondary-0001")
 	node := waitForV2Node(t, client, server.URL, "node-a1")
 	if node.HostName != "snowbox" || node.Runtime.Kind != "docker" {
 		t.Fatalf("unexpected node inventory: %#v", node)
@@ -281,7 +281,7 @@ func TestE2E_V2NodeAgentProviderInventory(t *testing.T) {
 		}
 		seen[container.ProviderInstanceID] = true
 	}
-	if !seen["codex-samtest-0001"] || !seen["gemini-nullcode-0001"] {
+	if !seen["codex-primary-0001"] || !seen["gemini-secondary-0001"] {
 		t.Fatalf("expected both provider containers, got %#v", containers)
 	}
 }
@@ -295,6 +295,10 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 					{"id": "deepseek-chat", "object": "model"},
 				},
 			})
+			return
+		}
+		if r.URL.Path == "/v1/models/status" {
+			_ = json.NewEncoder(w).Encode(map[string]any{})
 			return
 		}
 		if r.URL.Path != "/v1/chat/completions" {
@@ -527,6 +531,10 @@ func TestE2E_V2SidecarProviderShimAntigravityAndCopilot(t *testing.T) {
 					{"id": "github-copilot-default", "object": "model"},
 				},
 			})
+			return
+		}
+		if r.URL.Path == "/v1/models/status" {
+			_ = json.NewEncoder(w).Encode(map[string]any{})
 			return
 		}
 		if r.URL.Path != "/v1/chat/completions" {

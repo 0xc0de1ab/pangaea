@@ -348,7 +348,7 @@ Codex CLI/container provider.
 Reuses:
 
 - `pkg/formats/codexauth`
-- `codex-compat-proxy` bridge/transcoder knowledge
+- Pangaea internal Codex AppServer bridge/transcoder code
 
 ### `providers/claude`
 

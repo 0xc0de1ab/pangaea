@@ -70,7 +70,7 @@ export function deriveIncidents(data: DashboardData): Incident[] {
         providerInstanceID: id,
       });
     }
-    if (["expired", "revoked", "conflict", "unavailable"].includes(auth)) {
+    if (["expired", "revoked", "conflict", "unavailable", "no_login"].includes(auth)) {
       incidents.push({
         id: `provider-auth-${id}`,
         severity: "critical",

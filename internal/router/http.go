@@ -1,9 +1,11 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,6 +25,11 @@ type HTTPOptions struct {
 	DataBroker *DataBroker
 	PeerToken  string
 }
+
+const (
+	traceRequestIDContextKey = "pangaea_trace_request_id"
+	maxTraceHTTPBodyBytes    = 256 << 10
+)
 
 type openAIModelList struct {
 	Object string        `json:"object"`
@@ -78,6 +85,7 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	r.GET("/router/ui", serveEmbeddedRouterDashboard)
 	r.GET("/router/ui/*path", serveEmbeddedRouterDashboard)
 	r.Use(routerAdminAuthMiddleware(opts.APIKeys))
+	r.Use(traceHTTPExchangeMiddleware(opts.Engine))
 	r.GET("/v1/models", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
 			return
@@ -497,7 +505,43 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			}
 			limit = parsed
 		}
-		c.JSON(http.StatusOK, gin.H{"traces": engine.RequestTraces(limit)})
+		offset := 0
+		if raw := c.Query("offset"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "offset must be a non-negative integer"})
+				return
+			}
+			offset = parsed
+		}
+		c.JSON(http.StatusOK, engine.RequestTracesPage(offset, limit))
+	})
+	r.DELETE("/router/v1/traces", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request requestTraceDeleteRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		requestIDs := uniqueNonEmptyStrings(request.RequestIDs)
+		if len(requestIDs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "request_ids is required"})
+			return
+		}
+		deleted := engine.DeleteRequestTraces(requestIDs)
+		recordHTTPAuditEvent(engine, c, AuditEvent{
+			Type:    AuditEventRequestTraceDelete,
+			Target:  AuditTarget{RequestID: firstNonEmpty(requestIDs...)},
+			Outcome: AuditOutcomeSucceeded,
+			Metadata: map[string]string{
+				"requested": strconv.Itoa(len(requestIDs)),
+				"deleted":   strconv.Itoa(deleted),
+			},
+		})
+		c.JSON(http.StatusOK, gin.H{"deleted": deleted})
 	})
 	r.GET("/router/v1/traces/:request_id", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -510,6 +554,29 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		c.JSON(http.StatusOK, trace)
+	})
+	r.DELETE("/router/v1/traces/:request_id", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		requestID := strings.TrimSpace(c.Param("request_id"))
+		if requestID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "request id is required"})
+			return
+		}
+		deleted := engine.DeleteRequestTraces([]string{requestID})
+		if deleted == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "trace not found"})
+			return
+		}
+		recordHTTPAuditEvent(engine, c, AuditEvent{
+			Type:     AuditEventRequestTraceDelete,
+			Target:   AuditTarget{RequestID: requestID},
+			Outcome:  AuditOutcomeSucceeded,
+			Metadata: map[string]string{"deleted": strconv.Itoa(deleted)},
+		})
+		c.Status(http.StatusNoContent)
 	})
 	r.GET("/router/v1/quotas", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -711,6 +778,172 @@ func routerAdminAuthMiddleware(store *security.APIKeyStore) gin.HandlerFunc {
 	}
 }
 
+func traceHTTPExchangeMiddleware(engine *Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if engine == nil || !traceCapturablePath(c.Request.Method, c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		requestID := publicRequestID(c)
+		rawRequestBody, _ := io.ReadAll(c.Request.Body)
+		_ = c.Request.Body.Close()
+		c.Request.Body = io.NopCloser(bytes.NewReader(rawRequestBody))
+		responseWriter := &traceCaptureResponseWriter{ResponseWriter: c.Writer}
+		c.Writer = responseWriter
+		c.Next()
+		engine.AttachRequestTraceHTTP(requestID, RequestTraceHTTP{
+			Request: RequestTraceHTTPRequest{
+				Method:  c.Request.Method,
+				Path:    c.Request.URL.Path,
+				Query:   c.Request.URL.RawQuery,
+				Headers: redactedHeaders(c.Request.Header),
+				Body:    traceHTTPBody(rawRequestBody, c.GetHeader("content-type"), false),
+			},
+			Response: RequestTraceHTTPResponse{
+				Status:  responseWriter.Status(),
+				Headers: redactedHeaders(c.Writer.Header()),
+				Body:    traceHTTPBody(responseWriter.body.Bytes(), c.Writer.Header().Get("content-type"), responseWriter.truncated),
+			},
+		})
+	}
+}
+
+func traceCapturablePath(method string, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	return path == "/v1/chat/completions" ||
+		path == "/v1/messages" ||
+		strings.HasPrefix(path, "/v1beta/models/") ||
+		strings.HasPrefix(path, "/v1/models/") ||
+		strings.HasPrefix(path, "/router/v1/compat/v1beta/models/") ||
+		strings.HasPrefix(path, "/router/v1/compat/v1/models/")
+}
+
+type traceCaptureResponseWriter struct {
+	gin.ResponseWriter
+	body      bytes.Buffer
+	truncated bool
+}
+
+func (w *traceCaptureResponseWriter) Write(data []byte) (int, error) {
+	w.capture(data)
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *traceCaptureResponseWriter) WriteString(data string) (int, error) {
+	w.capture([]byte(data))
+	return w.ResponseWriter.WriteString(data)
+}
+
+func (w *traceCaptureResponseWriter) capture(data []byte) {
+	if len(data) == 0 || w.body.Len() >= maxTraceHTTPBodyBytes {
+		if len(data) > 0 {
+			w.truncated = true
+		}
+		return
+	}
+	remaining := maxTraceHTTPBodyBytes - w.body.Len()
+	if len(data) > remaining {
+		_, _ = w.body.Write(data[:remaining])
+		w.truncated = true
+		return
+	}
+	_, _ = w.body.Write(data)
+}
+
+func redactedHeaders(headers http.Header) map[string][]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(headers))
+	for key, values := range headers {
+		canonical := http.CanonicalHeaderKey(key)
+		copied := append([]string(nil), values...)
+		if shouldRedactHeader(canonical) {
+			for i, value := range copied {
+				copied[i] = redactHeaderValue(value)
+			}
+		}
+		out[canonical] = copied
+	}
+	return out
+}
+
+func shouldRedactHeader(key string) bool {
+	key = strings.ToLower(key)
+	return key == "authorization" ||
+		key == "proxy-authorization" ||
+		key == "cookie" ||
+		key == "set-cookie" ||
+		strings.Contains(key, "api-key") ||
+		strings.Contains(key, "token")
+}
+
+func redactHeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(strings.ToLower(value), "bearer ") {
+		return "Bearer <redacted>"
+	}
+	if value == "" {
+		return "<redacted>"
+	}
+	return "<redacted>"
+}
+
+func traceHTTPBody(raw []byte, contentType string, truncated bool) *RequestTraceHTTPBody {
+	if len(raw) == 0 && !truncated {
+		return nil
+	}
+	body := &RequestTraceHTTPBody{
+		ContentType: contentType,
+		Truncated:   truncated,
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return body
+	}
+	if json.Valid(trimmed) {
+		body.JSON = append([]byte(nil), trimmed...)
+		return body
+	}
+	if jsonl := parseTraceJSONL(trimmed, contentType); len(jsonl) > 0 {
+		body.JSONL = jsonl
+		return body
+	}
+	body.Text = string(trimmed)
+	return body
+}
+
+func parseTraceJSONL(raw []byte, contentType string) []json.RawMessage {
+	lines := strings.Split(string(raw), "\n")
+	out := make([]json.RawMessage, 0, len(lines))
+	sawPayloadLine := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			sawPayloadLine = true
+		} else if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+			continue
+		}
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		if !json.Valid([]byte(line)) {
+			return nil
+		}
+		out = append(out, json.RawMessage(append([]byte(nil), line...)))
+	}
+	if len(out) == 0 || (!sawPayloadLine && len(out) == 1) {
+		return nil
+	}
+	return out
+}
+
 func wantsAnthropicModels(c *gin.Context) bool {
 	return c.GetHeader("anthropic-version") != "" || strings.EqualFold(c.GetHeader("x-api-dialect"), string(compat.APIDialectAnthropic))
 }
@@ -791,6 +1024,10 @@ type openAIChatStreamChunk struct {
 type quotaLimitRequest struct {
 	Scope quota.Scope `json:"scope"`
 	Limit quota.Limit `json:"limit"`
+}
+
+type requestTraceDeleteRequest struct {
+	RequestIDs []string `json:"request_ids"`
 }
 
 type apiKeyCreateRequest struct {
@@ -1498,10 +1735,16 @@ func requireEngine(c *gin.Context, engine *Engine) (*Engine, bool) {
 }
 
 func publicRequestID(c *gin.Context) string {
+	if value, ok := c.Get(traceRequestIDContextKey); ok {
+		if requestID, ok := value.(string); ok && requestID != "" {
+			return requestID
+		}
+	}
 	requestID := c.GetHeader("x-request-id")
 	if requestID == "" {
 		requestID = "req_" + time.Now().UTC().Format("20060102150405.000000000")
 	}
+	c.Set(traceRequestIDContextKey, requestID)
 	return requestID
 }
 
@@ -1634,6 +1877,23 @@ func bearerToken(header string) string {
 		return ""
 	}
 	return strings.TrimSpace(header[len(prefix):])
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func geminiModelFromAction(action string) (string, bool, bool) {

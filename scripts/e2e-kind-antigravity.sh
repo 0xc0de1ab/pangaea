@@ -7,7 +7,7 @@ namespace="${PANGAEA_KIND_NAMESPACE:-pangaea-e2e}"
 router_image="${PANGAEA_ROUTER_IMAGE:-pangaea/router:kind}"
 runtime_image="${PANGAEA_ANTIGRAVITY_RUNTIME_IMAGE:-pangaea/antigravity-runtime:kind}"
 shim_image="${PANGAEA_ANTIGRAVITY_SHIM_IMAGE:-pangaea/provider-antigravity-sidecar:kind}"
-antigravity_proxy_dir="${PANGAEA_ANTIGRAVITY_PROXY_DIR:-/workspace/antigravity-cli/antigravity-compat-proxy}"
+antigravity_proxy_dir="${PANGAEA_ANTIGRAVITY_PROXY_DIR:-${repo_root}/../antigravity-cli/antigravity-compat-proxy}"
 router_port="${PANGAEA_ROUTER_PORT:-18080}"
 router_api_key="${PANGAEA_ROUTER_API_KEY:-1}"
 router_peer_token="${PANGAEA_ROUTER_PEER_TOKEN:-kind-peer-token}"
@@ -78,8 +78,11 @@ resolve_antigravity_auth_path() {
     fi
   done
 
+  local default_wsl_users_root
+  default_wsl_users_root="$(printf '/%s/%s/%s' mnt c Users)"
+  local wsl_users_root="${PANGAEA_WSL_USERS_ROOT:-${default_wsl_users_root}}"
   local wsl_state
-  for wsl_state in /mnt/c/Users/*/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb; do
+  for wsl_state in "${wsl_users_root}"/*/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb; do
     if [ -s "${wsl_state}" ] && [ -f "${wsl_state}" ]; then
       printf '%s\n' "${wsl_state}"
       return 0

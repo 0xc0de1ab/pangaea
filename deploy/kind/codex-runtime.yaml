@@ -111,8 +111,16 @@ spec:
               value: codex-provider-instance-id
             - name: PANGAEA_NODE_ID
               value: codex-node-id
+            - name: PANGAEA_HOST_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: PANGAEA_HOST_NAME
-              value: codex-host-name
+              value: "$(PANGAEA_HOST_HOSTNAME)"
+            - name: PANGAEA_CONTAINER_KIND
+              value: kubernetes
+            - name: PANGAEA_CONTAINER_NAME
+              value: shim
             - name: PANGAEA_SERVICE
               value: codex
             - name: PANGAEA_ACCOUNT
@@ -133,8 +141,8 @@ spec:
               value: /var/lib/pangaea/auth/codex/auth.json
             - name: PANGAEA_AUTH_FORMAT
               value: codex-auth-json-format
-            - name: PANGAEA_UPSTREAM_ADAPTER
-              value: websocket
+            - name: PANGAEA_PROVIDER_MODE
+              value: app-server
             - name: PANGAEA_UPSTREAM_BASE_URL
               value: ws://127.0.0.1:8080
             - name: PANGAEA_UPSTREAM_DIALECT

@@ -13,6 +13,7 @@ import type {
   QuotaScope,
   QuotaSnapshot,
   RequestTrace,
+  RequestTracePage,
   RouteDecision,
   RouteRequest,
   SessionSnapshot,
@@ -170,29 +171,29 @@ async function requestStream(endpoint: string, options: RequestOptions, onPayloa
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    buffer = consumeSSEBuffer(buffer, onPayload);
+    buffer = consumeSSEBuffer(buffer, endpoint, onPayload);
   }
   buffer += decoder.decode();
-  consumeSSEBuffer(buffer, onPayload, true);
+  consumeSSEBuffer(buffer, endpoint, onPayload, true);
 }
 
-function consumeSSEBuffer(buffer: string, onPayload: (payload: unknown) => void, flush = false) {
+function consumeSSEBuffer(buffer: string, endpoint: string, onPayload: (payload: unknown) => void, flush = false) {
   let cursor = 0;
   for (;;) {
     const match = /\r?\n\r?\n/g.exec(buffer.slice(cursor));
     if (!match) break;
     const frameEnd = cursor + match.index;
-    emitSSEFrame(buffer.slice(cursor, frameEnd), onPayload);
+    emitSSEFrame(buffer.slice(cursor, frameEnd), endpoint, onPayload);
     cursor = frameEnd + match[0].length;
   }
   if (flush && cursor < buffer.length) {
-    emitSSEFrame(buffer.slice(cursor), onPayload);
+    emitSSEFrame(buffer.slice(cursor), endpoint, onPayload);
     return "";
   }
   return buffer.slice(cursor);
 }
 
-function emitSSEFrame(frame: string, onPayload: (payload: unknown) => void) {
+function emitSSEFrame(frame: string, endpoint: string, onPayload: (payload: unknown) => void) {
   const data = frame
     .split(/\r?\n/)
     .filter((line) => line.startsWith("data:"))
@@ -203,10 +204,41 @@ function emitSSEFrame(frame: string, onPayload: (payload: unknown) => void) {
     return;
   }
   try {
-    onPayload(JSON.parse(data));
-  } catch {
+    const payload = JSON.parse(data) as unknown;
+    const error = streamPayloadError(payload);
+    if (error) {
+      throw new APIError(error, 200, endpoint);
+    }
+    onPayload(payload);
+  } catch (err) {
+    if (err instanceof APIError) {
+      throw err;
+    }
+    if (data.includes('"error"')) {
+      throw new APIError(data, 200, endpoint);
+    }
     onPayload(data);
   }
+}
+
+function streamPayloadError(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const error = (payload as { error?: unknown }).error;
+  if (!error) {
+    return "";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error === "object") {
+    const message = (error as { message?: unknown; error?: unknown; detail?: unknown }).message
+      ?? (error as { message?: unknown; error?: unknown; detail?: unknown }).error
+      ?? (error as { message?: unknown; error?: unknown; detail?: unknown }).detail;
+    return typeof message === "string" ? message : JSON.stringify(error);
+  }
+  return String(error);
 }
 
 async function bufferedChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token?: string, reasoningEffort?: string): Promise<DashboardChatResult> {
@@ -400,7 +432,15 @@ export const api = {
     const payload = await request<{ traces?: RequestTrace[] }>(`/router/v1/traces?limit=${limit}`, { token });
     return payload.traces ?? [];
   },
+  tracePage: (token: string | undefined, limit: number, offset: number) =>
+    request<RequestTracePage>(`/router/v1/traces?limit=${limit}&offset=${offset}`, { token }),
   trace: (requestID: string, token?: string) => request<RequestTrace>(`/router/v1/traces/${encodeURIComponent(requestID)}`, { token }),
+  deleteTraces: (requestIDs: string[], token?: string) =>
+    request<{ deleted: number }>("/router/v1/traces", {
+      token,
+      method: "DELETE",
+      body: { request_ids: requestIDs },
+    }),
   quotas: async (token?: string) => {
     const payload = await request<{ quotas?: QuotaSnapshot[] }>("/router/v1/quotas", { token });
     return payload.quotas ?? [];

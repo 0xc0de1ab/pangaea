@@ -74,6 +74,8 @@ spec:
               value: /root/.antigravity-server
             - name: ANTIGRAVITY_APP_DATA_DIR
               value: data
+            - name: ANTIGRAVITY_STREAM_CAPTURE_PATH
+              value: /var/lib/antigravity/state/stream-captures/ag-stream-capture.jsonl
           ports:
             - name: http
               containerPort: 8080
@@ -106,8 +108,16 @@ spec:
               value: antigravity-sidecar
             - name: PANGAEA_NODE_ID
               value: kind-antigravity
+            - name: PANGAEA_HOST_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: PANGAEA_HOST_NAME
-              value: kind-host
+              value: "$(PANGAEA_HOST_HOSTNAME)"
+            - name: PANGAEA_CONTAINER_KIND
+              value: kubernetes
+            - name: PANGAEA_CONTAINER_NAME
+              value: shim
             - name: PANGAEA_SERVICE
               value: antigravity
             - name: PANGAEA_ACCOUNT
@@ -130,6 +140,8 @@ spec:
               value: openai
             - name: PANGAEA_AUTH_PATH
               value: /var/lib/antigravity/state/User/globalStorage/state.vscdb
+            - name: PANGAEA_AUTH_FORMAT
+              value: antigravity-state-vscdb-format
             - name: PANGAEA_UPSTREAM_API_KEY
               valueFrom:
                 secretKeyRef:

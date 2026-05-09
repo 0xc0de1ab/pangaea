@@ -177,6 +177,8 @@ func writeInventory(conn *websocket.Conn, opts ControlClientOptions, reconciledC
 		}
 		containers = append(containers, control.ContainerReport{
 			ContainerID:        containerID,
+			ContainerKind:      opts.Runtime.Kind,
+			ContainerName:      registration.Identity.ContainerName,
 			ProviderID:         registration.Identity.ProviderID,
 			ProviderInstanceID: registration.Identity.ProviderInstanceID,
 			Image:              spec.Image,
@@ -217,6 +219,7 @@ func reconcileProviderContainers(ctx context.Context, opts ControlClientOptions)
 			RouterDataURL:    opts.RouterDataURL,
 			StreamTokenKey:   opts.StreamTokenKey,
 			RouterPeerToken:  opts.PeerToken,
+			ContainerKind:    opts.Runtime.Kind,
 		})
 		if err != nil {
 			return nil, err

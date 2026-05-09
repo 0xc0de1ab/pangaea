@@ -8,7 +8,7 @@ import (
 )
 
 func TestAntigravityAccountFromNestedUserStatusState(t *testing.T) {
-	inner := base64.StdEncoding.EncodeToString([]byte("Sam Sung:\x13samtest4u@gmail.com"))
+	inner := base64.StdEncoding.EncodeToString([]byte("Primary User:\x13primary@example.test"))
 	outer := base64.StdEncoding.EncodeToString([]byte("userStatusSentinelKey\n" + inner))
 	raw := []byte("prefix antigravityUnifiedStateSync.userStatus|" + outer + " suffix")
 
@@ -16,7 +16,7 @@ func TestAntigravityAccountFromNestedUserStatusState(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected account extracted")
 	}
-	if account.ID != "samtest4u@gmail.com" || account.Display != "samtest4u@gmail.com" {
+	if account.ID != "primary@example.test" || account.Display != "primary@example.test" {
 		t.Fatalf("unexpected account: %#v", account)
 	}
 }

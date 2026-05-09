@@ -79,6 +79,9 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 	for key, value := range spec.Env {
 		args = append(args, "--env", key+"="+value)
 	}
+	if strings.TrimSpace(spec.NetworkMode) != "" {
+		args = append(args, "--network", strings.TrimSpace(spec.NetworkMode))
+	}
 	if spec.WorkingDir != "" {
 		args = append(args, "--workdir", spec.WorkingDir)
 	}

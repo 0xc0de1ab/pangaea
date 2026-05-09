@@ -46,6 +46,7 @@ type Request struct {
 	Dialect             APIDialect               `json:"dialect"`
 	Model               string                   `json:"model"`
 	Messages            []Message                `json:"messages"`
+	Tools               []ToolDefinition         `json:"tools,omitempty"`
 	Temperature         *float64                 `json:"temperature,omitempty"`
 	ReasoningEffort     string                   `json:"reasoning_effort,omitempty"`
 	MaxOutputTokens     int                      `json:"max_output_tokens,omitempty"`
@@ -76,6 +77,13 @@ type ToolCall struct {
 	Type      ToolCallType `json:"type"`
 	Name      string       `json:"name,omitempty"`
 	Arguments string       `json:"arguments,omitempty"`
+}
+
+type ToolDefinition struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+	Source      string         `json:"source,omitempty"`
 }
 
 type Response struct {

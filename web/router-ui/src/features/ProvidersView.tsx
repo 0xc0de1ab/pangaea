@@ -1,18 +1,21 @@
 import { useMemo, useState } from "react";
-import { Activity, Clipboard, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Activity, Box, Clipboard, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { Section } from "../components/Section";
-import { ServiceBadge } from "../components/ServiceIcon";
+import { ServiceBadge, ServiceIcon } from "../components/ServiceIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { ChatWorkbench, type ChatWorkbenchTarget } from "./ChatWorkbench";
 import { EndpointDataWorkbench, type EndpointDataWorkbenchTarget } from "./EndpointDataWorkbench";
 import { api } from "../lib/api";
 import { providerAccountLabel, providerID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
 import { age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
-import { providerServiceEndpoints, type ServiceEndpoint } from "../lib/service-endpoints";
-import type { ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
+import { providerServiceEndpoints, serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
+import type { ProviderIdentity, ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
+import dockerIcon from "../assets/icons/docker-mark-ocean-blue.svg";
+import kubernetesIcon from "../assets/icons/kubernetes.svg";
 
 export function ProvidersView({ data, queries, search, token, onAction, refresh }: DashboardViewProps) {
   const [selected, setSelected] = useState<ProviderRegistration | null>(null);
@@ -68,7 +71,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
       ),
       width: "210px",
     },
-    { id: "service", header: "Service", sortValue: (row) => row.identity.service, cell: (row) => row.identity.service, width: "105px" },
+    { id: "service", header: "Svc", sortValue: (row) => row.identity.service, cell: (row) => <ServiceLogoCell service={row.identity.service} />, align: "center", width: "56px" },
     { id: "kind", header: "Kind", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
     {
       id: "apis",
@@ -77,7 +80,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
       cell: (row) => <ServiceBadgeRow provider={row} />,
       width: "122px",
     },
-    { id: "host", header: "Host", sortValue: (row) => row.identity.host_name, cell: (row) => row.identity.host_name, width: "150px" },
+    { id: "host", header: "Host", sortValue: (row) => row.identity.host_name, cell: (row) => <HostCell identity={row.identity} />, width: "172px" },
     { id: "account", header: "Account", sortValue: (row) => providerAccountLabel(row), cell: (row) => providerAccountLabel(row), width: "190px" },
     { id: "health", header: "Health", sortValue: (row) => row.health?.status, cell: (row) => <StatusBadge value={row.health?.status} title={row.health?.reason} />, width: "128px" },
     { id: "auth", header: "Auth", sortValue: (row) => row.auth?.status, cell: (row) => <StatusBadge value={row.auth?.status} title={row.auth?.last_refresh_error} />, width: "132px" },
@@ -156,14 +159,55 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
             onResume={() => providerAction(selected, "resume")}
             onRefreshAuth={() => providerAction(selected, "refresh")}
             onOpenChat={(endpoint) => setChatTarget({ provider: selected, endpoint })}
-            onOpenModels={(endpoint) => setDataTarget({ kind: "models", provider: selected, endpoint })}
-            onOpenUsage={(endpoint) => setDataTarget({ kind: "usage", provider: selected, endpoint, usage: usage.get(providerID(selected)) })}
+            onOpenModels={() => setDataTarget({ kind: "models", provider: selected })}
+            onOpenUsage={() => setDataTarget({ kind: "usage", provider: selected, usage: usage.get(providerID(selected)) })}
           />
         ) : null}
       </Drawer>
       <ChatWorkbench target={chatTarget} token={token} onClose={() => setChatTarget(null)} />
       <EndpointDataWorkbench target={dataTarget} token={token} onClose={() => setDataTarget(null)} />
     </div>
+  );
+}
+
+type ServiceTooltipPosition = {
+  top: number;
+  left: number;
+};
+
+function ServiceLogoCell({ service }: { service: string }) {
+  const [position, setPosition] = useState<ServiceTooltipPosition | null>(null);
+  const label = serviceLabel(service);
+
+  function showTooltip(target: HTMLElement) {
+    const rect = target.getBoundingClientRect();
+    const left = Math.min(Math.max(rect.left + rect.width / 2, 92), window.innerWidth - 92);
+    setPosition({ left, top: rect.bottom + 9 });
+  }
+
+  return (
+    <span
+      className="provider-service-logo"
+      tabIndex={0}
+      role="img"
+      aria-label={label}
+      title={label}
+      onMouseEnter={(event) => showTooltip(event.currentTarget)}
+      onMouseLeave={() => setPosition(null)}
+      onFocus={(event) => showTooltip(event.currentTarget)}
+      onBlur={() => setPosition(null)}
+    >
+      <ServiceIcon service={service} size={22} label={label} />
+      {position
+        ? createPortal(
+            <div className="service-logo-popover" style={{ left: position.left, top: position.top }} aria-hidden="true">
+              <ServiceIcon service={service} size={42} label={label} />
+              <strong>{label}</strong>
+            </div>,
+            document.body,
+          )
+        : null}
+    </span>
   );
 }
 
@@ -181,6 +225,84 @@ function ServiceBadgeRow({ provider }: { provider: ProviderRegistration }) {
   );
 }
 
+function HostCell({ identity }: { identity: ProviderIdentity }) {
+  const [position, setPosition] = useState<ServiceTooltipPosition | null>(null);
+  const meta = containerMeta(identity);
+  const runtime = meta ? containerRuntime(meta.kind) : null;
+
+  function showTooltip(target: HTMLElement) {
+    if (!meta) return;
+    const rect = target.getBoundingClientRect();
+    const left = Math.min(Math.max(rect.left + rect.width / 2, 128), window.innerWidth - 128);
+    setPosition({ left, top: rect.bottom + 9 });
+  }
+
+  return (
+    <span className="host-cell">
+      <span className="host-name">{identity.host_name}</span>
+      {meta ? (
+        <span
+          className="container-indicator"
+          tabIndex={0}
+          role="img"
+          aria-label={`Container ${meta.name || meta.id || meta.kind}`}
+          onMouseEnter={(event) => showTooltip(event.currentTarget)}
+          onMouseLeave={() => setPosition(null)}
+          onFocus={(event) => showTooltip(event.currentTarget)}
+          onBlur={() => setPosition(null)}
+        >
+          <ContainerGlyph runtime={runtime} size={14} />
+          {position
+            ? createPortal(
+                <div className="container-popover" style={{ left: position.left, top: position.top }} aria-hidden="true">
+                  <ContainerGlyph runtime={runtime} size={30} />
+                  <div>
+                    <strong>{runtime?.label || meta.kind || "container"}</strong>
+                    <span>Name: {meta.name || "-"}</span>
+                    <span>ID: {middleEllipsis(meta.id || "-", 12, 10)}</span>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function containerMeta(identity: ProviderIdentity) {
+  const kind = identity.container_kind || "";
+  const name = identity.container_name || "";
+  const id = identity.container_id || "";
+  if (!kind && !name && !id) return null;
+  return { kind, name, id };
+}
+
+function containerSummary(identity: ProviderIdentity) {
+  const meta = containerMeta(identity);
+  if (!meta) return "";
+  return [meta.kind, meta.name, meta.id].filter(Boolean).join(" / ");
+}
+
+function containerRuntime(kind: string) {
+  const normalized = kind.trim().toLowerCase();
+  if (normalized === "docker" || normalized === "containerd") {
+    return { icon: dockerIcon, label: normalized === "containerd" ? "containerd" : "Docker" };
+  }
+  if (normalized === "kubernetes" || normalized === "k8s") {
+    return { icon: kubernetesIcon, label: "Kubernetes" };
+  }
+  return null;
+}
+
+function ContainerGlyph({ runtime, size }: { runtime: ReturnType<typeof containerRuntime>; size: number }) {
+  if (runtime) {
+    return <img className="container-runtime-icon" src={runtime.icon} alt="" aria-hidden="true" style={{ width: size, height: size }} />;
+  }
+  return <Box aria-hidden="true" size={size} />;
+}
+
 type ProviderDetailProps = {
   provider: ProviderRegistration;
   controlConnected: boolean;
@@ -190,8 +312,8 @@ type ProviderDetailProps = {
   onResume: () => void;
   onRefreshAuth: () => void;
   onOpenChat: (endpoint: ServiceEndpoint) => void;
-  onOpenModels: (endpoint: ServiceEndpoint) => void;
-  onOpenUsage: (endpoint: ServiceEndpoint) => void;
+  onOpenModels: () => void;
+  onOpenUsage: () => void;
 };
 
 function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDrain, onResume, onRefreshAuth, onOpenChat, onOpenModels, onOpenUsage }: ProviderDetailProps) {
@@ -218,9 +340,9 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
           <div className="kv-key">Provider ID</div><div className="kv-value mono">{provider.identity.provider_id}</div>
           <div className="kv-key">Instance</div><div className="kv-value mono">{provider.identity.provider_instance_id}</div>
           <div className="kv-key">Node</div><div className="kv-value mono">{provider.identity.node_id}</div>
-          <div className="kv-key">Host</div><div className="kv-value">{provider.identity.host_name}</div>
+          <div className="kv-key">Host</div><div className="kv-value"><HostCell identity={provider.identity} /></div>
           <div className="kv-key">Account</div><div className="kv-value">{providerAccountLabel(provider)}</div>
-          <div className="kv-key">Container</div><div className="kv-value mono">{provider.identity.container_id || ""}</div>
+          <div className="kv-key">Container</div><div className="kv-value mono">{containerSummary(provider.identity)}</div>
           <div className="kv-key">Registered</div><div className="kv-value">{fmtTime(provider.registered_at)}</div>
         </div>
       </div>
@@ -241,20 +363,35 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
         </div>
       </div>
 
-      <ProviderEndpointTable provider={provider} onOpenChat={onOpenChat} onOpenModels={onOpenModels} onOpenUsage={onOpenUsage} />
+      <ProviderEndpointTable provider={provider} onOpenChat={onOpenChat} />
 
       <div className="detail-section">
-        <h3>Models</h3>
+        <div className="detail-section-heading">
+          <h3>Models</h3>
+          <button className="button secondary compact" type="button" onClick={onOpenModels}>
+            <ListChecks aria-hidden="true" size={14} />
+            Open
+          </button>
+        </div>
         <div className="tag-list">
           {(provider.models ?? []).map((model) => (
-            <span className="tag mono" key={model.id}>{model.id}</span>
+            <span className={model.kind === "group" || model.group_members?.length ? "tag mono model-tag-group" : "tag mono"} key={model.id}>
+              {model.kind === "group" || model.group_members?.length ? <span className="model-group-badge mini" title="Group model">G</span> : null}
+              {model.id}
+            </span>
           ))}
           {!provider.models?.length ? <span className="muted">No model report</span> : null}
         </div>
       </div>
 
       <div className="detail-section">
-        <h3>Usage And Load</h3>
+        <div className="detail-section-heading">
+          <h3>Usage And Load</h3>
+          <button className="button secondary compact" type="button" onClick={onOpenUsage}>
+            <Activity aria-hidden="true" size={14} />
+            Open
+          </button>
+        </div>
         <div className="kv-list">
           <div className="kv-key">Queue depth</div><div className="kv-value">{n(provider.limits?.queue_depth ?? 0)}</div>
           <div className="kv-key">Active streams</div><div className="kv-value">{n(provider.limits?.active_streams ?? 0)}</div>
@@ -277,7 +414,7 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
   );
 }
 
-function ProviderEndpointTable({ provider, onOpenChat, onOpenModels, onOpenUsage }: { provider: ProviderRegistration; onOpenChat: (endpoint: ServiceEndpoint) => void; onOpenModels: (endpoint: ServiceEndpoint) => void; onOpenUsage: (endpoint: ServiceEndpoint) => void }) {
+function ProviderEndpointTable({ provider, onOpenChat }: { provider: ProviderRegistration; onOpenChat: (endpoint: ServiceEndpoint) => void }) {
   const endpoints = providerServiceEndpoints(provider);
 
   return (
@@ -290,8 +427,6 @@ function ProviderEndpointTable({ provider, onOpenChat, onOpenModels, onOpenUsage
               <th>API</th>
               <th>Model</th>
               <th>Chat</th>
-              <th>Models</th>
-              <th>Usage</th>
             </tr>
           </thead>
           <tbody>
@@ -309,21 +444,11 @@ function ProviderEndpointTable({ provider, onOpenChat, onOpenModels, onOpenUsage
                     <MessageSquare aria-hidden="true" size={15} />
                   </button>
                 </td>
-                <td>
-                  <button className="icon-button small" type="button" title={`${endpoint.label} models`} onClick={() => onOpenModels(endpoint)}>
-                    <ListChecks aria-hidden="true" size={15} />
-                  </button>
-                </td>
-                <td>
-                  <button className="icon-button small" type="button" title={`${endpoint.label} usage`} onClick={() => onOpenUsage(endpoint)}>
-                    <Activity aria-hidden="true" size={15} />
-                  </button>
-                </td>
               </tr>
             ))}
             {!endpoints.length ? (
               <tr>
-                <td colSpan={5}>
+                <td colSpan={3}>
                   <span className="muted">No service endpoints reported</span>
                 </td>
               </tr>

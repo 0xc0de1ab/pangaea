@@ -87,6 +87,10 @@ func supportsRefreshNudge(formatName string) bool {
 }
 
 func (a *agent) maybeRefresh(ctx context.Context) {
+	if !supportsRefreshNudge(a.format.Name()) {
+		return
+	}
+
 	state, raw, ok := a.refreshCandidate(ctx)
 	if !ok {
 		return

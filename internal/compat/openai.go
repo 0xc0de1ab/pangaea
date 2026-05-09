@@ -8,6 +8,7 @@ import (
 type OpenAIChatRequest struct {
 	Model               string              `json:"model"`
 	Messages            []OpenAIChatMessage `json:"messages"`
+	Tools               []OpenAIChatTool    `json:"tools,omitempty"`
 	Temperature         *float64            `json:"temperature,omitempty"`
 	ReasoningEffort     string              `json:"reasoning_effort,omitempty"`
 	MaxTokens           int                 `json:"max_tokens,omitempty"`
@@ -44,6 +45,17 @@ type OpenAIChatFunction struct {
 	Arguments string `json:"arguments,omitempty"`
 }
 
+type OpenAIChatTool struct {
+	Type     string                    `json:"type"`
+	Function OpenAIChatToolDeclaration `json:"function"`
+}
+
+type OpenAIChatToolDeclaration struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
 type OpenAIChatResponse struct {
 	ID      string             `json:"id,omitempty"`
 	Object  string             `json:"object"`
@@ -69,6 +81,7 @@ func OpenAIChatRequestToCanonical(in OpenAIChatRequest) (Request, error) {
 		Dialect:             APIDialectOpenAI,
 		Model:               in.Model,
 		Messages:            make([]Message, 0, len(in.Messages)),
+		Tools:               openAIToolsToCanonical(in.Tools),
 		Temperature:         in.Temperature,
 		ReasoningEffort:     in.ReasoningEffort,
 		Stream:              in.Stream,
@@ -99,6 +112,7 @@ func OpenAIChatRequestFromCanonical(in Request) (OpenAIChatRequest, error) {
 	out := OpenAIChatRequest{
 		Model:               in.Model,
 		Messages:            make([]OpenAIChatMessage, 0, len(in.Messages)),
+		Tools:               openAIToolsFromCanonical(in.Tools),
 		Temperature:         in.Temperature,
 		ReasoningEffort:     in.ReasoningEffort,
 		MaxCompletionTokens: in.MaxOutputTokens,
@@ -239,6 +253,42 @@ func canonicalMessageToOpenAI(in Message) (OpenAIChatMessage, error) {
 		})
 	}
 	return out, nil
+}
+
+func openAIToolsToCanonical(in []OpenAIChatTool) []ToolDefinition {
+	out := make([]ToolDefinition, 0, len(in))
+	for _, tool := range in {
+		if tool.Type != "" && tool.Type != "function" {
+			continue
+		}
+		if strings.TrimSpace(tool.Function.Name) == "" {
+			continue
+		}
+		out = append(out, ToolDefinition{
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.Parameters,
+		})
+	}
+	return out
+}
+
+func openAIToolsFromCanonical(in []ToolDefinition) []OpenAIChatTool {
+	out := make([]OpenAIChatTool, 0, len(in))
+	for _, tool := range in {
+		if strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		out = append(out, OpenAIChatTool{
+			Type: "function",
+			Function: OpenAIChatToolDeclaration{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.Parameters,
+			},
+		})
+	}
+	return out
 }
 
 func openAIContentToCanonical(content any) ([]ContentPart, error) {

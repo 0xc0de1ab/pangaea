@@ -202,22 +202,22 @@ func TestHTTPControlCommandsRequireConfirmationAndReason(t *testing.T) {
 	}{
 		{
 			name: "refresh requires confirm",
-			path: "/router/v1/providers/codex-samtest-a1/auth/refresh",
+			path: "/router/v1/providers/codex-primary-a1/auth/refresh",
 			body: `{"reason":"manual"}`,
 		},
 		{
 			name: "refresh requires reason",
-			path: "/router/v1/providers/codex-samtest-a1/auth/refresh",
+			path: "/router/v1/providers/codex-primary-a1/auth/refresh",
 			body: `{"confirm":true}`,
 		},
 		{
 			name: "drain requires confirm",
-			path: "/router/v1/providers/codex-samtest-a1/drain",
+			path: "/router/v1/providers/codex-primary-a1/drain",
 			body: `{"drain":true,"reason":"maintenance"}`,
 		},
 		{
 			name: "drain requires reason",
-			path: "/router/v1/providers/codex-samtest-a1/drain",
+			path: "/router/v1/providers/codex-primary-a1/drain",
 			body: `{"drain":true,"confirm":true}`,
 		},
 	}
@@ -245,7 +245,7 @@ func TestHTTPProviders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte("codex-samtest-a1")) {
+	if !bytes.Contains(rec.Body.Bytes(), []byte("codex-primary-a1")) {
 		t.Fatalf("expected provider instance in body, got %s", rec.Body.String())
 	}
 }
@@ -274,7 +274,7 @@ func TestHTTPNodesAndContainers(t *testing.T) {
 		Containers: []control.ContainerReport{{
 			ContainerID:        "container-1",
 			ProviderID:         "codex-cli",
-			ProviderInstanceID: "codex-samtest-a1",
+			ProviderInstanceID: "codex-primary-a1",
 			State:              "running",
 		}},
 	}); err != nil {
@@ -318,7 +318,7 @@ func TestHTTPNodesAndContainers(t *testing.T) {
 func TestHTTPProviderUsage(t *testing.T) {
 	engine, _ := testEngine(t)
 	observedAt := time.Now().UTC()
-	if err := engine.UpdateProviderUsage("codex-samtest-a1", provider.UsageReport{
+	if err := engine.UpdateProviderUsage("codex-primary-a1", provider.UsageReport{
 		ObservedAt:   observedAt,
 		Source:       "test",
 		Requests:     2,
@@ -347,7 +347,7 @@ func TestHTTPProviderUsage(t *testing.T) {
 		t.Fatalf("expected one usage snapshot, got %#v", out)
 	}
 	got := out.Usage[0]
-	if got.HostName != "snowbox" || got.Account.Display != "samtest4u@gmail.com" {
+	if got.HostName != "snowbox" || got.Account.Display != "primary@example.test" {
 		t.Fatalf("usage response lost host/account dimensions: %#v", got)
 	}
 	if got.Usage.TotalTokens != 30 {
@@ -412,7 +412,7 @@ func TestHTTPQuotaAdmin(t *testing.T) {
 func TestHTTPOpenAIChatCompletionsWithSimulator(t *testing.T) {
 	engine, _ := testEngine(t)
 	sim, err := providersim.New(providersim.Options{
-		Registration: registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0),
+		Registration: registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0),
 	})
 	if err != nil {
 		t.Fatalf("new simulator: %v", err)
@@ -447,7 +447,7 @@ func TestHTTPOpenAIChatCompletionsWithSimulator(t *testing.T) {
 func TestHTTPTraceAfterOpenAIChatCompletion(t *testing.T) {
 	engine, _ := testEngine(t)
 	sim, err := providersim.New(providersim.Options{
-		Registration: registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0),
+		Registration: registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0),
 	})
 	if err != nil {
 		t.Fatalf("new simulator: %v", err)
@@ -461,6 +461,7 @@ func TestHTTPTraceAfterOpenAIChatCompletion(t *testing.T) {
 	}`)))
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("x-request-id", "req_http_trace_1")
+	req.Header.Set("authorization", "Bearer secret-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -483,6 +484,21 @@ func TestHTTPTraceAfterOpenAIChatCompletion(t *testing.T) {
 	if trace.ActualUsage.Tokens == 0 || trace.EstimatedUsage.Tokens == 0 {
 		t.Fatalf("expected trace usage, got %#v", trace)
 	}
+	if trace.HTTP == nil {
+		t.Fatalf("expected HTTP exchange snapshot")
+	}
+	if trace.HTTP.Request.Method != http.MethodPost || trace.HTTP.Request.Path != "/v1/chat/completions" {
+		t.Fatalf("unexpected request snapshot: %#v", trace.HTTP.Request)
+	}
+	if got := trace.HTTP.Request.Headers["Authorization"]; len(got) != 1 || got[0] != "Bearer <redacted>" {
+		t.Fatalf("authorization header was not redacted: %#v", trace.HTTP.Request.Headers)
+	}
+	if trace.HTTP.Request.Body == nil || len(trace.HTTP.Request.Body.JSON) == 0 {
+		t.Fatalf("expected JSON request body snapshot: %#v", trace.HTTP.Request.Body)
+	}
+	if trace.HTTP.Response.Status != http.StatusOK || trace.HTTP.Response.Body == nil || len(trace.HTTP.Response.Body.JSON) == 0 {
+		t.Fatalf("expected JSON response snapshot: %#v", trace.HTTP.Response)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/router/v1/traces?limit=1", nil)
 	rec = httptest.NewRecorder()
@@ -499,12 +515,50 @@ func TestHTTPTraceAfterOpenAIChatCompletion(t *testing.T) {
 	if len(out.Traces) != 1 || out.Traces[0].RequestID != "req_http_trace_1" {
 		t.Fatalf("unexpected trace list: %#v", out)
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/traces?limit=1&offset=0", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 paged traces, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var page RequestTracePage
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode trace page: %v", err)
+	}
+	if page.Total != 1 || page.Limit != 1 || page.Offset != 0 || page.HasMore || len(page.Traces) != 1 {
+		t.Fatalf("unexpected trace page: %#v", page)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/router/v1/traces", bytes.NewReader([]byte(`{"request_ids":["req_http_trace_1"]}`)))
+	req.Header.Set("content-type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 trace delete, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var deleted struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &deleted); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if deleted.Deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted.Deleted)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/traces/req_http_trace_1", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after trace delete, got %d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestHTTPOpenAIChatCompletionsStreamsSSEWithSimulator(t *testing.T) {
 	engine, _ := testEngine(t)
 	sim, err := providersim.New(providersim.Options{
-		Registration: registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0),
+		Registration: registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0),
 	})
 	if err != nil {
 		t.Fatalf("new simulator: %v", err)
@@ -888,7 +942,7 @@ func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
 		t.Fatalf("expected delete 204, got %d body=%s", deleteRec.Code, deleteRec.Body.String())
 	}
 
-	refreshReq := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-samtest-a1/auth/refresh", bytes.NewReader([]byte(`{"reason":"manual test","timeout_seconds":1,"confirm":true}`)))
+	refreshReq := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-primary-a1/auth/refresh", bytes.NewReader([]byte(`{"reason":"manual test","timeout_seconds":1,"confirm":true}`)))
 	refreshReq.Header.Set("content-type", "application/json")
 	refreshReq.Header.Set("x-pangaea-user-id", "admin_1")
 	refreshRec := httptest.NewRecorder()
@@ -918,7 +972,7 @@ func TestHTTPAuditEventsRecordsAdminActions(t *testing.T) {
 	if out.Events[0].Type != AuditEventProviderAuthRefresh || out.Events[0].Outcome != AuditOutcomeFailed {
 		t.Fatalf("expected newest failed refresh event, got %#v", out.Events[0])
 	}
-	if out.Events[0].Target.ProviderInstanceID != "codex-samtest-a1" || out.Events[0].Reason != "manual test" {
+	if out.Events[0].Target.ProviderInstanceID != "codex-primary-a1" || out.Events[0].Reason != "manual test" {
 		t.Fatalf("unexpected refresh audit target: %#v", out.Events[0])
 	}
 	if out.Events[1].Type != AuditEventAPIKeyDelete || out.Events[1].Target.APIKeyID != created.APIKey.ID {

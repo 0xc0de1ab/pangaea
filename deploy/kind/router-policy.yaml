@@ -3,6 +3,45 @@ version: routing-policy/v1
 model_aliases:
   codex-default:
     canonical_model: gpt-5.5
+  gemini-default:
+    canonical_model: gemini-2.5-flash
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-2.5-flash:
+    canonical_model: gemini-2.5-flash
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-2.5-pro:
+    canonical_model: gemini-2.5-pro
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-2.5-flash-lite:
+    canonical_model: gemini-2.5-flash-lite
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-auto:
+    canonical_models: [auto-gemini-3, auto-gemini-2.5, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash]
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-auto-3:
+    canonical_models: [auto-gemini-3, gemini-3.1-pro-preview, gemini-3-flash-preview]
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-auto-2.5:
+    canonical_models: [auto-gemini-2.5, gemini-2.5-pro, gemini-2.5-flash]
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  auto-gemini-3:
+    canonical_models: [auto-gemini-3, gemini-3.1-pro-preview, gemini-3-flash-preview]
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  auto-gemini-2.5:
+    canonical_models: [auto-gemini-2.5, gemini-2.5-pro, gemini-2.5-flash]
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-3-pro-preview:
+    canonical_model: gemini-3-pro-preview
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-3-flash-preview:
+    canonical_model: gemini-3-flash-preview
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-3.1-pro-preview:
+    canonical_model: gemini-3.1-pro-preview
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  gemini-3.1-flash-lite-preview:
+    canonical_model: gemini-3.1-flash-lite-preview
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
   antigravity-default:
     canonical_model: antigravity-default
 
@@ -39,6 +78,45 @@ routes:
       api_dialects: [gemini]
     candidates:
       - provider: codex-cli
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      required_capabilities:
+        - api.gemini.generateContent
+      max_queue_depth: 4
+  - id: gemini-kind-openai
+    match:
+      models: [gemini-default, gemini-auto, gemini-auto-3, gemini-auto-2.5, gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-lite, auto-gemini-3, auto-gemini-2.5, gemini-3-pro-preview, gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.1-flash-lite-preview]
+      api_dialects: [openai]
+    candidates:
+      - provider: gemini-cli
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      required_capabilities:
+        - api.openai.chat
+      max_queue_depth: 4
+  - id: gemini-kind-anthropic
+    match:
+      models: [gemini-default, gemini-auto, gemini-auto-3, gemini-auto-2.5, gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-lite, auto-gemini-3, auto-gemini-2.5, gemini-3-pro-preview, gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.1-flash-lite-preview]
+      api_dialects: [anthropic]
+    candidates:
+      - provider: gemini-cli
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      required_capabilities:
+        - api.anthropic.messages
+      max_queue_depth: 4
+  - id: gemini-kind-gemini
+    match:
+      models: [gemini-default, gemini-auto, gemini-auto-3, gemini-auto-2.5, gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-lite, auto-gemini-3, auto-gemini-2.5, gemini-3-pro-preview, gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.1-flash-lite-preview]
+      api_dialects: [gemini]
+    candidates:
+      - provider: gemini-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]

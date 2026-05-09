@@ -224,7 +224,7 @@ func TestHTTPDataSessionsIncludesProviderMetadata(t *testing.T) {
 	server := httptest.NewServer(NewHTTPHandler(HTTPOptions{Engine: engine, DataBroker: broker}))
 	defer server.Close()
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/data/ws?provider_instance_id=codex-samtest-a1", nil)
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/router/v1/data/ws?provider_instance_id=codex-primary-a1", nil)
 	if err != nil {
 		t.Fatalf("dial data ws: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestHTTPDataSessionsIncludesProviderMetadata(t *testing.T) {
 		t.Fatalf("expected one data session, got %#v", out.Sessions)
 	}
 	got := out.Sessions[0]
-	if got.ProviderInstanceID != "codex-samtest-a1" || got.HostName != "snowbox" || got.Account.Display != "samtest4u@gmail.com" {
+	if got.ProviderInstanceID != "codex-primary-a1" || got.HostName != "snowbox" || got.Account.Display != "primary@example.test" {
 		t.Fatalf("data session response lost provider metadata: %#v", got)
 	}
 }

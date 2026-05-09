@@ -10,12 +10,14 @@
 - [CLI Container Providers](./cli-container-provider.md)
 - [API-Compatible Providers](./api-compatible-provider.md)
 - [Sidecar Providers](./sidecar-provider.md)
+- [Setup Provider Command](./setup-provider.md)
 
 ## CLI Providers
 
 - [Codex CLI Provider](./codex-cli-provider.md)
 - [Claude CLI Provider](./claude-cli-provider.md)
 - [Gemini CLI Provider](./gemini-cli-provider.md)
+- [Gemini ACP JSON-RPC Notes](./gemini-acp-rpc.md)
 
 ## API Providers
 

@@ -101,7 +101,7 @@ func TestHTTPAuthRefreshWithoutControlSessionReturnsConflict(t *testing.T) {
 	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
 	body := bytes.NewBufferString(`{"reason":"manual","timeout_seconds":1,"confirm":true}`)
 
-	req := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-samtest-a1/auth/refresh", body)
+	req := httptest.NewRequest(http.MethodPost, "/router/v1/providers/codex-primary-a1/auth/refresh", body)
 	req.Header.Set("content-type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

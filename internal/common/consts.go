@@ -42,6 +42,7 @@ const (
 const (
 	WatcherDebounceCore = 50 * time.Millisecond
 	WatcherStableWindow = 200 * time.Millisecond
+	WatcherPollInterval = 1 * time.Second
 	WatcherDefaultQueue = 64
 )
 

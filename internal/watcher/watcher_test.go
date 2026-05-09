@@ -16,6 +16,7 @@ func fastOptions() Options {
 	return Options{
 		DebounceCore: 10 * time.Millisecond,
 		StableWindow: 30 * time.Millisecond,
+		PollInterval: -1,
 		MaxQueue:     16,
 	}
 }
@@ -187,6 +188,26 @@ drain:
 	// Allow up to 1 extra coalescing wobble across OSes.
 	if extras > 1 {
 		t.Fatalf("expected coalesced events, got %d extras", extras)
+	}
+}
+
+func TestPollingFallbackDetectsStatChange(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "creds.json")
+	if err := os.WriteFile(p, []byte(`{"v":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := fastOptions()
+	opts.PollInterval = 20 * time.Millisecond
+	w, _ := startWatcher(t, []string{p}, opts)
+	_ = awaitEvent(t, w, p, time.Second) // consume initial
+
+	if err := os.WriteFile(p, []byte(`{"v":2,"longer":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ev := awaitEvent(t, w, p, time.Second)
+	if !ev.Exists || ev.Size == int64(len(`{"v":1}`)) {
+		t.Fatalf("expected polling change event, got %+v", ev)
 	}
 }
 

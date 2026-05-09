@@ -71,13 +71,13 @@ Refresh failure must distinguish:
 
 Possible bridge modes:
 
-- `upstream.adapter: cli-oneshot`, implemented by running
+- `provider_mode: cli-adapter`, implemented by running
   `claude -p <prompt> --permission-mode plan --tools '' --output-format text`
   per routed request
 - local server if available
 - pty/tmux adapter
 
-`cli-oneshot` registers as an Anthropic-capable provider and can be reached
+`cli-adapter` registers as an Anthropic-capable provider and can be reached
 through router Anthropic/OpenAI compatibility transforms. Streaming is wrapped
 from the completed response until a native Claude local server adapter is added.
 

@@ -73,10 +73,107 @@ func TestProviderInvokeOpenAICompatibleUpstream(t *testing.T) {
 	}
 }
 
+func TestProviderSuccessfulInvokeKeepsStaleExpiryAsRefreshSoon(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-test",
+			Object: "chat.completion",
+			Model:  "gpt-upstream",
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "world"},
+				FinishReason: "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Auth.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if _, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello")); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Status != provider.AuthRefreshSoon {
+		t.Fatalf("auth status = %q, want refresh_soon", auth.Status)
+	}
+}
+
+func TestProviderSuccessfulInvokeTreatsAntigravityStaleExpiryAsHealthy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+			ID:     "chatcmpl-test",
+			Object: "chat.completion",
+			Model:  "antigravity-default",
+			Choices: []compat.OpenAIChatChoice{{
+				Index:        0,
+				Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "world"},
+				FinishReason: "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	registration.Auth.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	registration.Auth.Status = provider.AuthRefreshSoon
+	registration.Auth.LastRefreshErr = "antigravity oauth expiry is stale in state.vscdb but may be refreshed in ls-core memory"
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if _, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello")); err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Status != provider.AuthHealthy {
+		t.Fatalf("auth status = %q, want healthy", auth.Status)
+	}
+	if !auth.ExpiresAt.IsZero() {
+		t.Fatalf("expires_at = %s, want zero advisory expiry", auth.ExpiresAt)
+	}
+	if auth.LastRefreshErr != "" {
+		t.Fatalf("last_refresh_error = %q, want empty", auth.LastRefreshErr)
+	}
+}
+
 func TestProviderDiscoversOpenAICompatibleModels(t *testing.T) {
 	var sawAuth bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
+		switch r.URL.Path {
+		case "/v1/models":
+		case "/v1/models/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"gpt-upstream-a": map[string]any{
+					"label":     "GPT Upstream A",
+					"maxTokens": 128000,
+					"quotaInfo": map[string]any{
+						"remainingFraction": 0.75,
+						"resetTime":         "2026-05-09T06:20:16Z",
+					},
+				},
+			})
+			return
+		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		if r.Header.Get("authorization") == "Bearer sk_models" {
@@ -106,11 +203,29 @@ func TestProviderDiscoversOpenAICompatibleModels(t *testing.T) {
 	if !hasProviderCapability(models[0].Capabilities, provider.CapabilityOpenAIChat) || !hasProviderCapability(models[0].Capabilities, provider.CapabilityStreamSSE) {
 		t.Fatalf("unexpected model capabilities: %#v", models[0].Capabilities)
 	}
+	if models[0].Quota == nil || models[0].Quota.RemainingPct != 75 || models[0].Quota.ResetAt.IsZero() {
+		t.Fatalf("expected quota enrichment on first model: %#v", models[0])
+	}
+	if models[0].ContextTokens != 128000 || models[0].MaxContextTokens != 128000 {
+		t.Fatalf("expected context enrichment from model status: %#v", models[0])
+	}
 }
 
 func TestProviderDiscoversGeminiModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1beta/models" {
+		switch r.URL.Path {
+		case "/v1beta/models":
+		case "/v1/models/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"gemini-2.5-flash": map[string]any{
+					"quotaInfo": map[string]any{
+						"remainingFraction": 1.0,
+						"resetTime":         "2026-05-09T06:20:16Z",
+					},
+				},
+			})
+			return
+		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -139,6 +254,9 @@ func TestProviderDiscoversGeminiModels(t *testing.T) {
 	}
 	if len(models[0].Aliases) != 1 || models[0].Aliases[0] != "Gemini 2.5 Flash" {
 		t.Fatalf("unexpected aliases: %#v", models[0].Aliases)
+	}
+	if models[0].Quota == nil || models[0].Quota.RemainingPct != 100 || models[0].Quota.ResetAt.IsZero() {
+		t.Fatalf("expected quota enrichment: %#v", models[0])
 	}
 }
 
@@ -485,6 +603,50 @@ func TestProviderInvokeReturnsUpstreamError(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeNormalizesWrappedAntigravityModelErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "resource exhausted",
+			body:       `{"error":"ls_core returned status 500: {\"code\":\"unknown\",\"message\":\"RESOURCE_EXHAUSTED (code 429): You have exhausted your capacity on this model.\"}"}`,
+			wantStatus: http.StatusTooManyRequests,
+			wantCode:   "rate_limit_exceeded",
+		},
+		{
+			name:       "not found",
+			body:       `{"error":"ls_core returned status 500: {\"code\":\"unknown\",\"message\":\"NOT_FOUND (code 404): Requested entity was not found.\"}"}`,
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+			_, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello"))
+			if err == nil {
+				t.Fatalf("expected upstream error")
+			}
+			var upstream *provider.UpstreamError
+			if !errors.As(err, &upstream) {
+				t.Fatalf("expected provider.UpstreamError, got %T %v", err, err)
+			}
+			if upstream.StatusCode != tc.wantStatus || upstream.Code != tc.wantCode {
+				t.Fatalf("unexpected upstream error details: %#v", upstream)
+			}
+		})
+	}
+}
+
 func TestProviderReloadsAPIKeyFilePerRequest(t *testing.T) {
 	authHeaders := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -651,6 +813,27 @@ func TestProviderTracksUpstreamRateLimitHealth(t *testing.T) {
 	}
 	if auth.Status != provider.AuthHealthy {
 		t.Fatalf("rate limit should not mark auth unavailable: %#v", auth)
+	}
+}
+
+func TestProviderDoesNotDegradeHealthForUpstreamClientModelError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"not_found"}}`))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	_, err := client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello"))
+	if err == nil {
+		t.Fatalf("expected upstream not found error")
+	}
+	health, err := client.Health()
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if health.Status != provider.HealthReady || health.Reason != "" {
+		t.Fatalf("client model error should not degrade health: %#v", health)
 	}
 }
 

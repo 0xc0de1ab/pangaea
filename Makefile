@@ -17,6 +17,7 @@ PROVIDER_ANTIGRAVITY_KIND_IMAGE ?= pangaea/provider-antigravity-sidecar:kind
 ANTIGRAVITY_RUNTIME_KIND_IMAGE ?= pangaea/antigravity-runtime:kind
 ROUTER_KIND_IMAGE ?= pangaea/router:kind
 PROVIDER_CODEX_KIND_IMAGE ?= pangaea/provider-codex:kind
+PROVIDER_GEMINI_KIND_IMAGE ?= pangaea/provider-gemini:kind
 OS_LIST        ?= linux darwin windows
 ARCH_LIST      ?= amd64 arm64
 BUILD_VARIANTS ?= debug release
@@ -73,7 +74,7 @@ token3 = $(word 3,$(subst -, ,$(1)))
 	$(OS_LIST) $(ARCH_LIST) $(BUILD_VARIANTS) \
 	$(OS_ARCH_PAIRS) $(OS_VARIANT_PAIRS) $(ARCH_VARIANT_PAIRS) $(FULL_KEYS) \
 	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-provider-api-compatible docker-provider-antigravity-sidecar docker-providers \
-	docker-router-kind kind-codex-e2e kind-antigravity-e2e
+	docker-router-kind kind-codex-e2e kind-gemini-e2e kind-antigravity-e2e
 
 all: $(FULL_TARGETS)
 
@@ -172,6 +173,9 @@ docker-router-kind:
 kind-codex-e2e:
 	PANGAEA_ROUTER_IMAGE=$(ROUTER_KIND_IMAGE) PANGAEA_CODEX_IMAGE=$(PROVIDER_CODEX_KIND_IMAGE) ./scripts/e2e-kind-codex.sh
 
+kind-gemini-e2e:
+	PANGAEA_ROUTER_IMAGE=$(ROUTER_KIND_IMAGE) PANGAEA_GEMINI_IMAGE=$(PROVIDER_GEMINI_KIND_IMAGE) ./scripts/e2e-kind-gemini.sh
+
 kind-antigravity-e2e:
 	PANGAEA_ROUTER_IMAGE=$(ROUTER_KIND_IMAGE) PANGAEA_ANTIGRAVITY_SHIM_IMAGE=$(PROVIDER_ANTIGRAVITY_KIND_IMAGE) PANGAEA_ANTIGRAVITY_RUNTIME_IMAGE=$(ANTIGRAVITY_RUNTIME_KIND_IMAGE) ./scripts/e2e-kind-antigravity.sh
 
@@ -192,7 +196,7 @@ help:
 	@echo
 	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  router-ui  demo"
 	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-provider-claude  docker-provider-github-copilot-sidecar  docker-provider-api-compatible  docker-provider-antigravity-sidecar  docker-providers"
-	@echo "Kind e2e: docker-router-kind  kind-codex-e2e  kind-antigravity-e2e"
+	@echo "Kind e2e: docker-router-kind  kind-codex-e2e  kind-gemini-e2e  kind-antigravity-e2e"
 
 %:
 	@echo "Unknown target '$@'"

@@ -42,6 +42,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newReverseClientCmd())
 	root.AddCommand(newReverseConnectCmd())
 	root.AddCommand(newSetupCmd())
+	root.AddCommand(newSetupProviderCmd())
 	root.AddCommand(newCACmd())
 	root.AddCommand(newJWTCmd())
 	root.AddCommand(newInspectCmd())

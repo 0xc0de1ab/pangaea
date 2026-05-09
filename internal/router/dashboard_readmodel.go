@@ -169,6 +169,8 @@ type RouteProviderView struct {
 	NodeID             string                `json:"node_id,omitempty"`
 	HostName           string                `json:"host_name,omitempty"`
 	ContainerID        string                `json:"container_id,omitempty"`
+	ContainerKind      string                `json:"container_kind,omitempty"`
+	ContainerName      string                `json:"container_name,omitempty"`
 	Service            provider.Service      `json:"service,omitempty"`
 	ProviderKind       provider.Kind         `json:"provider_kind,omitempty"`
 	Account            provider.Account      `json:"account,omitempty"`
@@ -188,6 +190,8 @@ type ProviderView struct {
 	NodeID                  string                `json:"node_id,omitempty"`
 	HostName                string                `json:"host_name,omitempty"`
 	ContainerID             string                `json:"container_id,omitempty"`
+	ContainerKind           string                `json:"container_kind,omitempty"`
+	ContainerName           string                `json:"container_name,omitempty"`
 	Service                 provider.Service      `json:"service,omitempty"`
 	ProviderKind            provider.Kind         `json:"provider_kind,omitempty"`
 	Account                 provider.Account      `json:"account,omitempty"`
@@ -229,6 +233,8 @@ type TraceSummary struct {
 	NodeID             string            `json:"node_id,omitempty"`
 	HostName           string            `json:"host_name,omitempty"`
 	ContainerID        string            `json:"container_id,omitempty"`
+	ContainerKind      string            `json:"container_kind,omitempty"`
+	ContainerName      string            `json:"container_name,omitempty"`
 	Service            provider.Service  `json:"service,omitempty"`
 	ProviderKind       provider.Kind     `json:"provider_kind,omitempty"`
 	Account            provider.Account  `json:"account,omitempty"`
@@ -363,7 +369,7 @@ func buildDashboardSummary(now time.Time, engine *Engine, dataBroker *DataBroker
 			summary.Auth.Expired++
 		case provider.AuthConflict:
 			summary.Auth.Conflict++
-		case provider.AuthUnavailable:
+		case provider.AuthUnavailable, provider.AuthNoLogin:
 			summary.Auth.Unavailable++
 		default:
 			summary.Auth.Unknown++
@@ -423,7 +429,7 @@ func buildRouteViews(engine *Engine, dataBroker *DataBroker) []RouteView {
 				candidateView.MatchedProviders++
 				view.MatchedProviders++
 				routingRegistration := dashboardRoutingRegistration(registration, dataSessions, dataBrokerPresent)
-				score, weight, _, rejection := evaluateRegistration(candidate, route.Constraints, required, routingRegistration)
+				score, weight, _, rejection := evaluateRegistration(candidate, route.Constraints, required, "", "", routingRegistration)
 				providerView := routeProviderView(routingRegistration, dataSessions[routingRegistration.Identity.ProviderInstanceID])
 				providerView.Score = score
 				providerView.Weight = weight
@@ -475,6 +481,8 @@ func buildProviderViews(now time.Time, engine *Engine, dataBroker *DataBroker) [
 			NodeID:             identity.NodeID,
 			HostName:           identity.HostName,
 			ContainerID:        identity.ContainerID,
+			ContainerKind:      identity.ContainerKind,
+			ContainerName:      identity.ContainerName,
 			Service:            identity.Service,
 			ProviderKind:       identity.Kind,
 			Account:            accountWithFallback(identity.Account, registration.Auth.Account),
@@ -492,6 +500,12 @@ func buildProviderViews(now time.Time, engine *Engine, dataBroker *DataBroker) [
 		if container, ok := providerContainer(identity, containersByID, containersByProvider); ok {
 			if view.ContainerID == "" {
 				view.ContainerID = container.ContainerID
+			}
+			if view.ContainerKind == "" {
+				view.ContainerKind = container.ContainerKind
+			}
+			if view.ContainerName == "" {
+				view.ContainerName = container.ContainerName
 			}
 			view.ContainerFreshness = containerFreshness(now, container)
 		}
@@ -717,6 +731,8 @@ func routeProviderView(registration provider.Registration, dataSession DataSessi
 		NodeID:             identity.NodeID,
 		HostName:           identity.HostName,
 		ContainerID:        identity.ContainerID,
+		ContainerKind:      identity.ContainerKind,
+		ContainerName:      identity.ContainerName,
 		Service:            identity.Service,
 		ProviderKind:       identity.Kind,
 		Account:            accountWithFallback(identity.Account, registration.Auth.Account),
@@ -759,6 +775,8 @@ func traceSummary(trace RequestTrace) TraceSummary {
 		summary.NodeID = trace.Provider.NodeID
 		summary.HostName = trace.Provider.HostName
 		summary.ContainerID = trace.Provider.ContainerID
+		summary.ContainerKind = trace.Provider.ContainerKind
+		summary.ContainerName = trace.Provider.ContainerName
 		summary.Service = trace.Provider.Service
 		summary.ProviderKind = trace.Provider.Kind
 		summary.Account = trace.Provider.Account
@@ -952,6 +970,11 @@ func cloneProviderModels(models []provider.Model) []provider.Model {
 	for _, model := range models {
 		model.Aliases = append([]string(nil), model.Aliases...)
 		model.Capabilities = append([]provider.Capability(nil), model.Capabilities...)
+		model.GroupMembers = append([]string(nil), model.GroupMembers...)
+		if model.Quota != nil {
+			quota := *model.Quota
+			model.Quota = &quota
+		}
 		out = append(out, model)
 	}
 	return out

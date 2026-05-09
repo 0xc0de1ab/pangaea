@@ -64,14 +64,14 @@ runtime:
   kind: docker
   rootless: true
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     kind: app-server
     service: codex
-    account_hint: samtest4u@gmail.com
+    account_hint: primary@example.test
     image: pangaea/provider-codex:2026.05.1
     auth:
       bootstrap: copy
-      host_path: /srv/pangaea/auth/codex/samtest/auth.json
+      host_path: /srv/pangaea/auth/codex/primary/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
     refresh:
       threshold: 5m

@@ -67,10 +67,14 @@ func antigravityOAuthExpiryFromState(raw []byte) (time.Time, bool) {
 	}
 	const key = "antigravityUnifiedStateSync.oauthToken"
 	keyBytes := []byte(key)
+	var best time.Time
 	for offset := 0; ; {
 		idx := bytes.Index(raw[offset:], keyBytes)
 		if idx < 0 {
-			return time.Time{}, false
+			if best.IsZero() {
+				return time.Time{}, false
+			}
+			return best, true
 		}
 		idx += offset
 		end := idx + 64*1024
@@ -78,7 +82,9 @@ func antigravityOAuthExpiryFromState(raw []byte) (time.Time, bool) {
 			end = len(raw)
 		}
 		if expiresAt, ok := antigravityOAuthExpiryFromBytes(raw[idx+len(keyBytes) : end]); ok {
-			return expiresAt, true
+			if expiresAt.After(best) {
+				best = expiresAt
+			}
 		}
 		offset = idx + len(keyBytes)
 	}

@@ -3,9 +3,11 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
@@ -31,8 +33,8 @@ func TestEngineDryRunUsesRegistry(t *testing.T) {
 
 func TestEngineDryRunFiltersUnavailableDataSessions(t *testing.T) {
 	registry := provider.NewRegistry()
-	missing := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
-	available := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	missing := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	available := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
 	if err := registry.Upsert(missing); err != nil {
 		t.Fatalf("upsert missing: %v", err)
 	}
@@ -68,8 +70,8 @@ func TestEngineDryRunFiltersUnavailableDataSessions(t *testing.T) {
 
 func TestEngineDryRunUsesLiveProviderQueueDepth(t *testing.T) {
 	registry := provider.NewRegistry()
-	busy := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
-	ready := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	busy := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	ready := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
 	if err := registry.Upsert(busy); err != nil {
 		t.Fatalf("upsert busy: %v", err)
 	}
@@ -260,7 +262,7 @@ func TestEngineInvokeRecordsRequestTrace(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected trace")
 	}
-	if trace.Status != "completed" || trace.Provider == nil || trace.Provider.ProviderInstanceID != "codex-samtest-a1" {
+	if trace.Status != "completed" || trace.Provider == nil || trace.Provider.ProviderInstanceID != "codex-primary-a1" {
 		t.Fatalf("unexpected trace: %#v", trace)
 	}
 	if trace.Reservation.Status != quota.ReservationCommitted {
@@ -278,10 +280,43 @@ func TestEngineInvokeRecordsRequestTrace(t *testing.T) {
 	}
 }
 
+func TestEngineRequestTracesPageAndDelete(t *testing.T) {
+	engine, _ := testEngine(t)
+	base := time.Now().UTC()
+	for i := 1; i <= 3; i++ {
+		engine.recordRequestTrace(RequestTrace{
+			RequestID:   fmt.Sprintf("req_page_%d", i),
+			Status:      "completed",
+			StartedAt:   base.Add(time.Duration(i) * time.Second),
+			CompletedAt: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	page := engine.RequestTracesPage(1, 1)
+	if page.Total != 3 || page.Offset != 1 || page.Limit != 1 || !page.HasMore {
+		t.Fatalf("unexpected page metadata: %#v", page)
+	}
+	if len(page.Traces) != 1 || page.Traces[0].RequestID != "req_page_2" {
+		t.Fatalf("unexpected page traces: %#v", page.Traces)
+	}
+
+	deleted := engine.DeleteRequestTraces([]string{"req_page_2", "missing", "req_page_2"})
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	if _, ok := engine.RequestTrace("req_page_2"); ok {
+		t.Fatal("deleted trace still present")
+	}
+	page = engine.RequestTracesPage(0, 10)
+	if page.Total != 2 || len(page.Traces) != 2 || page.Traces[0].RequestID != "req_page_3" || page.Traces[1].RequestID != "req_page_1" {
+		t.Fatalf("unexpected traces after delete: %#v", page)
+	}
+}
+
 func TestEngineInvokeTraceRecordsUpstreamErrorMetadata(t *testing.T) {
 	engine, _ := testEngine(t)
 	engine.SetInvoker(upstreamErrorFallbackInvoker{
-		failProviderInstanceID: "codex-samtest-a1",
+		failProviderInstanceID: "codex-primary-a1",
 		err: &provider.UpstreamError{
 			StatusCode: http.StatusTooManyRequests,
 			Code:       "rate_limit_exceeded",
@@ -348,7 +383,7 @@ func TestEngineInvokeStreamUsesStreamInvokerAndCommits(t *testing.T) {
 	if len(events) == 0 || events[0].Type != compat.EventMessageStart {
 		t.Fatalf("expected stream events, got %#v", events)
 	}
-	if response.Message.Content[0].Text != "stream ok" || execution.Decision.Selected != "codex-samtest-a1" {
+	if response.Message.Content[0].Text != "stream ok" || execution.Decision.Selected != "codex-primary-a1" {
 		t.Fatalf("unexpected stream response/execution: response=%#v execution=%#v", response, execution)
 	}
 	_, committed, reserved, err := ledger.Snapshot(quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1", Model: "gpt-5.3-codex-spark"})
@@ -362,8 +397,8 @@ func TestEngineInvokeStreamUsesStreamInvokerAndCommits(t *testing.T) {
 
 func TestEngineInvokeFallsBackAfterProviderFailure(t *testing.T) {
 	registry := provider.NewRegistry()
-	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
-	second := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	second := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
 	if err := registry.Upsert(first); err != nil {
 		t.Fatalf("upsert first: %v", err)
 	}
@@ -419,8 +454,8 @@ func TestEngineInvokeFallsBackAfterProviderFailure(t *testing.T) {
 
 func TestEngineInvokeMarksMissingDataSessionProviderDown(t *testing.T) {
 	registry := provider.NewRegistry()
-	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
-	second := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	second := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
 	if err := registry.Upsert(first); err != nil {
 		t.Fatalf("upsert first: %v", err)
 	}
@@ -466,8 +501,8 @@ func TestEngineInvokeMarksMissingDataSessionProviderDown(t *testing.T) {
 
 func TestEngineInvokeMarksUpstreamAuthFailureUnavailable(t *testing.T) {
 	registry := provider.NewRegistry()
-	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
-	second := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	second := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
 	if err := registry.Upsert(first); err != nil {
 		t.Fatalf("upsert first: %v", err)
 	}
@@ -523,8 +558,8 @@ func TestEngineInvokeMarksUpstreamAuthFailureUnavailable(t *testing.T) {
 
 func TestEngineInvokeMarksUpstreamRateLimitDegraded(t *testing.T) {
 	registry := provider.NewRegistry()
-	first := registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0)
-	second := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	second := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
 	if err := registry.Upsert(first); err != nil {
 		t.Fatalf("upsert first: %v", err)
 	}
@@ -572,10 +607,61 @@ func TestEngineInvokeMarksUpstreamRateLimitDegraded(t *testing.T) {
 	}
 }
 
+func TestEngineInvokeDoesNotDegradeProviderForUpstreamClientModelError(t *testing.T) {
+	registry := provider.NewRegistry()
+	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	second := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
+	if err := registry.Upsert(first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	if err := registry.Upsert(second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(upstreamErrorFallbackInvoker{
+		failProviderInstanceID: first.Identity.ProviderInstanceID,
+		err: &provider.UpstreamError{
+			StatusCode: http.StatusNotFound,
+			Code:       "not_found",
+			Message:    "model not found",
+		},
+	})
+
+	_, _, err = engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_upstream_model_404",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5.3-codex-spark",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke should fall back to second provider: %v", err)
+	}
+	updated, ok := registry.Get(first.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("missing first provider")
+	}
+	if updated.Health.Status != provider.HealthReady || updated.Health.Reason != "" {
+		t.Fatalf("client model error should not degrade provider health: %#v", updated.Health)
+	}
+}
+
 func testEngine(t *testing.T) (*Engine, *quota.Ledger) {
 	t.Helper()
 	registry := provider.NewRegistry()
-	if err := registry.Upsert(registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)); err != nil {
+	if err := registry.Upsert(registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)); err != nil {
 		t.Fatalf("upsert provider: %v", err)
 	}
 	ledger := quota.NewLedger()

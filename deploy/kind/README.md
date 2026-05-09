@@ -40,9 +40,9 @@ script downloads a version matching the kind control-plane into
 Useful overrides:
 
 ```bash
-PANGAEA_CODEX_AUTH_PATH=/srv/pangaea/auth/codex/samtest/auth.json \
-PANGAEA_PROVIDER_INSTANCE_ID=codex-samtest-a1 \
-PANGAEA_ACCOUNT_HINT=samtest4u@gmail.com \
+PANGAEA_CODEX_AUTH_PATH=/srv/pangaea/auth/codex/primary/auth.json \
+PANGAEA_PROVIDER_INSTANCE_ID=codex-primary-a1 \
+PANGAEA_ACCOUNT_HINT=primary@example.test \
 ./scripts/e2e-kind-codex.sh
 ```
 
@@ -94,18 +94,18 @@ Run:
 ./scripts/e2e-kind-antigravity.sh
 ```
 
-By default it builds the runtime image from
-`/workspace/antigravity-cli/antigravity-compat-proxy`. Override that path when
+By default it builds the runtime image from the sibling
+`../antigravity-cli/antigravity-compat-proxy` checkout. Override that path when
 needed:
 
 ```bash
-PANGAEA_ANTIGRAVITY_PROXY_DIR=/workspace/antigravity-cli/antigravity-compat-proxy \
+PANGAEA_ANTIGRAVITY_PROXY_DIR=../antigravity-cli/antigravity-compat-proxy \
 ./scripts/e2e-kind-antigravity.sh
 ```
 
 Antigravity auth bootstrap checks `PANGAEA_ANTIGRAVITY_AUTH_PATH` first, then
 repo assets, Linux local state, and WSL Windows user state such as
-`/mnt/c/Users/<USER>/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb`.
+`<wsl-windows-users-root>/<USER>/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb`.
 The source file is copied into the container state volume; it is not mounted
 directly.
 

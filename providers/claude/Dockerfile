@@ -27,7 +27,7 @@ RUN chmod 0755 /usr/local/bin/provider-entrypoint /usr/local/bin/pangaeactl
 ENV CLAUDE_CONFIG_DIR=/var/lib/pangaea/auth/claude \
     PANGAEA_SHIM_MODE=cli-container \
     PANGAEA_SERVICE=claude \
-    PANGAEA_UPSTREAM_ADAPTER=cli-oneshot \
+    PANGAEA_PROVIDER_MODE=cli-adapter \
     PANGAEA_UPSTREAM_DIALECT=anthropic \
     PANGAEA_MODEL=claude-default \
     PANGAEA_MODEL_ALIAS=claude-default

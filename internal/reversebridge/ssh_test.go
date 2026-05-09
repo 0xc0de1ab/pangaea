@@ -13,7 +13,7 @@ func TestSplitSSHTarget(t *testing.T) {
 		wantUser string
 		wantHost string
 	}{
-		{in: "dh.kam@a2.oci.example.com", wantUser: "dh.kam", wantHost: "a2.oci.example.com"},
+		{in: "operator@a2.oci.example.com", wantUser: "operator", wantHost: "a2.oci.example.com"},
 		{in: "a2", wantUser: "", wantHost: "a2"},
 	}
 	for _, tt := range tests {
@@ -27,7 +27,7 @@ func TestSplitSSHTarget(t *testing.T) {
 func TestMaterializeSSHNodeDefaults(t *testing.T) {
 	node, err := materializeSSHNode(config.SSHNodeConfig{
 		NodeID:       "a2",
-		Target:       "dh.kam@a2",
+		Target:       "operator@a2",
 		UseSSHConfig: false,
 	})
 	if err != nil {

@@ -140,14 +140,14 @@ func TestProviderRegisterRoundTrip(t *testing.T) {
 	ts := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
 	registration := ProviderRegisterPayload{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "codex-samtest",
-			ProviderInstanceID: "codex-samtest/a1/01",
+			ProviderID:         "codex-primary",
+			ProviderInstanceID: "codex-primary/a1/01",
 			NodeID:             "a1",
 			HostName:           "snowbox",
 			ContainerID:        "docker://abc123",
 			Service:            provider.ServiceCodex,
 			Kind:               provider.KindCLIContainer,
-			Account:            provider.Account{ID: "user-H8Pbt", Display: "samtest4u@gmail.com"},
+			Account:            provider.Account{ID: "user-H8Pbt", Display: "primary@example.test"},
 		},
 		Capabilities: []provider.Capability{
 			provider.CapabilityOpenAIChat,
@@ -199,11 +199,11 @@ func TestProviderRegisterRoundTrip(t *testing.T) {
 func TestAuthSnapshotAndPushRoundTrip(t *testing.T) {
 	ts := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
 	snapshot := AuthSnapshot{
-		ProviderInstanceID: "codex-samtest/a1/01",
+		ProviderInstanceID: "codex-primary/a1/01",
 		AccountID:          "acct-1",
 		Auth: provider.AuthState{
 			Status:         provider.AuthRefreshSoon,
-			Account:        provider.Account{ID: "acct-1", Display: "samtest4u@gmail.com"},
+			Account:        provider.Account{ID: "acct-1", Display: "primary@example.test"},
 			ExpiresAt:      ts.Add(time.Hour),
 			Refreshable:    true,
 			SelectedSource: "container",
@@ -231,7 +231,7 @@ func TestAuthSnapshotAndPushRoundTrip(t *testing.T) {
 
 	push := AuthPush{
 		PushID:             "push_1",
-		ProviderInstanceID: "codex-samtest/a1/01",
+		ProviderInstanceID: "codex-primary/a1/01",
 		AccountID:          "acct-1",
 		Auth:               snapshot.Auth,
 		Fingerprint:        snapshot.Fingerprint,

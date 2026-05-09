@@ -74,19 +74,19 @@ func TestRunControlClientSendsConfiguredProviderInventory(t *testing.T) {
 			HostName:          "snowbox",
 			HeartbeatInterval: time.Second,
 			ProviderSpecs: []ProviderSpec{{
-				ID:          "codex-samtest",
-				InstanceID:  "codex-samtest-0001",
+				ID:          "codex-primary",
+				InstanceID:  "codex-primary-0001",
 				Kind:        provider.KindCLIContainer,
 				Image:       "pangaea/provider-codex:test",
-				AccountHint: "samtest4u@gmail.com",
+				AccountHint: "primary@example.test",
 				Service:     provider.ServiceCodex,
 				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
 			}, {
-				ID:          "codex-nullcode",
-				InstanceID:  "codex-nullcode-0001",
+				ID:          "codex-secondary",
+				InstanceID:  "codex-secondary-0001",
 				Kind:        provider.KindCLIContainer,
 				Image:       "pangaea/provider-codex:test",
-				AccountHint: "nullcode@gmail.com",
+				AccountHint: "secondary@example.test",
 				Service:     provider.ServiceCodex,
 				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 			}},
@@ -135,11 +135,11 @@ func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
 			ReconcileInterval: time.Second,
 			ContainerRuntime:  rt,
 			ProviderSpecs: []ProviderSpec{{
-				ID:          "codex-samtest",
-				InstanceID:  "codex-samtest-0001",
+				ID:          "codex-primary",
+				InstanceID:  "codex-primary-0001",
 				Kind:        provider.KindCLIContainer,
 				Image:       "pangaea/provider-codex:test",
-				AccountHint: "samtest4u@gmail.com",
+				AccountHint: "primary@example.test",
 				Service:     provider.ServiceCodex,
 				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 			}},
@@ -154,13 +154,13 @@ func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
 			if err := <-errCh; err != nil {
 				t.Fatalf("control client returned error: %v", err)
 			}
-			if rt.pulled != "pangaea/provider-codex:test" || rt.created.ProviderInstanceID != "codex-samtest-0001" {
+			if rt.pulled != "pangaea/provider-codex:test" || rt.created.ProviderInstanceID != "codex-primary-0001" {
 				t.Fatalf("runtime did not reconcile provider: pulled=%q created=%#v", rt.pulled, rt.created)
 			}
 			if rt.created.Env["PANGAEA_ROUTER_CONTROL_URL"] != controlURL(server.URL) {
 				t.Fatalf("reconciled container did not receive router control url: %#v", rt.created.Env)
 			}
-			if rt.created.Env["PANGAEA_ROUTER_DATA_URL"] != "ws://router.example.test/router/v1/data/ws?provider_instance_id=codex-samtest-0001" || rt.created.Env["PANGAEA_STREAM_TOKEN_KEY"] != "node-stream-token-key" || rt.created.Env["PANGAEA_ROUTER_PEER_TOKEN"] != "node-peer-token" {
+			if rt.created.Env["PANGAEA_ROUTER_DATA_URL"] != "ws://router.example.test/router/v1/data/ws?provider_instance_id=codex-primary-0001" || rt.created.Env["PANGAEA_STREAM_TOKEN_KEY"] != "node-stream-token-key" || rt.created.Env["PANGAEA_ROUTER_PEER_TOKEN"] != "node-peer-token" {
 				t.Fatalf("reconciled container did not receive data plane config: %#v", rt.created.Env)
 			}
 			return

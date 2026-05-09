@@ -2,30 +2,40 @@ package providerfactory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/apiprovider"
 	"github.com/0xc0de1ab/pangaea/internal/cliprovider"
+	"github.com/0xc0de1ab/pangaea/internal/codexdirect"
 	"github.com/0xc0de1ab/pangaea/internal/codexprovider"
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/geminidirect"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providershim"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
+
+const authExpiryRefreshThreshold = 5 * time.Minute
+const antigravityStateFormatName = "antigravity-state-vscdb-format"
 
 type Config struct {
 	ProviderID               string
 	ProviderInstanceID       string
 	NodeID                   string
 	HostName                 string
+	ContainerID              string
+	ContainerKind            string
+	ContainerName            string
 	Service                  string
 	Account                  string
-	UpstreamAdapter          string
+	ProviderMode             string
 	UpstreamBaseURL          string
 	UpstreamDialect          string
 	UpstreamAPIKey           string
@@ -36,6 +46,7 @@ type Config struct {
 	ShimProtocols            string
 	ShimCapabilities         string
 	Model                    string
+	Models                   string
 	ModelAlias               string
 	ModelCapabilities        string
 	AuthPath                 string
@@ -47,6 +58,8 @@ type Config struct {
 	RefreshThreshold         time.Duration
 	RefreshCooldown          time.Duration
 	AuthBootstrapTimeout     time.Duration
+	MCPServersJSON           string
+	MCPToolRounds            int
 }
 
 type BuildResult struct {
@@ -109,15 +122,17 @@ func DefaultRegistry() *Registry {
 		Definition{
 			Service:             provider.ServiceClaude,
 			DefaultAuthFormat:   "claude-credentials-json-format",
-			NormalizeCLIAdapter: normalizeCLIOneshotAdapter(provider.ServiceClaude),
+			NormalizeCLIAdapter: normalizeCLICommandAdapter(),
 		},
 		Definition{
-			Service:             provider.ServiceGemini,
-			DefaultAuthFormat:   "gemini-oauth-creds-json-format",
-			NormalizeCLIAdapter: normalizeCLIOneshotAdapter(provider.ServiceGemini),
+			Service:                  provider.ServiceGemini,
+			DefaultAuthFormat:        "gemini-oauth-creds-json-format",
+			NormalizeCLIAdapter:      normalizeCLICommandAdapter(),
+			BuildCLIContainerAdapter: buildGeminiCLIContainerAdapter,
 		},
 		Definition{
-			Service: provider.ServiceAntigravity,
+			Service:           provider.ServiceAntigravity,
+			DefaultAuthFormat: "antigravity-state-vscdb-format",
 			SidecarCapabilities: []provider.Capability{
 				provider.CapabilityAntigravitySidecar,
 				provider.CapabilityAgentToolUse,
@@ -149,37 +164,50 @@ func (r *Registry) BuildAPICompatibleProvider(cfg Config) (*apiprovider.Provider
 	return r.buildCompatibleProvider(cfg, provider.KindAPICompatible, provider.AuthState{Status: provider.AuthHealthy, Account: account}, extraCaps)
 }
 
-func BuildSidecarProvider(cfg Config) (*apiprovider.Provider, error) {
+func BuildSidecarProvider(cfg Config) (providershim.APICompatibleProvider, error) {
 	return DefaultRegistry().BuildSidecarProvider(cfg)
 }
 
-func (r *Registry) BuildSidecarProvider(cfg Config) (*apiprovider.Provider, error) {
+func (r *Registry) BuildSidecarProvider(cfg Config) (providershim.APICompatibleProvider, error) {
 	service := provider.Service(cfg.Service)
 	definition, _ := r.Definition(service)
 	account := provider.Account{Display: cfg.Account}
-	selectedSource := "sidecar"
-	expiresAt := time.Time{}
-	if service == provider.ServiceAntigravity && strings.TrimSpace(cfg.AuthPath) != "" {
-		if extracted, ok := antigravityAccountFromStateFile(cfg.AuthPath); ok {
-			account = extracted
-			selectedSource = "antigravity-state-vscdb"
+	auth := provider.AuthState{Status: provider.AuthHealthy, Account: account, SelectedSource: "sidecar"}
+	extraCaps := append([]provider.Capability(nil), definition.SidecarCapabilities...)
+	var authFormat formats.Format
+	if strings.TrimSpace(cfg.AuthPath) != "" {
+		authFormatName := cfg.AuthFormat
+		if authFormatName == "" {
+			authFormatName = definition.DefaultAuthFormat
 		}
-		if expiry, ok := antigravityOAuthExpiryFromStateFile(cfg.AuthPath); ok {
-			expiresAt = expiry
+		if authFormatName != "" {
+			format, ok := formats.Get(authFormatName)
+			if !ok {
+				return nil, fmt.Errorf("unknown --auth-format %q (known: %s)", authFormatName, strings.Join(formats.List(), ", "))
+			}
+			if err := waitForAuthBootstrap(context.Background(), cfg.AuthPath, DefaultAuthBootstrapTimeout(cfg.AuthBootstrapTimeout)); err != nil {
+				return nil, err
+			}
+			fileAuth, err := initialAuthStateFromFile(context.Background(), cfg.AuthPath, format, time.Now)
+			if err != nil {
+				return nil, err
+			}
+			if fileAuth.Account.Display == "" {
+				fileAuth.Account.Display = cfg.Account
+			}
+			auth = fileAuth
+			authFormat = format
+			extraCaps = append(extraCaps, provider.CapabilityAuthFile)
 		}
 	}
-	auth := provider.AuthState{Status: provider.AuthHealthy, Account: account, ExpiresAt: expiresAt, SelectedSource: selectedSource}
-	if service == provider.ServiceAntigravity && !expiresAt.IsZero() {
-		now := time.Now().UTC()
-		switch {
-		case !expiresAt.After(now):
-			auth.Status = provider.AuthExpired
-			auth.LastRefreshErr = "antigravity oauth token expired"
-		case expiresAt.Before(now.Add(5 * time.Minute)):
-			auth.Status = provider.AuthRefreshSoon
-		}
+	apiProvider, err := r.buildCompatibleProvider(cfg, provider.KindSidecar, auth, extraCaps)
+	if err != nil {
+		return nil, err
 	}
-	return r.buildCompatibleProvider(cfg, provider.KindSidecar, auth, definition.SidecarCapabilities)
+	if authFormat != nil {
+		return WrapNativeUsageProbe(apiProvider, cfg.AuthPath, authFormat), nil
+	}
+	return apiProvider, nil
 }
 
 func BuildCLIContainerProvider(ctx context.Context, cfg Config) (BuildResult, error) {
@@ -187,45 +215,49 @@ func BuildCLIContainerProvider(ctx context.Context, cfg Config) (BuildResult, er
 }
 
 func (r *Registry) BuildCLIContainerProvider(ctx context.Context, cfg Config) (BuildResult, error) {
-	if cfg.AuthPath == "" {
-		return BuildResult{}, fmt.Errorf("--auth-path is required with --cli-container")
-	}
 	service := provider.Service(cfg.Service)
 	definition, _ := r.Definition(service)
-	authFormatName := cfg.AuthFormat
-	if authFormatName == "" {
-		authFormatName = definition.DefaultAuthFormat
-	}
-	if authFormatName == "" {
-		return BuildResult{}, fmt.Errorf("--auth-format is required with --cli-container for service %q", cfg.Service)
-	}
-	authFormat, ok := formats.Get(authFormatName)
-	if !ok {
-		return BuildResult{}, fmt.Errorf("unknown --auth-format %q (known: %s)", authFormatName, strings.Join(formats.List(), ", "))
-	}
-	if err := waitForAuthBootstrap(ctx, cfg.AuthPath, DefaultAuthBootstrapTimeout(cfg.AuthBootstrapTimeout)); err != nil {
-		return BuildResult{}, err
-	}
-	auth, err := initialAuthStateFromFile(ctx, cfg.AuthPath, authFormat, time.Now)
-	if err != nil {
-		return BuildResult{}, err
-	}
-	auth.Refreshable = strings.TrimSpace(cfg.RefreshCommand) != ""
-	if auth.Account.Display == "" {
-		auth.Account.Display = cfg.Account
-	}
-	extraCaps := []provider.Capability{provider.CapabilityAuthFile}
+	auth := noLoginAuthState()
+	extraCaps := []provider.Capability(nil)
+	var authFormat formats.Format
 	var refresher providershim.AuthRefresher
-	if auth.Refreshable {
-		extraCaps = append(extraCaps, provider.CapabilityAuthRefreshOneshot)
-		refresher, err = providershim.NewCommandAuthRefresher(providershim.CommandAuthRefresherOptions{
-			Command:  RefreshCommandArgs(cfg.RefreshCommand, cfg.RefreshLoginShell),
-			Timeout:  cfg.RefreshTimeout,
-			AuthPath: cfg.AuthPath,
-			Format:   authFormat,
-		})
+	if strings.TrimSpace(cfg.AuthPath) != "" {
+		authFormatName := cfg.AuthFormat
+		if authFormatName == "" {
+			authFormatName = definition.DefaultAuthFormat
+		}
+		if authFormatName == "" {
+			return BuildResult{}, fmt.Errorf("--auth-format is required with --cli-container for service %q", cfg.Service)
+		}
+		var ok bool
+		authFormat, ok = formats.Get(authFormatName)
+		if !ok {
+			return BuildResult{}, fmt.Errorf("unknown --auth-format %q (known: %s)", authFormatName, strings.Join(formats.List(), ", "))
+		}
+		if err := waitForAuthBootstrap(ctx, cfg.AuthPath, DefaultAuthBootstrapTimeout(cfg.AuthBootstrapTimeout)); err != nil {
+			return BuildResult{}, err
+		}
+		var err error
+		auth, err = initialAuthStateFromFile(ctx, cfg.AuthPath, authFormat, time.Now)
 		if err != nil {
 			return BuildResult{}, err
+		}
+		auth.Refreshable = strings.TrimSpace(cfg.RefreshCommand) != ""
+		if auth.Account.Display == "" {
+			auth.Account.Display = cfg.Account
+		}
+		extraCaps = append(extraCaps, provider.CapabilityAuthFile)
+		if auth.Refreshable {
+			extraCaps = append(extraCaps, provider.CapabilityAuthRefreshOneshot)
+			refresher, err = providershim.NewCommandAuthRefresher(providershim.CommandAuthRefresherOptions{
+				Command:  RefreshCommandArgs(cfg.RefreshCommand, cfg.RefreshLoginShell),
+				Timeout:  cfg.RefreshTimeout,
+				AuthPath: cfg.AuthPath,
+				Format:   authFormat,
+			})
+			if err != nil {
+				return BuildResult{}, err
+			}
 		}
 	}
 	adapter, err := r.normalizeCLIContainerAdapter(cfg, definition)
@@ -244,8 +276,12 @@ func (r *Registry) BuildCLIContainerProvider(ctx context.Context, cfg Config) (B
 			return BuildResult{}, err
 		}
 		if handled {
+			provider := apiProvider
+			if authFormat != nil && strings.TrimSpace(cfg.AuthPath) != "" {
+				provider = WrapNativeUsageProbe(apiProvider, cfg.AuthPath, authFormat)
+			}
 			return BuildResult{
-				Provider:             WrapNativeUsageProbe(apiProvider, cfg.AuthPath, authFormat),
+				Provider:             provider,
 				AuthRefresher:        refresher,
 				AutoRefreshThreshold: DefaultRefreshThreshold(cfg.RefreshThreshold),
 				AutoRefreshCooldown:  DefaultRefreshCooldown(cfg.RefreshCooldown),
@@ -256,12 +292,24 @@ func (r *Registry) BuildCLIContainerProvider(ctx context.Context, cfg Config) (B
 	if err != nil {
 		return BuildResult{}, err
 	}
+	provider := apiProvider
+	if authFormat != nil && strings.TrimSpace(cfg.AuthPath) != "" {
+		provider = WrapNativeUsageProbe(apiProvider, cfg.AuthPath, authFormat)
+	}
 	return BuildResult{
-		Provider:             WrapNativeUsageProbe(apiProvider, cfg.AuthPath, authFormat),
+		Provider:             provider,
 		AuthRefresher:        refresher,
 		AutoRefreshThreshold: DefaultRefreshThreshold(cfg.RefreshThreshold),
 		AutoRefreshCooldown:  DefaultRefreshCooldown(cfg.RefreshCooldown),
 	}, nil
+}
+
+func noLoginAuthState() provider.AuthState {
+	return provider.AuthState{
+		Status:         provider.AuthNoLogin,
+		LastRefreshErr: "auth path is not configured",
+		SelectedSource: "none",
+	}
 }
 
 func DefaultRefreshThreshold(value time.Duration) time.Duration {
@@ -293,79 +341,72 @@ func (r *Registry) normalizeCLIContainerAdapter(cfg Config, definition Definitio
 }
 
 func normalizeGenericCLIAdapter(cfg Config) (string, error) {
-	adapter := strings.ToLower(strings.TrimSpace(cfg.UpstreamAdapter))
-	if adapter == "" {
-		return "api-compatible", nil
+	if adapter, ok, err := adapterFromProviderMode(cfg); ok || err != nil {
+		return adapter, err
 	}
-	switch adapter {
-	case "api-compatible":
-		return adapter, nil
-	case "reverse-http":
-		return "api-compatible", nil
-	case "websocket":
-		return "", fmt.Errorf("--upstream-adapter websocket is currently only supported for service codex")
-	default:
-		return "", fmt.Errorf("unsupported --upstream-adapter %q", cfg.UpstreamAdapter)
-	}
+	return "direct-http", nil
 }
 
 func normalizeCodexCLIAdapter(cfg Config) (string, error) {
-	adapter := strings.ToLower(strings.TrimSpace(cfg.UpstreamAdapter))
-	if adapter == "" {
-		if isWebSocketURL(cfg.UpstreamBaseURL) {
-			return "codex-websocket", nil
-		}
-		return "api-compatible", nil
+	if adapter, ok, err := adapterFromProviderMode(cfg); ok || err != nil {
+		return adapter, err
 	}
-	switch adapter {
-	case "api-compatible":
-		return adapter, nil
-	case "websocket", "codex-websocket":
+	if isWebSocketURL(cfg.UpstreamBaseURL) {
 		return "codex-websocket", nil
-	case "reverse-http", "codex-reverse-http":
-		return "codex-reverse-http", nil
-	default:
-		return "", fmt.Errorf("unsupported --upstream-adapter %q", cfg.UpstreamAdapter)
+	}
+	return "direct-http", nil
+}
+
+func normalizeCLICommandAdapter() func(Config) (string, error) {
+	return func(cfg Config) (string, error) {
+		if adapter, ok, err := adapterFromProviderMode(cfg); ok || err != nil {
+			return adapter, err
+		}
+		if strings.TrimSpace(cfg.UpstreamBaseURL) == "" {
+			return "cli-adapter", nil
+		}
+		return "direct-http", nil
 	}
 }
 
-func normalizeCLIOneshotAdapter(service provider.Service) func(Config) (string, error) {
-	return func(cfg Config) (string, error) {
-		adapter := strings.ToLower(strings.TrimSpace(cfg.UpstreamAdapter))
-		if adapter == "" {
-			if strings.TrimSpace(cfg.UpstreamBaseURL) == "" {
-				return "cli-oneshot", nil
-			}
-			return "api-compatible", nil
+func adapterFromProviderMode(cfg Config) (string, bool, error) {
+	mode := strings.ToLower(strings.TrimSpace(cfg.ProviderMode))
+	if mode == "" {
+		return "", false, nil
+	}
+	switch mode {
+	case "http-direct":
+		return "direct-http", true, nil
+	case "cli-adapter":
+		return "cli-adapter", true, nil
+	case "app-server":
+		if provider.Service(cfg.Service) != provider.ServiceCodex {
+			return "", true, fmt.Errorf("--provider-mode app-server is currently supported only for service codex")
 		}
-		switch adapter {
-		case "api-compatible":
-			return adapter, nil
-		case "reverse-http":
-			return "api-compatible", nil
-		case "cli-oneshot":
-			return adapter, nil
-		case "claude-cli":
-			if service != provider.ServiceClaude {
-				return "", fmt.Errorf("--upstream-adapter claude-cli requires --service claude")
-			}
-			return adapter, nil
-		case "gemini-cli":
-			if service != provider.ServiceGemini {
-				return "", fmt.Errorf("--upstream-adapter gemini-cli requires --service gemini")
-			}
-			return adapter, nil
-		case "websocket", "codex-websocket", "codex-reverse-http":
-			return "", fmt.Errorf("--upstream-adapter %s requires --service codex", adapter)
-		default:
-			return "", fmt.Errorf("unsupported --upstream-adapter %q", cfg.UpstreamAdapter)
-		}
+		return "codex-websocket", true, nil
+	case "acp":
+		return "", true, fmt.Errorf("--provider-mode acp is not implemented yet")
+	case "ls-core-sidecar":
+		return "", true, fmt.Errorf("--provider-mode ls-core-sidecar is not implemented by provider-shim yet")
+	default:
+		return "", true, fmt.Errorf("unsupported --provider-mode %q", cfg.ProviderMode)
 	}
 }
 
 func buildCodexCLIContainerAdapter(_ context.Context, buildCtx BuildContext, adapter string) (providershim.APICompatibleProvider, bool, error) {
 	cfg := buildCtx.Config
 	switch adapter {
+	case "direct-http":
+		registration, err := buildProviderRegistrationWithoutUpstream(cfg, provider.KindCLIContainer, buildCtx.Auth, buildCtx.ExtraCapabilities)
+		if err != nil {
+			return nil, true, err
+		}
+		codexProvider, err := codexdirect.New(codexdirect.Options{
+			Registration: registration,
+			BaseURL:      cfg.UpstreamBaseURL,
+			AuthPath:     cfg.AuthPath,
+		})
+		return codexProvider, true, err
 	case "codex-websocket":
 		registration, err := buildProviderRegistration(cfg, provider.KindAppServer, buildCtx.Auth, buildCtx.ExtraCapabilities)
 		if err != nil {
@@ -377,20 +418,66 @@ func buildCodexCLIContainerAdapter(_ context.Context, buildCtx BuildContext, ada
 			AuthPath:     cfg.AuthPath,
 		})
 		return codexProvider, true, err
-	case "codex-reverse-http":
-		if isWebSocketURL(cfg.UpstreamBaseURL) {
-			return nil, true, fmt.Errorf("--upstream-adapter reverse-http requires an HTTP-compatible bridge URL, got %q", cfg.UpstreamBaseURL)
-		}
-		apiProvider, err := buildCompatibleProvider(cfg, provider.KindAppServer, buildCtx.Auth, buildCtx.ExtraCapabilities)
-		return apiProvider, true, err
 	default:
 		return nil, false, nil
 	}
 }
 
+func buildGeminiCLIContainerAdapter(_ context.Context, buildCtx BuildContext, adapter string) (providershim.APICompatibleProvider, bool, error) {
+	if adapter != "direct-http" {
+		return nil, false, nil
+	}
+	cfg := buildCtx.Config
+	registration, err := buildProviderRegistrationWithoutUpstream(cfg, provider.KindCLIContainer, buildCtx.Auth, buildCtx.ExtraCapabilities)
+	if err != nil {
+		return nil, true, err
+	}
+	var toolDispatcher geminidirect.ToolDispatcher
+	mcpServersJSON := strings.TrimSpace(cfg.MCPServersJSON)
+	if mcpServersJSON == "" {
+		mcpServersJSON = geminiMCPServersJSONFromSettings()
+	}
+	if mcpServersJSON != "" {
+		toolDispatcher, err = geminidirect.NewMCPStdioDispatcherFromJSON(mcpServersJSON)
+		if err != nil {
+			return nil, true, err
+		}
+	}
+	geminiProvider, err := geminidirect.New(geminidirect.Options{
+		Registration:   registration,
+		BaseURL:        cfg.UpstreamBaseURL,
+		AuthPath:       cfg.AuthPath,
+		ToolDispatcher: toolDispatcher,
+		MaxToolRounds:  cfg.MCPToolRounds,
+	})
+	return geminiProvider, true, err
+}
+
+func geminiMCPServersJSONFromSettings() string {
+	path := strings.TrimSpace(os.Getenv("PANGAEA_GEMINI_SETTINGS_PATH"))
+	if path == "" {
+		home := strings.TrimSpace(os.Getenv("HOME"))
+		if home == "" {
+			return ""
+		}
+		path = filepath.Join(home, ".gemini", "settings.json")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var parsed struct {
+		MCPServers map[string]any `json:"mcpServers,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil || len(parsed.MCPServers) == 0 {
+		return ""
+	}
+	return string(raw)
+}
+
 func (r *Registry) buildGenericCLIContainerAdapter(cfg Config, auth provider.AuthState, extraCaps []provider.Capability, adapter string) (providershim.APICompatibleProvider, error) {
 	switch adapter {
-	case "cli-oneshot", "claude-cli", "gemini-cli":
+	case "cli-adapter":
 		return buildCLICommandProvider(cfg, auth, extraCaps)
 	default:
 		return r.buildCompatibleProvider(cfg, provider.KindCLIContainer, auth, extraCaps)
@@ -496,13 +583,9 @@ func buildProviderRegistrationWithOptions(cfg Config, kind provider.Kind, auth p
 	if cfg.ModelAlias != "" {
 		aliases = []string{cfg.ModelAlias}
 	}
-	models := []provider.Model(nil)
-	if cfg.Model != "" {
-		models = []provider.Model{{
-			ID:           cfg.Model,
-			Aliases:      aliases,
-			Capabilities: dedupeCapabilities(modelCapabilities),
-		}}
+	models, err := registrationModels(cfg, modelCapabilities, aliases)
+	if err != nil {
+		return provider.Registration{}, err
 	}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
@@ -510,6 +593,9 @@ func buildProviderRegistrationWithOptions(cfg Config, kind provider.Kind, auth p
 			ProviderInstanceID: cfg.ProviderInstanceID,
 			NodeID:             cfg.NodeID,
 			HostName:           cfg.HostName,
+			ContainerID:        cfg.ContainerID,
+			ContainerKind:      cfg.ContainerKind,
+			ContainerName:      cfg.ContainerName,
 			Service:            service,
 			Kind:               kind,
 			Account:            account,
@@ -520,6 +606,91 @@ func buildProviderRegistrationWithOptions(cfg Config, kind provider.Kind, auth p
 		Auth:         auth,
 		RegisteredAt: now,
 	}, nil
+}
+
+func registrationModels(cfg Config, modelCapabilities []provider.Capability, singleAliases []string) ([]provider.Model, error) {
+	if strings.TrimSpace(cfg.Models) != "" {
+		return parseModelList(provider.Service(cfg.Service), cfg.Models, modelCapabilities)
+	}
+	if strings.TrimSpace(cfg.Model) == "" {
+		return nil, nil
+	}
+	return []provider.Model{{
+		ID:               strings.TrimSpace(cfg.Model),
+		Aliases:          singleAliases,
+		Capabilities:     dedupeCapabilities(modelCapabilities),
+		ContextTokens:    defaultContextTokens(provider.Service(cfg.Service), strings.TrimSpace(cfg.Model)),
+		MaxContextTokens: defaultContextTokens(provider.Service(cfg.Service), strings.TrimSpace(cfg.Model)),
+	}}, nil
+}
+
+func parseModelList(service provider.Service, raw string, capabilities []provider.Capability) ([]provider.Model, error) {
+	items := strings.Split(raw, ",")
+	models := make([]provider.Model, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		id, aliasesRaw, _ := strings.Cut(item, "=")
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, fmt.Errorf("model id must not be empty in --models")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		aliases := []string(nil)
+		for _, alias := range strings.Split(aliasesRaw, "|") {
+			alias = strings.TrimSpace(alias)
+			if alias != "" && alias != id {
+				aliases = append(aliases, alias)
+			}
+		}
+		models = append(models, provider.Model{
+			ID:               id,
+			Aliases:          aliases,
+			Capabilities:     dedupeCapabilities(capabilities),
+			ContextTokens:    defaultContextTokens(service, id),
+			MaxContextTokens: defaultContextTokens(service, id),
+		})
+		applyKnownModelMetadata(service, &models[len(models)-1])
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("--models did not contain any model ids")
+	}
+	return models, nil
+}
+
+func applyKnownModelMetadata(service provider.Service, model *provider.Model) {
+	if service != provider.ServiceGemini || model == nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(model.ID)) {
+	case "auto-gemini-3":
+		model.Kind = "group"
+		model.GroupMembers = mergeStringLists(model.GroupMembers, []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview"})
+		model.Aliases = mergeStringLists(model.Aliases, []string{"Auto (Gemini 3)"})
+	case "auto-gemini-2.5":
+		model.Kind = "group"
+		model.GroupMembers = mergeStringLists(model.GroupMembers, []string{"gemini-2.5-pro", "gemini-2.5-flash"})
+		model.Aliases = mergeStringLists(model.Aliases, []string{"Auto (Gemini 2.5)"})
+	}
+}
+
+func defaultContextTokens(service provider.Service, model string) int {
+	if service != provider.ServiceGemini {
+		return 0
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(model, "gemini-"):
+		return 1_048_576
+	default:
+		return 0
+	}
 }
 
 func registrationCapabilities(cfg Config, defaultCapability provider.Capability, extraCapabilities []provider.Capability) ([]provider.Capability, error) {
@@ -692,14 +863,19 @@ func (p *nativeUsageProbeProvider) ApplyAuthPush(ctx context.Context, push contr
 		auth.LastRefreshErr = err.Error()
 		return auth, err
 	}
+	now := time.Now().UTC()
+	validationStatus, validationExpiresAt, validationErr := authStateFromValidation(p.format, result, snapshot.ExpiresAt(), now)
 	auth := push.Auth
-	if auth.Status == "" {
-		auth.Status = authStatusFromValidation(result.Status)
+	if auth.Status == "" || shouldPreferValidationAuthStatus(p.format, auth.Status, validationStatus, validationExpiresAt) {
+		auth.Status = validationStatus
 	}
-	auth.ExpiresAt = snapshot.ExpiresAt()
+	auth.ExpiresAt = validationExpiresAt
 	auth.SelectedSource = firstNonEmptyString(push.Source, "router")
-	auth.LastRefreshAt = time.Now().UTC()
-	auth.LastRefreshErr = ""
+	auth.LastRefreshAt = now
+	auth.LastRefreshErr = validationErr
+	if auth.Status != validationStatus && auth.Status != provider.AuthRefreshSoon {
+		auth.LastRefreshErr = ""
+	}
 	if auth.Account == (provider.Account{}) {
 		auth.Account = registration.Identity.Account
 	}
@@ -744,6 +920,50 @@ func (p *nativeUsageProbeProvider) Usage() (provider.UsageReport, error) {
 	base.Source = joinUsageSources(base.Source, p.format.Name()+"/usage-probe")
 	base.NativeSummary = native
 	return base, nil
+}
+
+func (p *nativeUsageProbeProvider) Health() (provider.Health, error) {
+	if p == nil || p.APICompatibleProvider == nil {
+		return provider.Health{}, fmt.Errorf("health reporter unavailable")
+	}
+	if reporter, ok := p.APICompatibleProvider.(interface {
+		Health() (provider.Health, error)
+	}); ok {
+		return reporter.Health()
+	}
+	registration, err := p.APICompatibleProvider.Registration()
+	if err != nil {
+		return provider.Health{}, err
+	}
+	return registration.Health, nil
+}
+
+func (p *nativeUsageProbeProvider) Auth() (provider.AuthState, error) {
+	if p == nil || p.APICompatibleProvider == nil {
+		return provider.AuthState{}, fmt.Errorf("auth reporter unavailable")
+	}
+	if reporter, ok := p.APICompatibleProvider.(interface {
+		Auth() (provider.AuthState, error)
+	}); ok {
+		return reporter.Auth()
+	}
+	registration, err := p.APICompatibleProvider.Registration()
+	if err != nil {
+		return provider.AuthState{}, err
+	}
+	return registration.Auth, nil
+}
+
+func (p *nativeUsageProbeProvider) ForceModelDiscovery() bool {
+	if p == nil || p.APICompatibleProvider == nil {
+		return false
+	}
+	if reporter, ok := p.APICompatibleProvider.(interface {
+		ForceModelDiscovery() bool
+	}); ok {
+		return reporter.ForceModelDiscovery()
+	}
+	return false
 }
 
 func (p *nativeUsageProbeProvider) InvokeStream(ctx context.Context, registration provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
@@ -817,6 +1037,8 @@ func authFilenameForFormat(format string) string {
 		return ".credentials.json"
 	case "gemini-oauth-creds-json-format":
 		return "oauth_creds.json"
+	case "antigravity-state-vscdb-format":
+		return "state.vscdb"
 	default:
 		return "auth.json"
 	}
@@ -847,14 +1069,14 @@ func initialAuthStateFromFile(ctx context.Context, path string, format formats.F
 	if err != nil {
 		return provider.AuthState{}, err
 	}
+	checkedAt := now().UTC()
+	status, expiresAt, lastRefreshErr := authStateFromValidation(format, result, snapshot.ExpiresAt(), checkedAt)
 	auth := provider.AuthState{
-		Status:          authStatusFromValidation(result.Status),
-		ExpiresAt:       snapshot.ExpiresAt(),
+		Status:          status,
+		ExpiresAt:       expiresAt,
+		LastRefreshErr:  lastRefreshErr,
 		SelectedSource:  "container",
 		BootstrapSource: "copy",
-	}
-	if result.Status != formats.StatusOK && result.Detail != "" {
-		auth.LastRefreshErr = result.Detail
 	}
 	if accountAware, ok := format.(formats.AccountAware); ok {
 		if id, err := accountAware.Account(ctx, snapshot, path); err == nil {
@@ -913,9 +1135,12 @@ func authBootstrapReady(authPath string) (bool, error) {
 	return true, nil
 }
 
-func authStatusFromValidation(status formats.ValidationStatus) provider.AuthStatus {
+func authStatusFromValidation(status formats.ValidationStatus, expiresAt time.Time, checkedAt time.Time) provider.AuthStatus {
 	switch status {
 	case formats.StatusOK:
+		if !expiresAt.IsZero() && !checkedAt.Add(authExpiryRefreshThreshold).Before(expiresAt) {
+			return provider.AuthRefreshSoon
+		}
 		return provider.AuthHealthy
 	case formats.StatusScopeWarn:
 		return provider.AuthConflict
@@ -928,6 +1153,32 @@ func authStatusFromValidation(status formats.ValidationStatus) provider.AuthStat
 	default:
 		return provider.AuthUnavailable
 	}
+}
+
+func authStateFromValidation(format formats.Format, result formats.ValidationResult, expiresAt time.Time, checkedAt time.Time) (provider.AuthStatus, time.Time, string) {
+	formatName := ""
+	if format != nil {
+		formatName = format.Name()
+	}
+	if formatName == antigravityStateFormatName &&
+		result.Status == formats.StatusOK &&
+		!expiresAt.IsZero() &&
+		!checkedAt.Add(authExpiryRefreshThreshold).Before(expiresAt) {
+		return provider.AuthHealthy, time.Time{}, ""
+	}
+	status := authStatusFromValidation(result.Status, expiresAt, checkedAt)
+	lastRefreshErr := ""
+	if (result.Status != formats.StatusOK || status == provider.AuthRefreshSoon) && result.Detail != "" {
+		lastRefreshErr = result.Detail
+	}
+	return status, expiresAt, lastRefreshErr
+}
+
+func shouldPreferValidationAuthStatus(format formats.Format, current provider.AuthStatus, validationStatus provider.AuthStatus, validationExpiresAt time.Time) bool {
+	if format == nil || format.Name() != antigravityStateFormatName {
+		return false
+	}
+	return current == provider.AuthRefreshSoon && validationStatus == provider.AuthHealthy && validationExpiresAt.IsZero()
 }
 
 func RefreshCommandArgs(command string, loginShell bool) []string {
@@ -954,6 +1205,23 @@ func dedupeCapabilities(in []provider.Capability) []provider.Capability {
 		}
 		seen[capability] = struct{}{}
 		out = append(out, capability)
+	}
+	return out
+}
+
+func mergeStringLists(base []string, extra []string) []string {
+	out := make([]string, 0, len(base)+len(extra))
+	seen := map[string]struct{}{}
+	for _, value := range append(append([]string(nil), base...), extra...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }

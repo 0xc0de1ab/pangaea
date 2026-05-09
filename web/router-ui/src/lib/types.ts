@@ -8,6 +8,7 @@ export type AuthStatus =
   | "revoked"
   | "conflict"
   | "unavailable"
+  | "no_login"
   | string;
 
 export type Account = {
@@ -21,6 +22,8 @@ export type ProviderIdentity = {
   node_id: string;
   host_name: string;
   container_id?: string;
+  container_kind?: string;
+  container_name?: string;
   service: string;
   kind: string;
   account?: Account;
@@ -32,6 +35,13 @@ export type ProviderModel = {
   capabilities?: string[];
   context_tokens?: number;
   max_context_tokens?: number;
+  kind?: string;
+  group_members?: string[];
+  quota?: {
+    remaining_pct?: number;
+    reset_at?: string;
+    source?: string;
+  };
 };
 
 export type ProviderRegistration = {
@@ -86,6 +96,8 @@ export type ContainerSnapshot = {
   node_id?: string;
   host_name?: string;
   container_id: string;
+  container_kind?: string;
+  container_name?: string;
   provider_id?: string;
   provider_instance_id?: string;
   image?: string;
@@ -118,6 +130,8 @@ export type ProviderUsageSnapshot = {
   node_id: string;
   host_name: string;
   container_id?: string;
+  container_kind?: string;
+  container_name?: string;
   service: string;
   kind: string;
   account?: Account;
@@ -265,6 +279,7 @@ export type RequestTrace = {
     closed_at?: string;
   };
   provider?: ProviderIdentity;
+  http?: RequestTraceHTTP;
   status: string;
   error?: string;
   error_code?: string;
@@ -275,6 +290,37 @@ export type RequestTrace = {
   started_at?: string;
   completed_at?: string;
   duration_ms?: number;
+};
+
+export type RequestTraceHTTP = {
+  request: {
+    method: string;
+    path: string;
+    query?: string;
+    headers?: Record<string, string[]>;
+    body?: RequestTraceHTTPBody;
+  };
+  response: {
+    status: number;
+    headers?: Record<string, string[]>;
+    body?: RequestTraceHTTPBody;
+  };
+};
+
+export type RequestTraceHTTPBody = {
+  content_type?: string;
+  json?: unknown;
+  jsonl?: unknown[];
+  text?: string;
+  truncated?: boolean;
+};
+
+export type RequestTracePage = {
+  traces: RequestTrace[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
 };
 
 export type AuditEvent = {
@@ -299,6 +345,7 @@ export type AuditEvent = {
     tenant_id?: string;
     user_id?: string;
     model?: string;
+    request_id?: string;
   };
   reason?: string;
   outcome: string;

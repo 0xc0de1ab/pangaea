@@ -1,0 +1,147 @@
+{
+  "source": ".tmp/gemini-fixtures-300-20260509T094011Z/http/flows.mitm#25/#50, redacted and minimized from Gemini CLI --acp tool callback continuation",
+  "request": {
+    "method": "POST",
+    "host": "cloudcode-pa.googleapis.com",
+    "path": "/v1internal:streamGenerateContent",
+    "raw_query": "alt=sse",
+    "authorization": "Bearer <redacted>",
+    "content_type": "application/json",
+    "accept": "text/event-stream",
+    "user_agent": "GeminiCLI/0.41.2/gemini-3-pro-preview (linux; x64; terminal) google-api-nodejs-client/9.15.1",
+    "x_goog_api_client": "gl-node/24.14.0",
+    "body": {
+      "model": "gemini-3-flash-preview",
+      "project": "fixture-project",
+      "user_prompt_id": "<uuid>",
+      "request": {
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n</session_context>"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Use the attached text resource and image if present. Reply with exactly ACP_OK plus one word summary.@file:///fixture/sample.md"
+              },
+              {
+                "text": "\n--- Content from referenced context ---"
+              },
+              {
+                "text": "\nContent from @file:///fixture/sample.md:\n"
+              },
+              {
+                "text": "# Fixture Notes\n\n1. Streaming responses should arrive incrementally.\n2. Buffered responses should arrive as one complete object.\n\n```go\nfmt.Println(\"markdown fixture\")\n```"
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "mcp_pangaea-fixture_fixture_echo",
+                  "args": {
+                    "text": "mcp-ok"
+                  },
+                  "id": "mcp_pangaea-fixture_fixture_echo_1778319661619_0"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "parts": [
+              {
+                "functionResponse": {
+                  "name": "mcp_pangaea-fixture_fixture_echo",
+                  "id": "mcp_pangaea-fixture_fixture_echo_1778319661619_0",
+                  "response": {
+                    "output": "fixture_echo:mcp-ok"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "generationConfig": {
+          "temperature": 1,
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingLevel": "HIGH"
+          },
+          "topK": 64,
+          "topP": 0.95
+        },
+        "session_id": "<uuid>",
+        "systemInstruction": {
+          "role": "user",
+          "parts": [
+            {
+              "text": "You are Gemini CLI, an interactive CLI agent specializing in software engineering tasks."
+            }
+          ]
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "name": "update_topic",
+                "description": "Manages your narrative flow. Include `title` and `summary` only when starting a new Chapter (logical phase) or shifting strategic intent.",
+                "parametersJsonSchema": {
+                  "type": "object",
+                  "properties": {
+                    "title": {
+                      "type": "string",
+                      "description": "The title of the new topic or chapter."
+                    },
+                    "summary": {
+                      "type": "string",
+                      "description": "(OPTIONAL) A detailed summary (5-10 sentences) covering both the work completed in the previous topic and the strategic intent of the new topic. This is required when transitioning between topics to maintain continuity."
+                    },
+                    "strategic_intent": {
+                      "type": "string",
+                      "description": "A mandatory one-sentence statement of your immediate intent."
+                    },
+                    "wait_for_previous": {
+                      "type": "boolean",
+                      "description": "Set to true to wait for all previously requested tools in this turn to complete before starting. Set to false (or omit) to run in parallel. Use true when this tool depends on the output of previous tools."
+                    }
+                  },
+                  "required": [
+                    "strategic_intent"
+                  ]
+                }
+              },
+              {
+                "name": "mcp_pangaea-fixture_fixture_echo",
+                "description": "Echo fixture input for Pangaea capture tests.",
+                "parametersJsonSchema": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "wait_for_previous": {
+                      "type": "boolean",
+                      "description": "Set to true to wait for all previously requested tools in this turn to complete before starting. Set to false (or omit) to run in parallel. Use true when this tool depends on the output of previous tools."
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

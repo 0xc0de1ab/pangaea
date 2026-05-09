@@ -240,6 +240,7 @@ func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileP
 			RouterDataURL:    opts.RouterDataURL,
 			StreamTokenKey:   opts.StreamTokenKey,
 			RouterPeerToken:  opts.RouterPeerToken,
+			ContainerKind:    opts.RuntimeKind,
 		})
 		return err
 	}
@@ -255,6 +256,7 @@ func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileP
 		RouterDataURL:    opts.RouterDataURL,
 		StreamTokenKey:   opts.StreamTokenKey,
 		RouterPeerToken:  opts.RouterPeerToken,
+		ContainerKind:    opts.RuntimeKind,
 	})
 	return err
 }

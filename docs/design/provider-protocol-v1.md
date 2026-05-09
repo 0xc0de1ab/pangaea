@@ -149,7 +149,7 @@ All control messages use a versioned envelope.
     "request_id": "",
     "route_id": "",
     "node_id": "a1",
-    "provider_instance_id": "codex-samtest/a1/01"
+    "provider_instance_id": "codex-primary/a1/01"
   },
   "payload": {}
 }
@@ -219,8 +219,8 @@ provider.heartbeat
 
 ```json
 {
-  "provider_id": "codex-samtest",
-  "provider_instance_id": "codex-samtest/a1/01",
+  "provider_id": "codex-primary",
+  "provider_instance_id": "codex-primary/a1/01",
   "kind": "cli-container",
   "node_id": "a1",
   "host_name": "snowbox",
@@ -228,8 +228,8 @@ provider.heartbeat
   "service": "codex",
   "account": {
     "id": "user-H8Pbt...",
-    "email": "samtest4u@gmail.com",
-    "display": "samtest4u@gmail.com"
+    "email": "primary@example.test",
+    "display": "primary@example.test"
   },
   "capabilities": [
     "api.openai.chat",
@@ -276,18 +276,18 @@ for example two Codex accounts on one host:
 ```json
 [
   {
-    "provider_id": "codex-samtest",
+    "provider_id": "codex-primary",
     "service": "codex",
     "node_id": "snowbox",
     "host_name": "snowbox",
-    "account": {"email": "samtest4u@gmail.com"}
+    "account": {"email": "primary@example.test"}
   },
   {
-    "provider_id": "codex-nullcode",
+    "provider_id": "codex-secondary",
     "service": "codex",
     "node_id": "snowbox",
     "host_name": "snowbox",
-    "account": {"email": "nullcode@gmail.com"}
+    "account": {"email": "secondary@example.test"}
   }
 ]
 ```
@@ -323,11 +323,11 @@ tokens, credential file bytes, or provider cookies.
 
 ```json
 {
-  "provider_instance_id": "codex-samtest/a1/01",
+  "provider_instance_id": "codex-primary/a1/01",
   "account_id": "user-H8Pbt",
   "auth": {
     "status": "refresh_soon",
-    "account": {"id": "user-H8Pbt", "display": "samtest4u@gmail.com"},
+    "account": {"id": "user-H8Pbt", "display": "primary@example.test"},
     "expires_at": "2026-05-06T10:19:45Z",
     "refreshable": true,
     "selected_source": "container"
@@ -416,7 +416,7 @@ Per-request stream creation is allowed only as fallback.
   "stream_id": "str_01J...",
   "request_id": "req_01J...",
   "route_id": "route_codex_primary_v3",
-  "provider_instance_id": "codex-samtest/a1/01",
+  "provider_instance_id": "codex-primary/a1/01",
   "tenant_id": "team-a",
   "user_id": "usr_123",
   "model": "gpt-5-codex",
@@ -521,7 +521,7 @@ Control-plane errors:
   "message": "provider local server is not ready",
   "retryable": true,
   "details": {
-    "provider_instance_id": "codex-samtest/a1/01"
+    "provider_instance_id": "codex-primary/a1/01"
   }
 }
 ```

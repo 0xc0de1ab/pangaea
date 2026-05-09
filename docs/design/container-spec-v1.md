@@ -134,16 +134,17 @@ capabilities, not by `service`.
 
 ```yaml
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     kind: cli-container
+    provider_mode: app-server
     image: pangaea/provider-codex:2026.05.1
     host_name: snowbox
-    account_hint: samtest4u@gmail.com
+    account_hint: primary@example.test
     service: codex
     auth:
       mode: file
       bootstrap: copy
-      host_path: /srv/pangaea/auth/codex/samtest/auth.json
+      host_path: /srv/pangaea/auth/codex/primary/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
       owner_uid: 10001
       owner_gid: 10001
@@ -188,20 +189,20 @@ providers:
       memory: 2GiB
       pids_limit: 512
     upstream:
-      adapter: websocket
       base_url: ws://127.0.0.1:8080
       compat: openai
 
-  - id: claude-samtest
+  - id: claude-primary
     kind: cli-container
+    provider_mode: cli-adapter
     image: pangaea/provider-claude:2026.05.1
     host_name: snowbox
-    account_hint: samtest4u@gmail.com
+    account_hint: primary@example.test
     service: claude
     auth:
       mode: file
       bootstrap: copy
-      host_path: /srv/pangaea/auth/claude/samtest/.credentials.json
+      host_path: /srv/pangaea/auth/claude/primary/.credentials.json
       container_path: /var/lib/pangaea/auth/claude/.credentials.json
     shim:
       protocols: [anthropic, openai]
@@ -211,19 +212,19 @@ providers:
         - auth.file
         - auth.refresh.oneshot
     upstream:
-      adapter: cli-oneshot
       compat: anthropic
 
-  - id: codex-nullcode
+  - id: codex-secondary
     kind: cli-container
+    provider_mode: http-direct
     image: pangaea/provider-codex:2026.05.1
     host_name: snowbox
-    account_hint: nullcode@gmail.com
+    account_hint: secondary@example.test
     service: codex
     auth:
       mode: file
       bootstrap: copy
-      host_path: /srv/pangaea/auth/codex/nullcode/auth.json
+      host_path: /srv/pangaea/auth/codex/secondary/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
     shim:
       protocols: [openai, anthropic, gemini]
@@ -350,10 +351,10 @@ Auth report fields:
 {
   "mode": "file",
   "host_name": "snowbox",
-  "provider_id": "codex-samtest",
+  "provider_id": "codex-primary",
   "service": "codex",
   "account_id": "user-H8Pbt...",
-  "display": "samtest4u@gmail.com",
+  "display": "primary@example.test",
   "status": "healthy",
   "expires_at": "2026-05-06T10:19:45Z",
   "refreshable": true,

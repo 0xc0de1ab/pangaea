@@ -5,13 +5,13 @@ import { api } from "../lib/api";
 import { providerAccountLabel, providerID } from "../lib/derive";
 import { copyText, cx, fmtTime, middleEllipsis, n } from "../lib/format";
 import type { ProviderProtocol } from "../lib/protocols";
-import type { ServiceEndpoint } from "../lib/service-endpoints";
+import { serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
 import type { ProviderModel, ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
 
 export type EndpointDataWorkbenchTarget = {
   kind: "models" | "usage";
   provider: ProviderRegistration;
-  endpoint: ServiceEndpoint;
+  endpoint?: ServiceEndpoint;
   usage?: ProviderUsageSnapshot;
 };
 
@@ -24,13 +24,14 @@ type EndpointDataWorkbenchProps = {
 type ModelRow = {
   id: string;
   display?: string;
+  kind?: string;
+  groupMembers?: string[];
   aliases?: ModelAlias[];
   protocol: string;
   capabilities?: string[];
   contextTokens?: number;
   maxContextTokens?: number;
-  owner?: string;
-  version?: string;
+  quota?: ProviderModel["quota"];
 };
 
 type ModelAlias = {
@@ -61,14 +62,14 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
   const [exiting, setExiting] = useState(false);
   const [state, setState] = useState<WorkbenchState>({ loading: false });
   const [clock, setClock] = useState(() => Date.now());
-  const targetKey = target ? `${providerID(target.provider)}:${target.endpoint.id}:${target.kind}` : "";
+  const targetKey = target ? `${providerID(target.provider)}:${target.endpoint?.id ?? "provider"}:${target.kind}` : "";
   const activeTarget = target ?? renderTarget;
 
   const load = useCallback(async (activeTarget: EndpointDataWorkbenchTarget, cancelled: () => boolean) => {
     setState((current) => ({ ...current, loading: true, error: undefined }));
     try {
       if (activeTarget.kind === "models") {
-        const rawModels = await modelsForProtocol(activeTarget.endpoint.protocol, token);
+        const rawModels = activeTarget.endpoint ? await modelsForProtocol(activeTarget.endpoint.protocol, token) : undefined;
         if (!cancelled()) {
           setState({ loading: false, rawModels });
         }
@@ -129,26 +130,30 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
     return normalizeModelRows(activeTarget.endpoint, activeTarget.provider.models ?? [], state.rawModels);
   }, [activeTarget, state.rawModels]);
 
-  const usageRows = useMemo(() => normalizeUsageRows(state.usage ?? activeTarget?.usage), [activeTarget?.usage, state.usage]);
+  const usageRows = useMemo(() => normalizeUsageRows(state.usage ?? activeTarget?.usage, activeTarget?.provider.models ?? []), [activeTarget?.provider.models, activeTarget?.usage, state.usage]);
 
   if (!activeTarget) {
     return null;
   }
 
   const { provider, endpoint } = activeTarget;
+  const service = provider.identity.service;
+  const serviceName = serviceLabel(service);
+  const workbenchLabel = endpoint?.label ?? serviceName;
+  const protocolTitle = endpoint ? endpoint.protocolLabel : "Provider";
   const title = activeTarget.kind === "models" ? "Models" : "Usage";
   const Icon = activeTarget.kind === "models" ? ListChecks : Activity;
-  const path = activeTarget.kind === "models" ? endpoint.modelsPath : "/router/v1/usage/providers";
+  const path = activeTarget.kind === "models" ? endpoint?.modelsPath ?? "/router/v1/providers/:provider/models" : "/router/v1/usage/providers";
 
   return (
     <div className={cx("chat-layer", exiting && "is-exiting")} role="presentation">
       <button className="chat-scrim" type="button" aria-label={`Close ${title.toLowerCase()}`} onClick={onClose} />
-      <aside className="chat-workbench data-workbench" aria-label={`${endpoint.label} ${title.toLowerCase()}`}>
+      <aside className="chat-workbench data-workbench" aria-label={`${workbenchLabel} ${title.toLowerCase()}`}>
         <div className="chat-header">
           <div className="chat-title-row">
-            <ServiceIcon service={endpoint.protocol} size={30} label={endpoint.protocolLabel} />
+            <ServiceIcon service={endpoint?.protocol ?? service} size={30} label={endpoint?.protocolLabel ?? serviceName} />
             <div>
-              <h2>{endpoint.label} {title}</h2>
+              <h2>{workbenchLabel} {title}</h2>
               <p>
                 <span className="mono">{middleEllipsis(providerID(provider), 18, 12)}</span>
                 <span>{providerAccountLabel(provider)}</span>
@@ -163,10 +168,10 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
         <div className="chat-toolbar data-toolbar">
           <div className="data-toolbar-title">
             <Icon aria-hidden="true" size={17} />
-            <span>{endpoint.protocolLabel}</span>
+            <span>{protocolTitle}</span>
           </div>
           <div className="chat-route">
-            <span className="mono">{endpoint.model || endpoint.label}</span>
+            <span className="mono">{endpoint?.model || providerID(provider)}</span>
             <span className="mono">{path}</span>
           </div>
           <button className="icon-button small" type="button" title="Refresh" disabled={state.loading || exiting} onClick={() => void load(activeTarget, () => false)}>
@@ -201,15 +206,19 @@ function ModelsTable({ rows, loading }: { rows: ModelRow[]; loading: boolean }) 
             <th>API</th>
             <th>Capabilities</th>
             <th>Context</th>
-            <th>Owner / Version</th>
+            <th>Quota</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={`${row.protocol}:${row.id}`}>
               <td>
-                <strong className="mono">{row.id}</strong>
+                <span className="model-name-line">
+                  {isGroupModel(row) ? <span className="model-group-badge" title="Group model">G</span> : null}
+                  <strong className="mono">{row.id}</strong>
+                </span>
                 {row.display && row.display !== row.id ? <span className="table-subtext">{row.display}</span> : null}
+                {isGroupModel(row) ? <span className="table-subtext">Group: {row.groupMembers?.join(", ") || "provider-defined"}</span> : null}
               </td>
               <td><ModelAliases aliases={row.aliases ?? []} /></td>
               <td>{row.protocol}</td>
@@ -217,11 +226,27 @@ function ModelsTable({ rows, loading }: { rows: ModelRow[]; loading: boolean }) 
               <td className="numeric mono" title={contextWindowTitle(row.contextTokens, row.maxContextTokens)}>
                 {formatContextWindow(row.contextTokens, row.maxContextTokens)}
               </td>
-              <td>{[row.owner, row.version].filter(Boolean).join(" / ")}</td>
+              <td><ModelQuotaCell quota={row.quota} /></td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function ModelQuotaCell({ quota }: { quota?: ProviderModel["quota"] }) {
+  if (!quota || quota.remaining_pct === undefined) {
+    return <span className="muted">-</span>;
+  }
+  const remaining = clampPercent(quota.remaining_pct);
+  return (
+    <div className="model-quota-cell" title={quota.source || undefined}>
+      <div className="usage-progress" aria-label={`${Math.round(remaining)} percent remaining`}>
+        <span className={progressTone(remaining)} style={{ width: `${remaining}%` }} />
+      </div>
+      <strong>{formatPercent(remaining)}</strong>
+      {quota.reset_at ? <span>{formatTimeLeft(quota.reset_at, Date.now())}</span> : null}
     </div>
   );
 }
@@ -501,34 +526,41 @@ function modelsForProtocol(protocol: ProviderProtocol, token?: string) {
   }
 }
 
-function normalizeModelRows(endpoint: ServiceEndpoint, providerModels: ProviderModel[], rawModels: unknown): ModelRow[] {
+function normalizeModelRows(endpoint: ServiceEndpoint | undefined, providerModels: ProviderModel[], rawModels: unknown): ModelRow[] {
   const rows = new Map<string, ModelRow>();
   const rawRows = normalizeRawModelRows(endpoint, rawModels);
   const rawByID = new Map(rawRows.map((row) => [row.id, row]));
   const publicModelIDs = new Set(rawRows.map((row) => row.id).filter(Boolean));
+  const protocol = endpoint?.protocol ?? "provider";
+  const protocolLabel = endpoint?.protocolLabel ?? "Provider";
   for (const model of providerModels) {
     const raw = rawByID.get(model.id);
-    const key = `${endpoint.protocol}:${model.id}`;
+    const key = `${protocol}:${model.id}`;
     rows.set(key, {
       id: model.id,
       display: raw?.display,
+      kind: model.kind,
+      groupMembers: model.group_members,
       aliases: normalizeModelAliases(model.id, model.aliases ?? [], publicModelIDs),
-      protocol: endpoint.protocolLabel,
+      protocol: protocolLabel,
       capabilities: model.capabilities ?? [],
       contextTokens: model.context_tokens,
       maxContextTokens: model.max_context_tokens,
-      owner: raw?.owner,
-      version: raw?.version,
+      quota: model.quota,
     });
   }
   if (rows.size > 0) {
     return [...rows.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
   for (const row of rawRows) {
-    const key = `${endpoint.protocol}:${row.id}`;
+    const key = `${protocol}:${row.id}`;
     rows.set(key, row);
   }
   return [...rows.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function isGroupModel(model: Pick<ModelRow, "kind" | "groupMembers">) {
+  return model.kind === "group" || Boolean(model.groupMembers?.length);
 }
 
 function normalizeModelAliases(modelID: string, aliases: string[], publicModelIDs: Set<string>): ModelAlias[] {
@@ -548,7 +580,8 @@ function normalizeModelAliases(modelID: string, aliases: string[], publicModelID
   return out;
 }
 
-function normalizeRawModelRows(endpoint: ServiceEndpoint, rawModels: unknown): ModelRow[] {
+function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, rawModels: unknown): ModelRow[] {
+  if (!endpoint) return [];
   const root = asRecord(rawModels);
   if (!root) return [];
   if (endpoint.protocol === "gemini") {
@@ -560,7 +593,6 @@ function normalizeRawModelRows(endpoint: ServiceEndpoint, rawModels: unknown): M
         display: stringValue(record.displayName) || name,
         protocol: endpoint.protocolLabel,
         capabilities: asArray(record.supportedGenerationMethods).map((value) => String(value)),
-        version: stringValue(record.version),
       };
     }).filter((row) => row.id);
   }
@@ -570,8 +602,6 @@ function normalizeRawModelRows(endpoint: ServiceEndpoint, rawModels: unknown): M
       id: stringValue(record.id),
       display: stringValue(record.display_name) || stringValue(record.id),
       protocol: endpoint.protocolLabel,
-      owner: stringValue(record.owned_by) || stringValue(record.type),
-      version: typeof record.created === "number" ? String(record.created) : "",
     };
   }).filter((row) => row.id);
 }
@@ -611,15 +641,29 @@ function capabilityMeta(capability: string): { label: string; icon: LucideIcon; 
   }
 }
 
-function normalizeUsageRows(snapshot?: ProviderUsageSnapshot): UsageWindowRow[] {
+function normalizeUsageRows(snapshot?: ProviderUsageSnapshot, providerModels: ProviderModel[] = []): UsageWindowRow[] {
   const native = asRecord(snapshot?.usage?.native_summary);
-  if (!native) return [];
-  const rows = asArray(native.windows).map((item) => usageWindowFromRecord(asRecord(item))).filter((row): row is UsageWindowRow => !!row);
-  const summary = usageWindowFromRecord(native, "Current window");
-  if (summary && !rows.some((row) => duplicateUsageWindow(summary, row))) {
-    rows.unshift(summary);
+  const rows: UsageWindowRow[] = [];
+  if (native) {
+    rows.push(...asArray(native.windows).map((item) => usageWindowFromRecord(asRecord(item))).filter((row): row is UsageWindowRow => !!row));
+    const summary = usageWindowFromRecord(native, "Current window");
+    if (summary && !rows.some((row) => duplicateUsageWindow(summary, row))) {
+      rows.unshift(summary);
+    }
   }
+  rows.push(...modelQuotaUsageRows(providerModels));
   return rows;
+}
+
+function modelQuotaUsageRows(models: ProviderModel[]): UsageWindowRow[] {
+  return models
+    .filter((model) => model.quota && model.quota.remaining_pct !== undefined)
+    .map((model) => ({
+      label: model.aliases?.[0] || model.id,
+      remainingPct: model.quota?.remaining_pct,
+      unit: "model quota",
+      resetAt: model.quota?.reset_at,
+    }));
 }
 
 function duplicateUsageWindow(left: UsageWindowRow, right: UsageWindowRow) {
@@ -692,18 +736,21 @@ function formatTimeLeft(value: string | undefined, now: number) {
   const totalSeconds = Math.max(0, Math.floor((date.getTime() - now) / 1000));
   const days = Math.floor(totalSeconds / 86_400);
   const secondsAfterDays = totalSeconds % 86_400;
-  const minutes = Math.floor(secondsAfterDays / 60);
-  const seconds = secondsAfterDays % 60;
+  const hours = Math.floor(secondsAfterDays / 3_600);
+  const secondsAfterHours = secondsAfterDays % 3_600;
+  const minutes = Math.floor(secondsAfterHours / 60);
+  const seconds = secondsAfterHours % 60;
   if (days > 0) {
-    return `${days}d ${pad2(minutes)}:${pad2(seconds)}`;
+    return `${days}d ${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
   }
-  return `${pad2(minutes)}:${pad2(seconds)}`;
+  return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
 }
 
 function parseDate(value?: string) {
   if (!value) return null;
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1) return null;
+  return date;
 }
 
 function pad2(value: number) {

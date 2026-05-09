@@ -13,7 +13,7 @@ FROM ${NODE_IMAGE}
 ARG GEMINI_NPM_PACKAGE=@google/gemini-cli
 ARG GEMINI_NPM_VERSION=latest
 
-RUN apk add --no-cache bash ca-certificates git openssh-client tini \
+RUN apk add --no-cache bash ca-certificates git openssh-client procps ripgrep tini \
   && npm install -g "${GEMINI_NPM_PACKAGE}@${GEMINI_NPM_VERSION}" \
   && addgroup -g 10001 pangaea \
   && adduser -D -u 10001 -G pangaea -h /home/pangaea pangaea \
@@ -28,7 +28,10 @@ ENV HOME=/var/lib/pangaea/home/gemini \
     GEMINI_CLI_TRUST_WORKSPACE=true \
     PANGAEA_SHIM_MODE=cli-container \
     PANGAEA_SERVICE=gemini \
-    PANGAEA_UPSTREAM_ADAPTER=cli-oneshot \
+    TERM=xterm-256color \
+    COLORTERM=truecolor \
+    FORCE_COLOR=1 \
+    PANGAEA_PROVIDER_MODE=http-direct \
     PANGAEA_UPSTREAM_DIALECT=gemini \
     PANGAEA_MODEL=gemini-2.5-flash \
     PANGAEA_MODEL_ALIAS=gemini-default

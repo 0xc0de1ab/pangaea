@@ -30,7 +30,7 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 	base := time.Now().UTC().Add(-10 * time.Minute)
 	readAt := time.Now().UTC().Add(10 * time.Minute)
 
-	registration, ok := engine.registry.Get("codex-samtest-a1")
+	registration, ok := engine.registry.Get("codex-primary-a1")
 	if !ok {
 		t.Fatal("missing test provider")
 	}
@@ -65,7 +65,7 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 		Containers: []control.ContainerReport{{
 			ContainerID:        "container-a1",
 			ProviderID:         "codex-cli",
-			ProviderInstanceID: "codex-samtest-a1",
+			ProviderInstanceID: "codex-primary-a1",
 			State:              "running",
 			Health:             control.HealthReport{Status: "ready"},
 		}},
@@ -73,7 +73,7 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("apply provider inventory: %v", err)
 	}
-	if err := engine.UpdateProviderUsage("codex-samtest-a1", provider.UsageReport{
+	if err := engine.UpdateProviderUsage("codex-primary-a1", provider.UsageReport{
 		ObservedAt:   base,
 		Source:       "dashboard-test",
 		Requests:     3,
@@ -83,11 +83,11 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 	}, base); err != nil {
 		t.Fatalf("update usage: %v", err)
 	}
-	engine.bindProviderControlSession("codex-samtest-a1", &controlSession{connectedAt: readAt.Add(-time.Minute)})
+	engine.bindProviderControlSession("codex-primary-a1", &controlSession{connectedAt: readAt.Add(-time.Minute)})
 
 	broker := &DataBroker{sessions: map[string]*dataSession{
-		"codex-samtest-a1": {
-			providerInstanceID: "codex-samtest-a1",
+		"codex-primary-a1": {
+			providerInstanceID: "codex-primary-a1",
 			connectedAt:        readAt.Add(-time.Minute),
 			pending: map[string]*pendingResponse{
 				"req-a": {},
@@ -125,10 +125,10 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 		t.Fatalf("expected one provider view, got %#v", providers)
 	}
 	providerView := providers[0]
-	if providerView.ProviderInstanceID != "codex-samtest-a1" || providerView.HostName != "snowbox" || providerView.Service != provider.ServiceCodex || providerView.ProviderKind != provider.KindCLIContainer {
+	if providerView.ProviderInstanceID != "codex-primary-a1" || providerView.HostName != "snowbox" || providerView.Service != provider.ServiceCodex || providerView.ProviderKind != provider.KindCLIContainer {
 		t.Fatalf("provider identity not flattened: %#v", providerView)
 	}
-	if providerView.Account.Display != "samtest4u@gmail.com" {
+	if providerView.Account.Display != "primary@example.test" {
 		t.Fatalf("provider account not set: %#v", providerView.Account)
 	}
 	if len(providerView.Models) != 1 || providerView.Models[0].ID != "gpt-5.3-codex-spark" {
@@ -166,7 +166,7 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 		t.Fatalf("route views missing available provider: %#v", routes)
 	}
 	routeProvider := routes[0].Candidates[0].Providers[0]
-	if !routeProvider.Allowed || !routeProvider.DataSessionActive || routeProvider.ProviderKind != provider.KindCLIContainer || routeProvider.ProviderInstanceID != "codex-samtest-a1" {
+	if !routeProvider.Allowed || !routeProvider.DataSessionActive || routeProvider.ProviderKind != provider.KindCLIContainer || routeProvider.ProviderInstanceID != "codex-primary-a1" {
 		t.Fatalf("route provider details missing: %#v", routeProvider)
 	}
 
@@ -175,7 +175,7 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 		t.Fatalf("trace summary count wrong: %#v", traces)
 	}
 	trace := traces.Traces[0]
-	if trace.ProviderInstanceID != "codex-samtest-a1" || trace.HostName != "snowbox" || trace.ProviderKind != provider.KindCLIContainer || trace.ErrorStatus != 500 {
+	if trace.ProviderInstanceID != "codex-primary-a1" || trace.HostName != "snowbox" || trace.ProviderKind != provider.KindCLIContainer || trace.ErrorStatus != 500 {
 		t.Fatalf("trace identity not flattened: %#v", trace)
 	}
 }

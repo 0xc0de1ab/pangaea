@@ -136,7 +136,7 @@ func TestDefaultSecurityProfile(t *testing.T) {
 
 func TestContainerSpecValidateAcceptsMinimalSpec(t *testing.T) {
 	spec := ContainerSpec{
-		ProviderID: "codex-samtest",
+		ProviderID: "codex-primary",
 		Image:      ImageRef("pangaea/provider-codex:2026.05.1"),
 	}
 
@@ -209,18 +209,18 @@ func TestContainerSpecValidateRejectsInvalidResourceLimits(t *testing.T) {
 
 func validContainerSpec() ContainerSpec {
 	return ContainerSpec{
-		ProviderID:         "codex-samtest",
-		ProviderInstanceID: "codex-samtest/a1/01",
+		ProviderID:         "codex-primary",
+		ProviderInstanceID: "codex-primary/a1/01",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
-		Name:               "pangaea-codex-samtest",
+		Name:               "pangaea-codex-primary",
 		Image:              ImageRef("pangaea/provider-codex:2026.05.1"),
 		Command:            []string{"/usr/local/bin/provider-entrypoint"},
 		Env: map[string]string{
-			"PANGAEA_PROVIDER_ID": "codex-samtest",
+			"PANGAEA_PROVIDER_ID": "codex-primary",
 		},
 		AuthCopy: &CopySpec{
-			HostPath:      "/srv/pangaea/auth/codex/samtest/auth.json",
+			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",
 			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
 			OwnerUID:      10001,
 			OwnerGID:      10001,

@@ -67,6 +67,14 @@ type WatchPathsAware interface {
 	WatchPaths(dir string) []string
 }
 
+// EventCredentialPathResolver is an optional companion for formats whose
+// credential may live at more than one well-known path. When a watched path
+// changes, the client asks the format which credential file should be read
+// for that event instead of always re-reading the primary CredentialPath.
+type EventCredentialPathResolver interface {
+	CredentialPathForEvent(dir string, eventPath string) string
+}
+
 // UsageWindow is one named quota / rate-limit bucket. Formats that expose
 // multiple windows (for example "5h" and "weekly", or per-model Gemini
 // quotas) populate UsageReport.Windows so notifiers can render richer,

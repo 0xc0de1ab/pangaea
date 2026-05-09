@@ -2,6 +2,7 @@ package router
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ routes:
       api_dialects: [openai]
     candidates:
       - provider: codex-cli
-        account: samtest4u@gmail.com
+        account: primary@example.test
         host_name: snowbox
         weight: 100
     constraints:
@@ -42,8 +43,8 @@ routes:
 func TestRoutingPolicyEvaluateSelectsHighestWeightHealthyCandidate(t *testing.T) {
 	policy := validPolicy()
 	registrations := []provider.Registration{
-		registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0),
-		registration("codex-nullcode-a1", "codex-cli", "nullcode@gmail.com", 50, 0),
+		registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0),
+		registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0),
 	}
 
 	decision := policy.Evaluate(RouteRequest{
@@ -55,7 +56,7 @@ func TestRoutingPolicyEvaluateSelectsHighestWeightHealthyCandidate(t *testing.T)
 	if !decision.Allowed {
 		t.Fatalf("expected route allowed: %#v", decision)
 	}
-	if decision.Selected != "codex-nullcode-a1" {
+	if decision.Selected != "codex-secondary-a1" {
 		t.Fatalf("expected higher weighted provider, got %q", decision.Selected)
 	}
 	if decision.CanonicalModel != "gpt-5.3-codex-spark" {
@@ -64,7 +65,7 @@ func TestRoutingPolicyEvaluateSelectsHighestWeightHealthyCandidate(t *testing.T)
 	if len(decision.Scores) != 2 {
 		t.Fatalf("expected two candidate scores, got %#v", decision.Scores)
 	}
-	if decision.Scores[0].ProviderInstanceID != "codex-nullcode-a1" || decision.Scores[0].Score != 50 || decision.Scores[0].Weight != 50 {
+	if decision.Scores[0].ProviderInstanceID != "codex-secondary-a1" || decision.Scores[0].Score != 50 || decision.Scores[0].Weight != 50 {
 		t.Fatalf("unexpected top candidate score: %#v", decision.Scores)
 	}
 	if decision.Scores[0].Reason == "" {
@@ -74,7 +75,7 @@ func TestRoutingPolicyEvaluateSelectsHighestWeightHealthyCandidate(t *testing.T)
 
 func TestRoutingPolicyEvaluateRejectsMissingCapability(t *testing.T) {
 	policy := validPolicy()
-	reg := registration("codex-samtest-a1", "codex-cli", "samtest4u@gmail.com", 10, 0)
+	reg := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
 	reg.Capabilities = []provider.Capability{provider.CapabilityOpenAIChat}
 
 	decision := policy.Evaluate(RouteRequest{
@@ -117,7 +118,7 @@ func TestRoutingPolicyEvaluateRoutesSameProviderAcrossDialects(t *testing.T) {
 			},
 		},
 	}
-	reg := registration("codex-cli", "codex-cli", "samtest4u@gmail.com", 100, 0)
+	reg := registration("codex-cli", "codex-cli", "primary@example.test", 100, 0)
 	reg.Capabilities = []provider.Capability{
 		provider.CapabilityOpenAIChat,
 		provider.CapabilityAnthropicMessages,
@@ -143,8 +144,8 @@ func TestRoutingPolicyEvaluateRoutesSameProviderAcrossDialects(t *testing.T) {
 func TestRoutingPolicyEvaluateFiltersQueueDepth(t *testing.T) {
 	policy := validPolicy()
 	registrations := []provider.Registration{
-		registration("codex-busy-a1", "codex-cli", "samtest4u@gmail.com", 100, 9),
-		registration("codex-ready-a1", "codex-cli", "nullcode@gmail.com", 10, 1),
+		registration("codex-busy-a1", "codex-cli", "primary@example.test", 100, 9),
+		registration("codex-ready-a1", "codex-cli", "secondary@example.test", 10, 1),
 	}
 
 	decision := policy.Evaluate(RouteRequest{
@@ -157,6 +158,102 @@ func TestRoutingPolicyEvaluateFiltersQueueDepth(t *testing.T) {
 	}
 	if decision.Selected != "codex-ready-a1" {
 		t.Fatalf("expected ready fallback, got %q", decision.Selected)
+	}
+}
+
+func TestRoutingPolicyEvaluateRejectsUnsupportedReportedModel(t *testing.T) {
+	policy := RoutingPolicy{
+		Version: RoutingPolicyVersion,
+		Routes: []Route{
+			{
+				ID:          "antigravity-openai",
+				Match:       RouteMatch{APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
+				Candidates:  []Candidate{{Provider: "antigravity-sidecar", Weight: 100}},
+				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
+			},
+		},
+	}
+	reg := registration("antigravity-sidecar", "antigravity-sidecar", "primary@example.test", 100, 0)
+	reg.Identity.Service = provider.ServiceAntigravity
+	reg.Identity.Kind = provider.KindSidecar
+	reg.Capabilities = []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}
+	reg.Models = []provider.Model{
+		{ID: "antigravity-default", Aliases: []string{"antigravity-default"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+		{ID: "gemini-2.5-flash", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+	}
+
+	decision := policy.Evaluate(RouteRequest{
+		Model:      "gpt-4o",
+		APIDialect: compat.APIDialectOpenAI,
+	}, []provider.Registration{reg})
+	if decision.Allowed {
+		t.Fatalf("expected unsupported model to be denied: %#v", decision)
+	}
+	if len(decision.Rejections) == 0 || !strings.Contains(decision.Rejections[0].Reason, "model not reported by provider: gpt-4o") {
+		t.Fatalf("expected model rejection, got %#v", decision.Rejections)
+	}
+}
+
+func TestRoutingPolicyEvaluateAcceptsReportedModelAlias(t *testing.T) {
+	policy := RoutingPolicy{
+		Version: RoutingPolicyVersion,
+		ModelAliases: map[string]ModelAlias{
+			"codex-default": {CanonicalModel: "gpt-5.5"},
+		},
+		Routes: []Route{
+			{
+				ID:          "codex-openai",
+				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
+				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
+			},
+		},
+	}
+	reg := registration("codex-cli", "codex-cli", "primary@example.test", 100, 0)
+	reg.Models = []provider.Model{
+		{ID: "gpt-5.5", Aliases: []string{"codex-default"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}
+
+	decision := policy.Evaluate(RouteRequest{
+		Model:      "codex-default",
+		APIDialect: compat.APIDialectOpenAI,
+	}, []provider.Registration{reg})
+	if !decision.Allowed || decision.Selected != "codex-cli" {
+		t.Fatalf("expected reported model alias to route: %#v", decision)
+	}
+}
+
+func TestRoutingPolicyEvaluateUsesCanonicalModelPriorityList(t *testing.T) {
+	policy := RoutingPolicy{
+		Version: RoutingPolicyVersion,
+		ModelAliases: map[string]ModelAlias{
+			"gemini-auto": {CanonicalModels: []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"}},
+		},
+		Routes: []Route{
+			{
+				ID:          "gemini-openai",
+				Match:       RouteMatch{Models: []string{"gemini-auto"}, APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
+				Candidates:  []Candidate{{Provider: "gemini-cli", Weight: 10}},
+				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
+			},
+		},
+	}
+	low := registration("gemini-low", "gemini-cli", "low@example.test", 100, 0)
+	low.Identity.Service = provider.ServiceGemini
+	low.Models = []provider.Model{{ID: "gemini-2.5-pro", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}}}
+	high := registration("gemini-high", "gemini-cli", "high@example.test", 1, 0)
+	high.Identity.Service = provider.ServiceGemini
+	high.Models = []provider.Model{{ID: "gemini-3-flash-preview", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}}}
+
+	decision := policy.Evaluate(RouteRequest{
+		Model:      "gemini-auto",
+		APIDialect: compat.APIDialectOpenAI,
+	}, []provider.Registration{low, high})
+	if !decision.Allowed {
+		t.Fatalf("expected group model to route: %#v", decision)
+	}
+	if decision.Selected != "gemini-high" || decision.CanonicalModel != "gemini-3-flash-preview" {
+		t.Fatalf("expected highest priority supported canonical model, got selected=%q canonical=%q decision=%#v", decision.Selected, decision.CanonicalModel, decision)
 	}
 }
 
@@ -191,8 +288,8 @@ func validPolicy() RoutingPolicy {
 					APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
 				},
 				Candidates: []Candidate{
-					{Provider: "codex-cli", Account: "samtest4u@gmail.com", Weight: 10},
-					{Provider: "codex-cli", Account: "nullcode@gmail.com", Weight: 50},
+					{Provider: "codex-cli", Account: "primary@example.test", Weight: 10},
+					{Provider: "codex-cli", Account: "secondary@example.test", Weight: 50},
 				},
 				Constraints: Constraints{
 					AuthStatus:    []provider.AuthStatus{provider.AuthHealthy, provider.AuthRefreshSoon},

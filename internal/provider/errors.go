@@ -48,6 +48,8 @@ func (e *UpstreamError) RouterStatusCode() int {
 		return http.StatusBadGateway
 	}
 	switch e.StatusCode {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+		return e.StatusCode
 	case http.StatusTooManyRequests:
 		return http.StatusTooManyRequests
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:

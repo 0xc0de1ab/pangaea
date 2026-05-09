@@ -46,7 +46,7 @@ Possible flow:
 
 Reference:
 
-- `/workspace/cline-sidecar`
+- `../cline-sidecar`
 
 ## Refresh
 

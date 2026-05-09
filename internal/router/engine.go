@@ -233,6 +233,8 @@ type ProviderUsageSnapshot struct {
 	NodeID             string               `json:"node_id"`
 	HostName           string               `json:"host_name"`
 	ContainerID        string               `json:"container_id,omitempty"`
+	ContainerKind      string               `json:"container_kind,omitempty"`
+	ContainerName      string               `json:"container_name,omitempty"`
 	Service            provider.Service     `json:"service"`
 	Kind               provider.Kind        `json:"kind"`
 	Account            provider.Account     `json:"account,omitempty"`
@@ -267,6 +269,8 @@ func (e *Engine) UpdateProviderUsage(providerInstanceID string, usage provider.U
 		NodeID:             identity.NodeID,
 		HostName:           identity.HostName,
 		ContainerID:        identity.ContainerID,
+		ContainerKind:      identity.ContainerKind,
+		ContainerName:      identity.ContainerName,
 		Service:            identity.Service,
 		Kind:               identity.Kind,
 		Account:            identity.Account,
@@ -619,6 +623,8 @@ func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID strin
 	case 429:
 		registration.Health.Status = provider.HealthDegraded
 		registration.Health.Reason = "upstream rate limited"
+	case 400, 404:
+		return
 	default:
 		registration.Health.Status = provider.HealthDegraded
 		registration.Health.Reason = "upstream request failed"

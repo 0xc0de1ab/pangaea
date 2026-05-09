@@ -24,6 +24,7 @@ func (spec ContainerSpec) Validate() error {
 	}
 	for name, value := range map[string]string{
 		"host_name":            spec.HostName,
+		"network_mode":         spec.NetworkMode,
 		"node_id":              spec.NodeID,
 		"provider_instance_id": spec.ProviderInstanceID,
 	} {

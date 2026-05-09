@@ -15,6 +15,7 @@ import (
 	// Register all built-in formats by side effect so every subcommand
 	// (serve / connect / inspect) can resolve them by name. Adding a new
 	// format means adding one line here.
+	_ "github.com/0xc0de1ab/pangaea/pkg/formats/antigravitystate"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/claudecreds"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/codexauth"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/geminioauth"

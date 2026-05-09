@@ -71,9 +71,9 @@ func TestDashboardProvidersReadModelIncludesProviderIdentity(t *testing.T) {
 	}
 	out := dashboardDecodeObject(t, rec)
 	providers := dashboardRequireArrayField(t, out, "providers")
-	got := dashboardFindObjectByStringField(t, providers, "provider_instance_id", "codex-samtest-a1")
+	got := dashboardFindObjectByStringField(t, providers, "provider_instance_id", "codex-primary-a1")
 
-	dashboardAssertStringField(t, got, "provider_instance_id", "codex-samtest-a1")
+	dashboardAssertStringField(t, got, "provider_instance_id", "codex-primary-a1")
 	dashboardAssertStringField(t, got, "provider_id", "codex-cli")
 	dashboardAssertStringField(t, got, "service", string(provider.ServiceCodex))
 	dashboardAssertStringField(t, got, "provider_kind", string(provider.KindCLIContainer))
@@ -81,7 +81,7 @@ func TestDashboardProvidersReadModelIncludesProviderIdentity(t *testing.T) {
 	dashboardAssertStringField(t, got, "node_id", "node-a1")
 
 	account := dashboardRequireObjectField(t, got, "account")
-	dashboardAssertStringField(t, account, "display", "samtest4u@gmail.com")
+	dashboardAssertStringField(t, account, "display", "primary@example.test")
 
 	health := dashboardRequireObjectField(t, got, "health")
 	dashboardAssertStringField(t, health, "status", string(provider.HealthReady))
@@ -126,7 +126,7 @@ func newDashboardContractHandler(t *testing.T) (http.Handler, string) {
 		Containers: []control.ContainerReport{{
 			ContainerID:        "container-a1",
 			ProviderID:         "codex-cli",
-			ProviderInstanceID: "codex-samtest-a1",
+			ProviderInstanceID: "codex-primary-a1",
 			Image:              "pangaea/codex:contract",
 			State:              "running",
 			Health:             control.HealthReport{Status: "ready"},
@@ -135,7 +135,7 @@ func newDashboardContractHandler(t *testing.T) (http.Handler, string) {
 	}); err != nil {
 		t.Fatalf("apply provider inventory: %v", err)
 	}
-	if err := engine.UpdateProviderUsage("codex-samtest-a1", provider.UsageReport{
+	if err := engine.UpdateProviderUsage("codex-primary-a1", provider.UsageReport{
 		ObservedAt:   now,
 		Source:       "contract-test",
 		Requests:     3,

@@ -110,6 +110,11 @@ func (r *CommandAuthRefresher) RefreshAuth(ctx context.Context, request control.
 		auth.Status = provider.AuthUnavailable
 		auth.LastRefreshErr = err.Error()
 		auth.LastRefreshAt = r.now().UTC()
+		if r.authPath != "" && r.format != nil {
+			if refreshedAuth, fileErr := r.authStateFromFile(ctx, auth); fileErr == nil {
+				return refreshedAuth, nil
+			}
+		}
 		return auth, err
 	}
 	auth := registration.Auth

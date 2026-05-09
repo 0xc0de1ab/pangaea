@@ -130,6 +130,8 @@ type ProviderInventoryReport struct {
 
 type ContainerReport struct {
 	ContainerID        string            `json:"container_id"`
+	ContainerKind      string            `json:"container_kind,omitempty"`
+	ContainerName      string            `json:"container_name,omitempty"`
 	ProviderID         string            `json:"provider_id,omitempty"`
 	ProviderInstanceID string            `json:"provider_instance_id,omitempty"`
 	Image              string            `json:"image,omitempty"`

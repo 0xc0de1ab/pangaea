@@ -76,6 +76,7 @@ func New(paths []string, opts Options) (Watcher, error) {
 		// queued maps path -> index of the latest queued Event in lastQueued
 		// for coalescing on backpressure.
 		lastQueued: make(map[string]Event),
+		lastPolled: make(map[string]Event),
 	}
 	return w, nil
 }
@@ -99,6 +100,7 @@ type fsWatcher struct {
 	mu         sync.Mutex
 	pending    map[string]time.Time // path -> last raw event time
 	lastQueued map[string]Event     // path -> last queued Event (for coalescing)
+	lastPolled map[string]Event     // path -> last stat sample emitted by polling
 }
 
 func (w *fsWatcher) Events() <-chan Event { return w.events }
@@ -125,6 +127,7 @@ func (w *fsWatcher) Start(ctx context.Context) error {
 		// Initial state for each candidate.
 		for _, p := range w.paths {
 			ev := w.buildEvent(p)
+			w.lastPolled[p] = ev
 			w.publish(ev)
 		}
 		go w.loop(ctx)
@@ -196,6 +199,13 @@ func (w *fsWatcher) publish(ev Event) {
 func (w *fsWatcher) loop(ctx context.Context) {
 	tick := time.NewTicker(w.opts.DebounceCore)
 	defer tick.Stop()
+	var pollC <-chan time.Time
+	var pollTick *time.Ticker
+	if w.opts.PollInterval > 0 {
+		pollTick = time.NewTicker(w.opts.PollInterval)
+		pollC = pollTick.C
+		defer pollTick.Stop()
+	}
 
 	// stable tracks the previous (size,mtime) sample per path while we
 	// wait for the stable window to expire.
@@ -232,6 +242,8 @@ func (w *fsWatcher) loop(ctx context.Context) {
 				return
 			}
 			// Errors are non-fatal at this layer; the next tick re-evaluates.
+		case <-pollC:
+			w.pollPaths()
 		case <-tick.C:
 			now := w.opts.Clock()
 			w.mu.Lock()
@@ -256,6 +268,7 @@ func (w *fsWatcher) loop(ctx context.Context) {
 				if sameSample && now.Sub(prev.t) >= w.opts.StableWindow {
 					// Stable: emit and drop pending.
 					ev := Event{Path: p, Exists: exists, Size: size, ModifiedAt: mt}
+					w.rememberPolled(ev)
 					w.publish(ev)
 					delete(stable, p)
 					w.mu.Lock()
@@ -272,6 +285,34 @@ func (w *fsWatcher) loop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (w *fsWatcher) pollPaths() {
+	for _, p := range w.paths {
+		ev := w.buildEvent(p)
+		w.mu.Lock()
+		prev, ok := w.lastPolled[p]
+		if ok && sameEventState(prev, ev) {
+			w.mu.Unlock()
+			continue
+		}
+		w.lastPolled[p] = ev
+		w.mu.Unlock()
+		w.publish(ev)
+	}
+}
+
+func (w *fsWatcher) rememberPolled(ev Event) {
+	w.mu.Lock()
+	w.lastPolled[ev.Path] = ev
+	w.mu.Unlock()
+}
+
+func sameEventState(a, b Event) bool {
+	return a.Path == b.Path &&
+		a.Exists == b.Exists &&
+		a.Size == b.Size &&
+		a.ModifiedAt.Equal(b.ModifiedAt)
 }
 
 // String is a small helper for diagnostics; included here to keep test files

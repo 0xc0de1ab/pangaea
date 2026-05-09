@@ -20,7 +20,9 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 )
 
-var ErrAPIProviderConfig = errors.New("invalid api-compatible provider config")
+var ErrAPIProviderConfig = errors.New("invalid direct-http provider config")
+
+const authExpiryRefreshThreshold = 5 * time.Minute
 
 type Options struct {
 	Registration     provider.Registration
@@ -92,7 +94,7 @@ func New(opts Options) (*Provider, error) {
 		client:           client,
 		usage: provider.UsageReport{
 			ObservedAt: time.Now().UTC(),
-			Source:     "api-compatible",
+			Source:     "direct-http",
 		},
 		health: initialHealth(opts.Registration.Health),
 		auth:   opts.Registration.Auth,
@@ -116,13 +118,17 @@ func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 		if err := p.doGETJSON(ctx, "/v1/models", &response); err != nil {
 			return nil, err
 		}
-		return compatibleModels(response.Data, p.compatibleModelCapabilities()), nil
+		models := compatibleModels(response.Data, p.compatibleModelCapabilities())
+		p.enrichModelsFromStatus(ctx, models)
+		return models, nil
 	case compat.APIDialectGemini:
 		var response geminiModelsResponse
 		if err := p.doGETJSON(ctx, "/v1beta/models", &response); err != nil {
 			return nil, err
 		}
-		return geminiModels(response.Models), nil
+		models := geminiModels(response.Models)
+		p.enrichModelsFromStatus(ctx, models)
+		return models, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported dialect %q", ErrAPIProviderConfig, p.dialect)
 	}
@@ -148,6 +154,19 @@ type geminiModel struct {
 	OutputTokenLimit           int      `json:"outputTokenLimit,omitempty"`
 }
 
+type compatibleModelStatus struct {
+	Model          string                      `json:"model"`
+	Label          string                      `json:"label,omitempty"`
+	MaxTokens      int                         `json:"maxTokens,omitempty"`
+	QuotaInfo      *compatibleModelStatusQuota `json:"quotaInfo,omitempty"`
+	SupportsImages bool                        `json:"supportsImages,omitempty"`
+}
+
+type compatibleModelStatusQuota struct {
+	RemainingFraction float64 `json:"remainingFraction"`
+	ResetTime         string  `json:"resetTime,omitempty"`
+}
+
 func compatibleModels(items []compatibleModel, capabilities []provider.Capability) []provider.Model {
 	models := make([]provider.Model, 0, len(items))
 	for _, item := range items {
@@ -161,6 +180,77 @@ func compatibleModels(items []compatibleModel, capabilities []provider.Capabilit
 		})
 	}
 	return models
+}
+
+func (p *Provider) enrichModelsFromStatus(ctx context.Context, models []provider.Model) {
+	if len(models) == 0 {
+		return
+	}
+	var status map[string]compatibleModelStatus
+	if err := p.doGETJSON(ctx, "/v1/models/status", &status); err != nil || len(status) == 0 {
+		return
+	}
+	for i := range models {
+		detail, ok := status[models[i].ID]
+		if !ok {
+			continue
+		}
+		if detail.Label != "" && detail.Label != models[i].ID {
+			models[i].Aliases = mergeStringSet(models[i].Aliases, []string{detail.Label})
+		}
+		if detail.MaxTokens > 0 {
+			if models[i].ContextTokens == 0 {
+				models[i].ContextTokens = detail.MaxTokens
+			}
+			if models[i].MaxContextTokens == 0 {
+				models[i].MaxContextTokens = detail.MaxTokens
+			}
+		}
+		if detail.SupportsImages {
+			models[i].Capabilities = appendProviderCapability(models[i].Capabilities, provider.CapabilityGeminiGenerateContent)
+		}
+		if detail.QuotaInfo != nil {
+			quota := &provider.ModelQuota{
+				RemainingPct: detail.QuotaInfo.RemainingFraction * 100,
+				Source:       "antigravity-model-quota",
+			}
+			if resetAt := parseModelQuotaReset(detail.QuotaInfo.ResetTime); !resetAt.IsZero() {
+				quota.ResetAt = resetAt
+			}
+			models[i].Quota = quota
+		}
+	}
+}
+
+func mergeStringSet(left []string, right []string) []string {
+	seen := make(map[string]struct{}, len(left)+len(right))
+	out := make([]string, 0, len(left)+len(right))
+	for _, value := range append(left, right...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func parseModelQuotaReset(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return ts
+	}
+	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+		return ts
+	}
+	return time.Time{}
 }
 
 func (p *Provider) compatibleModelCapabilities() []provider.Capability {
@@ -311,7 +401,7 @@ func (p *Provider) Usage() (provider.UsageReport, error) {
 		usage.ObservedAt = time.Now().UTC()
 	}
 	if usage.Source == "" {
-		usage.Source = "api-compatible"
+		usage.Source = "direct-http"
 	}
 	return usage, nil
 }
@@ -941,6 +1031,7 @@ func upstreamHTTPError(resp *http.Response, body []byte) error {
 		statusCode = resp.StatusCode
 		retryAfter = resp.Header.Get("retry-after")
 	}
+	statusCode, code = normalizeUpstreamStatus(statusCode, code, message)
 	return &provider.UpstreamError{
 		StatusCode: statusCode,
 		Code:       code,
@@ -968,6 +1059,24 @@ func upstreamErrorDetails(body []byte) (string, string) {
 	message := firstString(payload, "message", "error", "detail")
 	code := firstString(payload, "code", "type", "status")
 	return message, code
+}
+
+func normalizeUpstreamStatus(statusCode int, code string, message string) (int, string) {
+	combined := strings.ToUpper(strings.TrimSpace(code + " " + message))
+	switch {
+	case statusCode >= http.StatusInternalServerError && strings.Contains(combined, "RESOURCE_EXHAUSTED"):
+		if strings.TrimSpace(code) == "" || strings.EqualFold(code, "unknown") {
+			code = "rate_limit_exceeded"
+		}
+		return http.StatusTooManyRequests, code
+	case statusCode >= http.StatusInternalServerError && (strings.Contains(combined, "NOT_FOUND") || strings.Contains(combined, "CODE 404")):
+		if strings.TrimSpace(code) == "" || strings.EqualFold(code, "unknown") {
+			code = "not_found"
+		}
+		return http.StatusNotFound, code
+	default:
+		return statusCode, code
+	}
 }
 
 func firstString(payload map[string]any, keys ...string) string {
@@ -1133,7 +1242,7 @@ func (p *Provider) recordUsage(usage compat.Usage, invokeErr error) {
 	p.usageMu.Lock()
 	defer p.usageMu.Unlock()
 	if p.usage.Source == "" {
-		p.usage.Source = "api-compatible"
+		p.usage.Source = "direct-http"
 	}
 	p.usage.Requests++
 	p.usage.InputTokens += usage.InputTokens
@@ -1165,6 +1274,8 @@ func (p *Provider) recordHealth(invokeErr error) {
 			case http.StatusTooManyRequests:
 				health.Status = provider.HealthDegraded
 				health.Reason = "upstream rate limited"
+			case http.StatusBadRequest, http.StatusNotFound:
+				return
 			default:
 				health.Status = provider.HealthDegraded
 				health.Reason = "upstream request failed"
@@ -1180,15 +1291,26 @@ func (p *Provider) recordHealth(invokeErr error) {
 }
 
 func (p *Provider) recordAuth(invokeErr error) {
-	if p == nil || p.registration.Identity.Kind != provider.KindAPICompatible {
+	if p == nil {
 		return
 	}
 	if invokeErr == nil {
 		p.authMu.Lock()
 		defer p.authMu.Unlock()
 		auth := p.auth
-		auth.Status = provider.AuthHealthy
-		auth.LastRefreshErr = ""
+		now := time.Now().UTC()
+		if p.authExpiryIsAdvisory() && !auth.ExpiresAt.IsZero() && !now.Add(authExpiryRefreshThreshold).Before(auth.ExpiresAt) {
+			auth.ExpiresAt = time.Time{}
+		}
+		if auth.ExpiresAt.IsZero() || now.Add(authExpiryRefreshThreshold).Before(auth.ExpiresAt) {
+			auth.Status = provider.AuthHealthy
+			auth.LastRefreshErr = ""
+		} else {
+			auth.Status = provider.AuthRefreshSoon
+			if auth.LastRefreshErr == "" {
+				auth.LastRefreshErr = "auth expiry is stale or inside refresh window"
+			}
+		}
 		p.auth = auth
 		return
 	}
@@ -1208,6 +1330,10 @@ func (p *Provider) recordAuth(invokeErr error) {
 	auth.Status = provider.AuthUnavailable
 	auth.LastRefreshErr = upstream.Error()
 	p.auth = auth
+}
+
+func (p *Provider) authExpiryIsAdvisory() bool {
+	return p != nil && p.registration.Identity.Service == provider.ServiceAntigravity
 }
 
 func emitEventsFromResponse(response compat.Response, emit func(compat.Event) error) error {

@@ -96,11 +96,11 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	uid := 10001
 	gid := 10001
 	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
-		ID:          "codex-samtest",
-		InstanceID:  "codex-samtest-a1",
+		ID:          "codex-primary",
+		InstanceID:  "codex-primary-a1",
 		Kind:        provider.KindAppServer,
 		Image:       "pangaea/provider-codex:test",
-		AccountHint: "samtest4u@gmail.com",
+		AccountHint: "primary@example.test",
 		Service:     provider.ServiceCodex,
 		Models: []provider.Model{{
 			ID:           "gpt-5-codex",
@@ -111,13 +111,14 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 			Mode:          "file",
 			Format:        "codex-auth-json-format",
 			Bootstrap:     "copy",
-			HostPath:      "/srv/pangaea/auth/codex/samtest/auth.json",
+			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",
 			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
 			OwnerUID:      &uid,
 			OwnerGID:      &gid,
 			FileMode:      "0600",
 		},
 		Refresh: RefreshSpec{Command: []string{"codex", "exec", "Reply with OK only."}, Threshold: "5m", Cooldown: "90s", Timeout: "2m"},
+		Env:     map[string]string{"PANGAEA_CUSTOM_ENV": "custom"},
 		Shim: ShimSpec{
 			Protocols:    []string{"openai", "anthropic", "gemini"},
 			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE, provider.CapabilityUsageRead, provider.CapabilityModelsRead},
@@ -141,8 +142,11 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	if err != nil {
 		t.Fatalf("container spec from provider spec: %v", err)
 	}
-	if spec.ProviderInstanceID != "codex-samtest-a1" || spec.HostName != "snowbox" || spec.Image != "pangaea/provider-codex:test" {
+	if spec.ProviderInstanceID != "codex-primary-a1" || spec.HostName != "snowbox" || spec.Image != "pangaea/provider-codex:test" {
 		t.Fatalf("unexpected container spec identity: %#v", spec)
+	}
+	if spec.Name != "pangaea-codex-primary-codex-primary-a1" {
+		t.Fatalf("container name = %q", spec.Name)
 	}
 	if got, want := strings.Join(spec.Entrypoint, " "), "/usr/local/bin/provider-entrypoint"; got != want {
 		t.Fatalf("entrypoint = %q, want %q", got, want)
@@ -158,7 +162,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	}
 	for key, want := range map[string]string{
 		"PANGAEA_SHIM_MODE":                    "app-server",
-		"PANGAEA_ACCOUNT_DISPLAY":              "samtest4u@gmail.com",
+		"PANGAEA_ACCOUNT_DISPLAY":              "primary@example.test",
 		"PANGAEA_UPSTREAM_BASE_URL":            "http://127.0.0.1:8080",
 		"PANGAEA_UPSTREAM_API_KEY_FILE":        "/run/secrets/codex-api-key",
 		"PANGAEA_UPSTREAM_API_KEY_MODE":        "header",
@@ -175,7 +179,9 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 		"PANGAEA_REFRESH_THRESHOLD":            "5m",
 		"PANGAEA_REFRESH_COOLDOWN":             "90s",
 		"PANGAEA_REFRESH_TIMEOUT":              "2m",
-		"PANGAEA_PROVIDER_INSTANCE_ID":         "codex-samtest-a1",
+		"PANGAEA_PROVIDER_INSTANCE_ID":         "codex-primary-a1",
+		"PANGAEA_CONTAINER_NAME":               "pangaea-codex-primary-codex-primary-a1",
+		"PANGAEA_CUSTOM_ENV":                   "custom",
 	} {
 		if spec.Env[key] != want {
 			t.Fatalf("env[%s] = %q, want %q in %#v", key, spec.Env[key], want, spec.Env)
@@ -194,8 +200,8 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 
 func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T) {
 	spec, err := ContainerSpecFromProviderSpecWithOptions(ProviderSpec{
-		ID:         "codex-samtest",
-		InstanceID: "codex-samtest-a1",
+		ID:         "codex-primary",
+		InstanceID: "codex-primary-a1",
 		Kind:       provider.KindCLIContainer,
 		Image:      "pangaea/provider-codex:test",
 		Service:    provider.ServiceCodex,
@@ -204,14 +210,16 @@ func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T
 		RouterControlURL: "ws://router/router/v1/control/ws",
 		RouterDataURL:    "ws://router/router/v1/data/ws",
 		StreamTokenKey:   "test-token-key",
+		ContainerKind:    "docker",
 	})
 	if err != nil {
 		t.Fatalf("container spec from provider spec with options: %v", err)
 	}
 	for key, want := range map[string]string{
 		"PANGAEA_ROUTER_CONTROL_URL": "ws://router/router/v1/control/ws",
-		"PANGAEA_ROUTER_DATA_URL":    "ws://router/router/v1/data/ws?provider_instance_id=codex-samtest-a1",
+		"PANGAEA_ROUTER_DATA_URL":    "ws://router/router/v1/data/ws?provider_instance_id=codex-primary-a1",
 		"PANGAEA_STREAM_TOKEN_KEY":   "test-token-key",
+		"PANGAEA_CONTAINER_KIND":     "docker",
 	} {
 		if spec.Env[key] != want {
 			t.Fatalf("env[%s] = %q, want %q in %#v", key, spec.Env[key], want, spec.Env)
@@ -318,14 +326,14 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	uid := 10001
 	rt := &fakeContainerRuntime{stats: runtime.Stats{CPUPercent: 12.5, MemoryBytes: 64 * 1024 * 1024, MemoryPeakBytes: 96 * 1024 * 1024, OOMCount: 1}}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "gemini-nullcode",
-		InstanceID: "gemini-nullcode-a3",
+		ID:         "gemini-secondary",
+		InstanceID: "gemini-secondary-a3",
 		Kind:       provider.KindCLIContainer,
 		Image:      "pangaea/provider-gemini:test",
 		Service:    provider.ServiceGemini,
 		Auth: AuthSpec{
 			Mode:          "file",
-			HostPath:      "/srv/pangaea/auth/gemini/nullcode/oauth.json",
+			HostPath:      "/srv/pangaea/auth/gemini/secondary/oauth.json",
 			ContainerPath: "/var/lib/pangaea/auth/gemini/oauth.json",
 			OwnerUID:      &uid,
 			FileMode:      "0600",
@@ -335,13 +343,13 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	if err != nil {
 		t.Fatalf("reconcile provider container: %v", err)
 	}
-	if rt.pulled != "pangaea/provider-gemini:test" || rt.created.ProviderID != "gemini-nullcode" || rt.copied == nil || rt.started != "container-1" {
+	if rt.pulled != "pangaea/provider-gemini:test" || rt.created.ProviderID != "gemini-secondary" || rt.copied == nil || rt.started != "container-1" {
 		t.Fatalf("runtime calls not recorded as expected: pulled=%q created=%#v copied=%#v started=%q", rt.pulled, rt.created, rt.copied, rt.started)
 	}
 	if got, want := strings.Join(rt.calls, ","), "pull,create,start,copy"; got != want {
 		t.Fatalf("runtime call order = %s, want %s", got, want)
 	}
-	if result.Report.ProviderInstanceID != "gemini-nullcode-a3" || result.Report.State != "running" || result.Report.Labels["pangaea.service"] != "gemini" {
+	if result.Report.ProviderInstanceID != "gemini-secondary-a3" || result.Report.State != "running" || result.Report.Labels["pangaea.service"] != "gemini" {
 		t.Fatalf("unexpected reconcile report: %#v", result.Report)
 	}
 	if result.Report.Resources.CPUPercent != 12.5 || result.Report.Resources.MemoryBytes != 64*1024*1024 || result.Report.Resources.OOMCount != 1 {
@@ -381,8 +389,8 @@ func TestReconcileProviderContainerReusesExistingContainer(t *testing.T) {
 		found: true,
 	}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-samtest",
-		InstanceID: "codex-samtest-a1",
+		ID:         "codex-primary",
+		InstanceID: "codex-primary-a1",
 		Kind:       provider.KindCLIContainer,
 		Image:      "pangaea/provider-codex:test",
 		Service:    provider.ServiceCodex,
@@ -412,8 +420,8 @@ func TestReconcileExistingContainerRecreatesWhenImageChanges(t *testing.T) {
 		found: true,
 	}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-samtest",
-		InstanceID: "codex-samtest-a1",
+		ID:         "codex-primary",
+		InstanceID: "codex-primary-a1",
 		Kind:       provider.KindCLIContainer,
 		Image:      "pangaea/provider-codex:new",
 		Service:    provider.ServiceCodex,
@@ -446,14 +454,14 @@ func TestReconcileExistingContainerDoesNotOverwriteAuthByDefault(t *testing.T) {
 		found: true,
 	}
 	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-samtest",
-		InstanceID: "codex-samtest-a1",
+		ID:         "codex-primary",
+		InstanceID: "codex-primary-a1",
 		Kind:       provider.KindCLIContainer,
 		Image:      "pangaea/provider-codex:test",
 		Service:    provider.ServiceCodex,
 		Auth: AuthSpec{
 			Mode:          "file",
-			HostPath:      "/srv/pangaea/auth/codex/samtest/auth.json",
+			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",
 			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
 		},
 		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
@@ -476,14 +484,14 @@ func TestReconcileExistingContainerSyncsAuthByPolicy(t *testing.T) {
 		found: true,
 	}
 	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-samtest",
-		InstanceID: "codex-samtest-a1",
+		ID:         "codex-primary",
+		InstanceID: "codex-primary-a1",
 		Kind:       provider.KindCLIContainer,
 		Image:      "pangaea/provider-codex:test",
 		Service:    provider.ServiceCodex,
 		Auth: AuthSpec{
 			Mode:          "file",
-			HostPath:      "/srv/pangaea/auth/codex/samtest/auth.json",
+			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",
 			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
 			Sync: AuthSyncSpec{
 				ContainerToHost: true,

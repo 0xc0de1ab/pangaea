@@ -34,9 +34,16 @@ func TestGeminiGenerateContentRequestToCanonical(t *testing.T) {
 
 func TestGeminiGenerateContentRequestToCanonicalToolUse(t *testing.T) {
 	request, err := GeminiGenerateContentRequestToCanonical(GeminiGenerateContentRequest{
+		Tools: []GeminiToolDeclaration{{
+			FunctionDeclarations: []GeminiFunctionDeclaration{{
+				Name:                 "mcp_pangaea-fixture_fixture_echo",
+				Description:          "Echo fixture input.",
+				ParametersJSONSchema: map[string]any{"type": "object"},
+			}},
+		}},
 		Contents: []GeminiContent{
 			{Role: "model", Parts: []GeminiPart{{FunctionCall: &GeminiFunctionCall{Name: "lookup", ID: "call_1", Args: map[string]any{"q": "status"}}}}},
-			{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResponse{ID: "call_1", Response: map[string]any{"ok": true}}}}},
+			{Role: "user", Parts: []GeminiPart{{FunctionResponse: &GeminiFunctionResponse{Name: "lookup", ID: "call_1", Response: map[string]any{"ok": true}}}}},
 		},
 	}, "gemini-2.5-flash")
 	if err != nil {
@@ -48,6 +55,19 @@ func TestGeminiGenerateContentRequestToCanonicalToolUse(t *testing.T) {
 	}
 	if request.Messages[1].Role != MessageRoleTool || request.Messages[1].ToolCallID != "call_1" {
 		t.Fatalf("expected tool result message, got %#v", request.Messages[1])
+	}
+	if len(request.Tools) != 1 || request.Tools[0].Name != "mcp_pangaea-fixture_fixture_echo" {
+		t.Fatalf("expected tool declaration, got %#v", request.Tools)
+	}
+	out, err := GeminiGenerateContentRequestFromCanonical(request)
+	if err != nil {
+		t.Fatalf("expected reverse conversion to succeed: %v", err)
+	}
+	if got := out.Tools[0].FunctionDeclarations[0].ParametersJSONSchema["type"]; got != "object" {
+		t.Fatalf("expected parametersJsonSchema, got %#v", out.Tools[0].FunctionDeclarations[0])
+	}
+	if got := out.Contents[1].Parts[0].FunctionResponse.Name; got != "lookup" {
+		t.Fatalf("expected function response name, got %q", got)
 	}
 }
 

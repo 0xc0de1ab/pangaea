@@ -66,6 +66,7 @@ func AnthropicMessagesRequestToCanonical(in AnthropicMessagesRequest) (Request, 
 		Dialect:             APIDialectAnthropic,
 		Model:               in.Model,
 		MaxOutputTokens:     in.MaxTokens,
+		Tools:               anthropicToolsToCanonical(in.Tools),
 		Temperature:         in.Temperature,
 		ReasoningEffort:     in.ReasoningEffort,
 		Stream:              in.Stream,
@@ -100,6 +101,7 @@ func AnthropicMessagesRequestFromCanonical(in Request) (AnthropicMessagesRequest
 		Model:           in.Model,
 		MaxTokens:       in.MaxOutputTokens,
 		Messages:        make([]AnthropicMessage, 0, len(in.Messages)),
+		Tools:           anthropicToolsFromCanonical(in.Tools),
 		Temperature:     in.Temperature,
 		ReasoningEffort: in.ReasoningEffort,
 		Stream:          in.Stream,
@@ -133,6 +135,46 @@ func AnthropicMessagesRequestFromCanonical(in Request) (AnthropicMessagesRequest
 		return AnthropicMessagesRequest{}, ErrInvalidRequest
 	}
 	return out, nil
+}
+
+func anthropicToolsToCanonical(in []AnthropicToolDefinition) []ToolDefinition {
+	out := make([]ToolDefinition, 0, len(in))
+	for _, tool := range in {
+		if strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		parameters := map[string]any(nil)
+		if len(tool.InputSchema) > 0 {
+			_ = json.Unmarshal(tool.InputSchema, &parameters)
+		}
+		out = append(out, ToolDefinition{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  parameters,
+		})
+	}
+	return out
+}
+
+func anthropicToolsFromCanonical(in []ToolDefinition) []AnthropicToolDefinition {
+	out := make([]AnthropicToolDefinition, 0, len(in))
+	for _, tool := range in {
+		if strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		raw := json.RawMessage(nil)
+		if len(tool.Parameters) > 0 {
+			if data, err := json.Marshal(tool.Parameters); err == nil {
+				raw = data
+			}
+		}
+		out = append(out, AnthropicToolDefinition{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: raw,
+		})
+	}
+	return out
 }
 
 func AnthropicMessagesResponseFromCanonical(in Response) (AnthropicMessagesResponse, error) {

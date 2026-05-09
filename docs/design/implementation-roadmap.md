@@ -37,7 +37,7 @@ Deliverables:
 
 Sources to reuse:
 
-- `/workspace/cli-sidecar/internal/transformer`
+- `../cli-sidecar/internal/transformer`
 - existing `*-compat-proxy/internal/transcoder`
 
 Exit criteria:

@@ -21,10 +21,10 @@ runtime:
   kind: docker
   version: 26.1.0
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     kind: app-server
     image: pangaea/provider-codex:2026.05.1
-    account_hint: samtest4u@gmail.com
+    account_hint: primary@example.test
     service: codex
     models:
       - id: gpt-5-codex
@@ -34,7 +34,7 @@ providers:
       mode: file
       format: codex-auth-json-format
       bootstrap: copy
-      host_path: /srv/pangaea/auth/codex/samtest/auth.json
+      host_path: /srv/pangaea/auth/codex/primary/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
       file_mode: "0600"
     refresh:
@@ -53,13 +53,13 @@ providers:
       working_dir: /var/lib/pangaea/provider
       protocols: [openai]
       capabilities: [api.openai.chat, models.read, auth.refresh.oneshot]
-  - id: codex-nullcode
+  - id: codex-secondary
     kind: cli-container
-    account_hint: nullcode@gmail.com
+    account_hint: secondary@example.test
     service: codex
     auth:
       mode: file
-      host_path: /srv/pangaea/auth/codex/nullcode/auth.json
+      host_path: /srv/pangaea/auth/codex/secondary/auth.json
       container_path: /var/lib/pangaea/auth/codex/auth.json
     shim:
       protocols: [openai]
@@ -106,7 +106,7 @@ func TestParseConfigYAMLRejectsDuplicateProviderID(t *testing.T) {
 	_, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     kind: cli-container
     service: codex
     auth:
@@ -115,7 +115,7 @@ providers:
       container_path: /b
     shim:
       capabilities: [api.openai.chat]
-  - id: codex-samtest
+  - id: codex-primary
     kind: cli-container
     service: codex
     auth:
@@ -134,7 +134,7 @@ func TestParseConfigYAMLRejectsDuplicateProviderInstanceID(t *testing.T) {
 	_, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: codex-samtest
+  - id: codex-primary
     instance_id: codex-shared-a1
     kind: cli-container
     service: codex
@@ -144,7 +144,7 @@ providers:
       container_path: /b
     shim:
       capabilities: [api.openai.chat]
-  - id: codex-nullcode
+  - id: codex-secondary
     instance_id: codex-shared-a1
     kind: cli-container
     service: codex
@@ -265,6 +265,47 @@ providers:
 	}
 	if got := cfg.Providers[0].ImagePullPolicy; got != "never" {
 		t.Fatalf("image_pull_policy = %q, want never", got)
+	}
+}
+
+func TestParseConfigYAMLAcceptsHostNetworkMode(t *testing.T) {
+	cfg, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: gemini-cli
+    kind: cli-container
+    image: pangaea/provider-gemini:opi5
+    image_pull_policy: never
+    network_mode: host
+    service: gemini
+    shim:
+      capabilities: [api.openai.chat]
+`))
+	if err != nil {
+		t.Fatalf("parse host network mode: %v", err)
+	}
+	if got := cfg.Providers[0].NetworkMode; got != "host" {
+		t.Fatalf("network mode = %q, want host", got)
+	}
+}
+
+func TestParseConfigYAMLRejectsUnknownNetworkMode(t *testing.T) {
+	_, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - id: gemini-cli
+    kind: cli-container
+    image: pangaea/provider-gemini:opi5
+    network_mode: overlay
+    service: gemini
+    shim:
+      capabilities: [api.openai.chat]
+`))
+	if err == nil {
+		t.Fatalf("expected unsupported network mode error")
+	}
+	if !strings.Contains(err.Error(), "network_mode") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -396,7 +437,7 @@ func TestBootstrapAuthCopyCopiesFileAtomically(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(hostPath), 0o700); err != nil {
 		t.Fatalf("mkdir host dir: %v", err)
 	}
-	if err := os.WriteFile(hostPath, []byte(`{"account":"samtest4u@gmail.com"}`), 0o600); err != nil {
+	if err := os.WriteFile(hostPath, []byte(`{"account":"primary@example.test"}`), 0o600); err != nil {
 		t.Fatalf("write host auth: %v", err)
 	}
 
@@ -417,7 +458,7 @@ func TestBootstrapAuthCopyCopiesFileAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read copied auth: %v", err)
 	}
-	if string(data) != `{"account":"samtest4u@gmail.com"}` {
+	if string(data) != `{"account":"primary@example.test"}` {
 		t.Fatalf("unexpected copied auth: %s", string(data))
 	}
 	info, err := os.Stat(containerPath)

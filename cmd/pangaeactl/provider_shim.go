@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,9 +29,12 @@ type providerShimRunOptions struct {
 	ProviderInstanceID       string
 	NodeID                   string
 	HostName                 string
+	ContainerID              string
+	ContainerKind            string
+	ContainerName            string
 	Service                  string
 	Account                  string
-	UpstreamAdapter          string
+	ProviderMode             string
 	UpstreamBaseURL          string
 	UpstreamDialect          string
 	UpstreamAPIKey           string
@@ -41,6 +45,7 @@ type providerShimRunOptions struct {
 	ShimProtocols            string
 	ShimCapabilities         string
 	Model                    string
+	Models                   string
 	ModelAlias               string
 	ModelCapabilities        string
 	AuthPath                 string
@@ -52,6 +57,8 @@ type providerShimRunOptions struct {
 	RefreshThreshold         time.Duration
 	RefreshCooldown          time.Duration
 	AuthBootstrapTimeout     time.Duration
+	MCPServersJSON           string
+	MCPToolRounds            int
 }
 
 func newProviderShimCmd() *cobra.Command {
@@ -89,9 +96,12 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.ProviderInstanceID, "provider-instance-id", "", "provider instance id for --api-compatible")
 	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "node id for --api-compatible")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "operator-facing host name for --api-compatible")
+	cmd.Flags().StringVar(&opts.ContainerID, "container-id", "", "container runtime id for containerized shims")
+	cmd.Flags().StringVar(&opts.ContainerKind, "container-kind", "", "container runtime kind for containerized shims")
+	cmd.Flags().StringVar(&opts.ContainerName, "container-name", "", "container name for containerized shims")
 	cmd.Flags().StringVar(&opts.Service, "service", "", "provider service family for --api-compatible, such as glm, minimax, deepseek")
 	cmd.Flags().StringVar(&opts.Account, "account", "", "operator-facing account label for --api-compatible")
-	cmd.Flags().StringVar(&opts.UpstreamAdapter, "upstream-adapter", "", "upstream adapter for --cli-container (api-compatible|websocket|reverse-http|cli-oneshot|codex-websocket|codex-reverse-http|claude-cli|gemini-cli)")
+	cmd.Flags().StringVar(&opts.ProviderMode, "provider-mode", "", "provider adapter mode for --cli-container (http-direct|app-server|cli-adapter|acp|ls-core-sidecar)")
 	cmd.Flags().StringVar(&opts.UpstreamBaseURL, "upstream-base-url", "", "upstream compatible API base URL for --api-compatible")
 	cmd.Flags().StringVar(&opts.UpstreamDialect, "upstream-dialect", "openai", "upstream API dialect for --api-compatible (openai|anthropic|gemini)")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKey, "upstream-api-key", "", "upstream API key for --api-compatible")
@@ -102,6 +112,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.ShimProtocols, "shim-protocols", "", "comma-separated advertised API protocols (openai,anthropic,gemini); used to derive capabilities when --shim-capabilities is omitted")
 	cmd.Flags().StringVar(&opts.ShimCapabilities, "shim-capabilities", "", "comma-separated advertised provider capabilities")
 	cmd.Flags().StringVar(&opts.Model, "model", "", "canonical upstream model id for --api-compatible; if omitted, shim attempts upstream model discovery")
+	cmd.Flags().StringVar(&opts.Models, "models", "", "comma-separated provider model list; each item may be model or model=alias1|alias2")
 	cmd.Flags().StringVar(&opts.ModelAlias, "model-alias", "", "optional public model alias for --api-compatible")
 	cmd.Flags().StringVar(&opts.ModelCapabilities, "model-capabilities", "", "comma-separated advertised capabilities for --model")
 	cmd.Flags().StringVar(&opts.AuthPath, "auth-path", "", "container-local auth file path for --cli-container")
@@ -109,10 +120,12 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&opts.AuthBootstrapTimeout, "auth-bootstrap-timeout", 30*time.Second, "maximum time for --cli-container to wait for copied auth file")
 	cmd.Flags().StringVar(&opts.RefreshCommand, "refresh-command", "", "oneshot auth refresh command for --cli-container")
 	cmd.Flags().BoolVar(&opts.RefreshLoginShell, "refresh-login-shell", true, "run --refresh-command through bash with ~/.bashrc sourced")
-	cmd.Flags().DurationVar(&opts.CLIRequestTimeout, "cli-request-timeout", 5*time.Minute, "maximum duration for --cli-container cli-oneshot invocations")
+	cmd.Flags().DurationVar(&opts.CLIRequestTimeout, "cli-request-timeout", 5*time.Minute, "maximum duration for --cli-container cli-adapter invocations")
 	cmd.Flags().DurationVar(&opts.RefreshTimeout, "refresh-timeout", 2*time.Minute, "maximum duration for --refresh-command")
 	cmd.Flags().DurationVar(&opts.RefreshThreshold, "refresh-threshold", 5*time.Minute, "auth expiry window that triggers automatic --refresh-command for --cli-container")
 	cmd.Flags().DurationVar(&opts.RefreshCooldown, "refresh-cooldown", 5*time.Minute, "minimum interval between automatic auth refresh attempts for --cli-container")
+	cmd.Flags().StringVar(&opts.MCPServersJSON, "mcp-servers-json", "", "JSON MCP stdio server config for direct-http CLI-container providers")
+	cmd.Flags().IntVar(&opts.MCPToolRounds, "mcp-tool-rounds", 4, "maximum direct-http MCP/tool continuation rounds")
 	return cmd
 }
 
@@ -190,9 +203,12 @@ func providerFactoryConfigFromOptions(opts providerShimRunOptions) providerfacto
 		ProviderInstanceID:       opts.ProviderInstanceID,
 		NodeID:                   opts.NodeID,
 		HostName:                 opts.HostName,
+		ContainerID:              opts.ContainerID,
+		ContainerKind:            opts.ContainerKind,
+		ContainerName:            opts.ContainerName,
 		Service:                  opts.Service,
 		Account:                  opts.Account,
-		UpstreamAdapter:          opts.UpstreamAdapter,
+		ProviderMode:             opts.ProviderMode,
 		UpstreamBaseURL:          opts.UpstreamBaseURL,
 		UpstreamDialect:          opts.UpstreamDialect,
 		UpstreamAPIKey:           opts.UpstreamAPIKey,
@@ -203,6 +219,7 @@ func providerFactoryConfigFromOptions(opts providerShimRunOptions) providerfacto
 		ShimProtocols:            opts.ShimProtocols,
 		ShimCapabilities:         opts.ShimCapabilities,
 		Model:                    opts.Model,
+		Models:                   opts.Models,
 		ModelAlias:               opts.ModelAlias,
 		ModelCapabilities:        opts.ModelCapabilities,
 		AuthPath:                 opts.AuthPath,
@@ -214,6 +231,8 @@ func providerFactoryConfigFromOptions(opts providerShimRunOptions) providerfacto
 		RefreshThreshold:         opts.RefreshThreshold,
 		RefreshCooldown:          opts.RefreshCooldown,
 		AuthBootstrapTimeout:     opts.AuthBootstrapTimeout,
+		MCPServersJSON:           opts.MCPServersJSON,
+		MCPToolRounds:            opts.MCPToolRounds,
 	}
 }
 
@@ -238,11 +257,22 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	opts.ProviderID = stringEnvDefault(opts.ProviderID, "PANGAEA_PROVIDER_ID")
 	opts.ProviderInstanceID = stringEnvDefault(opts.ProviderInstanceID, "PANGAEA_PROVIDER_INSTANCE_ID")
 	opts.NodeID = stringEnvDefault(opts.NodeID, "PANGAEA_NODE_ID")
-	opts.HostName = stringEnvDefault(opts.HostName, "PANGAEA_HOST_NAME")
+	if strings.TrimSpace(opts.NodeID) == "" {
+		opts.NodeID = providerShimNodeIDFromRuntimeSettings()
+	}
+	if strings.TrimSpace(opts.HostName) == "" {
+		opts.HostName = providerShimHostNameFromEnv()
+	}
+	opts.ContainerID = stringEnvDefault(opts.ContainerID, "PANGAEA_CONTAINER_ID")
+	opts.ContainerKind = stringEnvDefault(opts.ContainerKind, "PANGAEA_CONTAINER_KIND")
+	opts.ContainerName = stringEnvDefault(opts.ContainerName, "PANGAEA_CONTAINER_NAME")
+	if strings.TrimSpace(opts.ContainerID) == "" && strings.TrimSpace(opts.ContainerKind) != "" {
+		opts.ContainerID = firstStringEnv("PANGAEA_CONTAINER_UID", "POD_UID", "HOSTNAME")
+	}
 	opts.Service = stringEnvDefault(opts.Service, "PANGAEA_SERVICE")
 	opts.Account = stringEnvDefault(opts.Account, "PANGAEA_ACCOUNT")
 	opts.Account = stringEnvDefault(opts.Account, "PANGAEA_ACCOUNT_DISPLAY")
-	opts.UpstreamAdapter = stringEnvDefault(opts.UpstreamAdapter, "PANGAEA_UPSTREAM_ADAPTER")
+	opts.ProviderMode = stringEnvDefault(opts.ProviderMode, "PANGAEA_PROVIDER_MODE")
 	opts.UpstreamBaseURL = stringEnvDefault(opts.UpstreamBaseURL, "PANGAEA_UPSTREAM_BASE_URL")
 	opts.UpstreamDialect = stringEnvDefaultWhenDefault(opts.UpstreamDialect, "openai", "PANGAEA_UPSTREAM_DIALECT")
 	opts.UpstreamAPIKey = stringEnvDefault(opts.UpstreamAPIKey, "PANGAEA_UPSTREAM_API_KEY")
@@ -254,6 +284,7 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	opts.ShimCapabilities = stringEnvDefault(opts.ShimCapabilities, "PANGAEA_SHIM_CAPABILITIES")
 	opts.ShimCapabilities = stringEnvDefault(opts.ShimCapabilities, "PANGAEA_PROVIDER_CAPABILITIES")
 	opts.Model = stringEnvDefault(opts.Model, "PANGAEA_MODEL")
+	opts.Models = stringEnvDefault(opts.Models, "PANGAEA_MODELS")
 	opts.ModelAlias = stringEnvDefault(opts.ModelAlias, "PANGAEA_MODEL_ALIAS")
 	opts.ModelCapabilities = stringEnvDefault(opts.ModelCapabilities, "PANGAEA_MODEL_CAPABILITIES")
 	opts.AuthPath = stringEnvDefault(opts.AuthPath, "PANGAEA_AUTH_PATH")
@@ -287,7 +318,47 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 			opts.AuthBootstrapTimeout = parsed
 		}
 	}
+	opts.MCPServersJSON = stringEnvDefault(opts.MCPServersJSON, "PANGAEA_MCP_SERVERS_JSON")
+	if raw, ok := os.LookupEnv("PANGAEA_MCP_TOOL_ROUNDS"); ok {
+		if parsed, err := parsePositiveInt(raw); err == nil {
+			opts.MCPToolRounds = parsed
+		}
+	}
 	return opts
+}
+
+func providerShimNodeIDFromRuntimeSettings() string {
+	path := strings.TrimSpace(os.Getenv("PANGAEA_RUNTIME_SETTINGS_PATH"))
+	if path == "" {
+		path = "/var/lib/pangaea/runtime/provider.env"
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || key != "PANGAEA_NODE_ID" {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if validSetupNodeID(value) {
+			return value
+		}
+	}
+	return ""
+}
+
+func providerShimHostNameFromEnv() string {
+	hostName := strings.TrimSpace(os.Getenv("PANGAEA_HOST_NAME"))
+	hostSideName := firstStringEnv("PANGAEA_HOST_HOSTNAME", "PANGAEA_NODE_HOST_NAME")
+	if hostSideName != "" && (hostName == "" || hostName == strings.TrimSpace(os.Getenv("HOSTNAME"))) {
+		return hostSideName
+	}
+	if hostName != "" {
+		return hostName
+	}
+	return hostSideName
 }
 
 func stringEnvDefault(current string, name string) string {
@@ -295,6 +366,15 @@ func stringEnvDefault(current string, name string) string {
 		return current
 	}
 	return strings.TrimSpace(os.Getenv(name))
+}
+
+func firstStringEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func stringEnvDefaultWhenDefault(current string, defaultValue string, name string) string {
@@ -316,6 +396,17 @@ func parseEnvBool(raw string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func parsePositiveInt(raw string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, err
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("negative integer %d", parsed)
+	}
+	return parsed, nil
 }
 
 func enabledModes(opts providerShimRunOptions) int {

@@ -20,6 +20,7 @@ const (
 	AuditEventProviderAuthRefresh  AuditEventType = "provider.auth_refresh"
 	AuditEventProviderDrain        AuditEventType = "provider.drain"
 	AuditEventProviderDrainRelease AuditEventType = "provider.drain_release"
+	AuditEventRequestTraceDelete   AuditEventType = "request_trace.delete"
 )
 
 const (
@@ -47,6 +48,7 @@ type AuditTarget struct {
 	TenantID           string           `json:"tenant_id,omitempty"`
 	UserID             string           `json:"user_id,omitempty"`
 	Model              string           `json:"model,omitempty"`
+	RequestID          string           `json:"request_id,omitempty"`
 }
 
 type AuditEvent struct {

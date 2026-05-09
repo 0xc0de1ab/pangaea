@@ -21,7 +21,7 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
   const tokens = data.usage.reduce((sum, usage) => sum + (usage.usage?.total_tokens ?? 0), 0);
   const requests = data.usage.reduce((sum, usage) => sum + (usage.usage?.requests ?? 0), 0);
   const authRisk = data.providers
-    .filter((provider) => ["refresh_soon", "expired", "revoked", "conflict", "unavailable"].includes(provider.auth?.status || ""))
+    .filter((provider) => ["refresh_soon", "expired", "revoked", "conflict", "unavailable", "no_login"].includes(provider.auth?.status || ""))
     .filter((provider) => hasText(provider, search));
   const quotaRisk = data.quotas.filter((quota) => quotaPressure(quota) >= 0.7).filter((quota) => hasText(quota, search));
   const recentFailures = data.traces.filter((trace) => trace.status !== "completed").filter((trace) => hasText(trace, search)).slice(0, 12);

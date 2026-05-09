@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -36,16 +37,20 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_ROUTER_CONTROL_URL", "ws://router/control")
 	t.Setenv("PANGAEA_ROUTER_PEER_TOKEN", "peer-secret")
 	t.Setenv("PANGAEA_STREAM_TOKEN_KEY", "env-stream-token-key")
-	t.Setenv("PANGAEA_PROVIDER_ID", "codex-samtest")
-	t.Setenv("PANGAEA_PROVIDER_INSTANCE_ID", "codex-samtest-a1")
+	t.Setenv("PANGAEA_PROVIDER_ID", "codex-primary")
+	t.Setenv("PANGAEA_PROVIDER_INSTANCE_ID", "codex-primary-a1")
 	t.Setenv("PANGAEA_NODE_ID", "node-a1")
 	t.Setenv("PANGAEA_HOST_NAME", "snowbox")
+	t.Setenv("PANGAEA_CONTAINER_ID", "container-abc123")
+	t.Setenv("PANGAEA_CONTAINER_KIND", "docker")
+	t.Setenv("PANGAEA_CONTAINER_NAME", "pangaea-codex-primary")
 	t.Setenv("PANGAEA_SERVICE", "codex")
 	t.Setenv("PANGAEA_ACCOUNT_DISPLAY", "codex@example.test")
-	t.Setenv("PANGAEA_UPSTREAM_ADAPTER", "websocket")
+	t.Setenv("PANGAEA_PROVIDER_MODE", "app-server")
 	t.Setenv("PANGAEA_UPSTREAM_BASE_URL", "http://127.0.0.1:8080")
 	t.Setenv("PANGAEA_UPSTREAM_DIALECT", "openai")
 	t.Setenv("PANGAEA_MODEL", "gpt-5-codex")
+	t.Setenv("PANGAEA_MODELS", "gpt-5-codex=codex-default|codex-latest")
 	t.Setenv("PANGAEA_UPSTREAM_API_KEY_MODE", "header")
 	t.Setenv("PANGAEA_UPSTREAM_API_KEY_HEADER", "x-api-key")
 	t.Setenv("PANGAEA_UPSTREAM_API_KEY_QUERY_PARAM", "key")
@@ -62,15 +67,20 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_REFRESH_THRESHOLD", "5m")
 	t.Setenv("PANGAEA_REFRESH_COOLDOWN", "90s")
 	t.Setenv("PANGAEA_AUTH_BOOTSTRAP_TIMEOUT", "3s")
+	t.Setenv("PANGAEA_MCP_SERVERS_JSON", `{"mcpServers":{"pangaea-fixture":{"command":"node","args":["server.mjs"]}}}`)
+	t.Setenv("PANGAEA_MCP_TOOL_ROUNDS", "7")
 
 	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true, StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
-	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.RouterPeerToken != "peer-secret" || opts.ProviderID != "codex-samtest" {
+	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.RouterPeerToken != "peer-secret" || opts.ProviderID != "codex-primary" {
 		t.Fatalf("env defaults did not populate identity/mode: %#v", opts)
 	}
 	if opts.StreamTokenKey != "env-stream-token-key" {
 		t.Fatalf("env defaults did not override default stream token key: %#v", opts)
 	}
-	if opts.Account != "codex@example.test" || opts.UpstreamAdapter != "websocket" || opts.UpstreamBaseURL != "http://127.0.0.1:8080" || opts.Model != "gpt-5-codex" {
+	if opts.ContainerID != "container-abc123" || opts.ContainerKind != "docker" || opts.ContainerName != "pangaea-codex-primary" {
+		t.Fatalf("env defaults did not populate container metadata: %#v", opts)
+	}
+	if opts.Account != "codex@example.test" || opts.ProviderMode != "app-server" || opts.UpstreamBaseURL != "http://127.0.0.1:8080" || opts.Model != "gpt-5-codex" || opts.Models != "gpt-5-codex=codex-default|codex-latest" {
 		t.Fatalf("env defaults did not populate provider config: %#v", opts)
 	}
 	if opts.UpstreamAPIKeyMode != "header" || opts.UpstreamAPIKeyHeader != "x-api-key" || opts.UpstreamAPIKeyQueryParam != "key" {
@@ -85,6 +95,9 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	if opts.RefreshLoginShell || opts.CLIRequestTimeout != 70*time.Second || opts.RefreshTimeout != 45*time.Second || opts.RefreshThreshold != 5*time.Minute || opts.RefreshCooldown != 90*time.Second || opts.AuthBootstrapTimeout != 3*time.Second {
 		t.Fatalf("env defaults did not populate refresh options: %#v", opts)
 	}
+	if !strings.Contains(opts.MCPServersJSON, "pangaea-fixture") || opts.MCPToolRounds != 7 {
+		t.Fatalf("env defaults did not populate mcp options: %#v", opts)
+	}
 }
 
 func TestProviderShimRunOptionsApplySidecarEnvMode(t *testing.T) {
@@ -92,6 +105,33 @@ func TestProviderShimRunOptionsApplySidecarEnvMode(t *testing.T) {
 	opts := applyProviderShimEnvDefaults(providerShimRunOptions{StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
 	if !opts.Sidecar || opts.Simulator || opts.APICompatible || opts.CLIContainer {
 		t.Fatalf("expected sidecar mode from env, got %#v", opts)
+	}
+}
+
+func TestProviderShimRunOptionsReadsNodeIDFromRuntimeSettings(t *testing.T) {
+	path := t.TempDir() + "/provider.env"
+	if err := os.WriteFile(path, []byte("PANGAEA_NODE_ID=ab12cd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PANGAEA_RUNTIME_SETTINGS_PATH", path)
+	opts := applyProviderShimEnvDefaults(providerShimRunOptions{StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
+	if opts.NodeID != "ab12cd" {
+		t.Fatalf("node id = %q, want runtime settings node id", opts.NodeID)
+	}
+}
+
+func TestProviderShimHostNamePrefersHostSideNameOverContainerHostname(t *testing.T) {
+	t.Setenv("HOSTNAME", "pod-abc123")
+	t.Setenv("PANGAEA_HOST_NAME", "pod-abc123")
+	t.Setenv("PANGAEA_HOST_HOSTNAME", "snowbox")
+	t.Setenv("PANGAEA_CONTAINER_KIND", "kubernetes")
+
+	opts := applyProviderShimEnvDefaults(providerShimRunOptions{StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
+	if opts.HostName != "snowbox" {
+		t.Fatalf("host name = %q, want host-side name", opts.HostName)
+	}
+	if opts.ContainerID != "pod-abc123" {
+		t.Fatalf("container id = %q, want pod/container hostname fallback", opts.ContainerID)
 	}
 }
 
@@ -124,7 +164,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "cli-container", "sidecar", "provider-id", "provider-instance-id", "node-id", "host-name", "service", "account", "upstream-adapter", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "shim-protocols", "shim-capabilities", "model", "model-alias", "model-capabilities", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "cli-request-timeout", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
+	for _, name := range []string{"api-compatible", "cli-container", "sidecar", "provider-id", "provider-instance-id", "node-id", "host-name", "container-id", "container-kind", "container-name", "service", "account", "provider-mode", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "shim-protocols", "shim-capabilities", "model", "models", "model-alias", "model-capabilities", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "cli-request-timeout", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -209,8 +249,8 @@ func TestBuildCLIContainerProviderUsesAuthFileAndRefreshCommand(t *testing.T) {
 	}
 
 	apiProvider, refresher, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:         "codex-samtest",
-		ProviderInstanceID: "codex-samtest-a1",
+		ProviderID:         "codex-primary",
+		ProviderInstanceID: "codex-primary-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
 		Service:            "codex",
@@ -268,7 +308,7 @@ func TestBuildCLIContainerProviderReportsCodexWebSocketAsAppServer(t *testing.T)
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
 		Service:            "codex",
-		UpstreamAdapter:    "websocket",
+		ProviderMode:       "app-server",
 		UpstreamBaseURL:    "ws://127.0.0.1:8080",
 		UpstreamDialect:    "openai",
 		Model:              "gpt-5.5",
@@ -305,7 +345,7 @@ func TestBuildCLIContainerProviderUsesConfiguredMultiDialectCapabilities(t *test
 		NodeID:               "node-a1",
 		HostName:             "snowbox",
 		Service:              "codex",
-		UpstreamAdapter:      "websocket",
+		ProviderMode:         "app-server",
 		UpstreamBaseURL:      "ws://127.0.0.1:8080",
 		UpstreamDialect:      "openai",
 		ShimCapabilities:     "api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse,usage.read,models.read",
@@ -363,7 +403,7 @@ func TestBuildCLIContainerProviderUsesConfiguredMultiDialectCapabilities(t *test
 
 func TestNativeUsageProbeProviderPreservesStreaming(t *testing.T) {
 	base := &streamingUsageProbeTestProvider{}
-	wrapped := wrapNativeUsageProbe(base, "/tmp/auth.json", providerShimTestUsageProbeFormat{})
+	wrapped := wrapNativeUsageProbe(base, filepath.Join(t.TempDir(), "auth.json"), providerShimTestUsageProbeFormat{})
 	streamInvoker, ok := wrapped.(interface {
 		InvokeStream(context.Context, provider.Registration, compat.Request, func(compat.Event) error) (compat.Response, error)
 	})
@@ -396,7 +436,7 @@ func TestNativeUsageProbeProviderPreservesStreaming(t *testing.T) {
 	}
 }
 
-func TestBuildCLIContainerProviderUsesClaudeCLIOneshotWithoutUpstreamURL(t *testing.T) {
+func TestBuildCLIContainerProviderUsesClaudeCLIAdapterWithoutUpstreamURL(t *testing.T) {
 	registerProviderShimTestFormat()
 	dir := t.TempDir()
 	authPath := dir + "/credentials.json"
@@ -405,13 +445,13 @@ func TestBuildCLIContainerProviderUsesClaudeCLIOneshotWithoutUpstreamURL(t *test
 	}
 
 	apiProvider, refresher, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:         "claude-samtest",
-		ProviderInstanceID: "claude-samtest-a1",
+		ProviderID:         "claude-primary",
+		ProviderInstanceID: "claude-primary-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
 		Service:            "claude",
 		Account:            "fallback@example.test",
-		UpstreamAdapter:    "cli-oneshot",
+		ProviderMode:       "cli-adapter",
 		UpstreamDialect:    "anthropic",
 		Model:              "claude-default",
 		ModelAlias:         "claude-default",
@@ -479,6 +519,9 @@ func TestBuildSidecarProviderForAntigravity(t *testing.T) {
 		ProviderInstanceID: "antigravity-sidecar-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
+		ContainerID:        "container-abc123",
+		ContainerKind:      "kubernetes",
+		ContainerName:      "shim",
 		Service:            "antigravity",
 		Account:            "antigravity@example.test",
 		UpstreamBaseURL:    "http://127.0.0.1:8080",
@@ -496,6 +539,9 @@ func TestBuildSidecarProviderForAntigravity(t *testing.T) {
 	}
 	if registration.Identity.Kind != provider.KindSidecar || registration.Identity.Service != provider.ServiceAntigravity {
 		t.Fatalf("unexpected registration identity: %#v", registration.Identity)
+	}
+	if registration.Identity.HostName != "snowbox" || registration.Identity.ContainerName != "shim" || registration.Identity.ContainerKind != "kubernetes" || registration.Identity.ContainerID != "container-abc123" {
+		t.Fatalf("unexpected container metadata: %#v", registration.Identity)
 	}
 	for _, capability := range []provider.Capability{
 		provider.CapabilityOpenAIChat,
@@ -515,6 +561,57 @@ func TestBuildSidecarProviderForAntigravity(t *testing.T) {
 	}
 	if !hasCapability(registration.Models[0].Capabilities, provider.CapabilityAgentToolUse) {
 		t.Fatalf("antigravity model capabilities missing agent tool-use: %v", registration.Models[0].Capabilities)
+	}
+}
+
+func TestBuildSidecarProviderReportsAuthSnapshot(t *testing.T) {
+	registerProviderShimTestFormat()
+	dir := t.TempDir()
+	authPath := dir + "/state.vscdb"
+	if err := os.WriteFile(authPath, []byte("healthy"), 0o600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+
+	apiProvider, err := buildSidecarProvider(providerShimRunOptions{
+		ProviderID:         "antigravity-sidecar",
+		ProviderInstanceID: "antigravity-sidecar-a1",
+		NodeID:             "node-a1",
+		HostName:           "snowbox",
+		Service:            "antigravity",
+		Account:            "fallback@example.test",
+		UpstreamBaseURL:    "http://127.0.0.1:8080",
+		UpstreamDialect:    "openai",
+		ShimProtocols:      "openai,anthropic,gemini",
+		Model:              "antigravity-default",
+		ModelAlias:         "antigravity-default",
+		AuthPath:           authPath,
+		AuthFormat:         "provider-shim-test-format",
+	})
+	if err != nil {
+		t.Fatalf("build antigravity sidecar provider: %v", err)
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if registration.Auth.Status != provider.AuthHealthy || registration.Auth.Account.Display != "test@example.test" {
+		t.Fatalf("unexpected sidecar auth: %#v", registration.Auth)
+	}
+	if !hasCapability(registration.Capabilities, provider.CapabilityAuthFile) {
+		t.Fatalf("sidecar capabilities %v missing %s", registration.Capabilities, provider.CapabilityAuthFile)
+	}
+	reporter, ok := apiProvider.(interface {
+		AuthSnapshot(context.Context) (providershim.AuthSnapshotReport, error)
+	})
+	if !ok {
+		t.Fatalf("sidecar provider does not expose auth snapshots")
+	}
+	report, err := reporter.AuthSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("auth snapshot: %v", err)
+	}
+	if string(report.Raw) != "healthy" || report.Format != "provider-shim-test-format" {
+		t.Fatalf("unexpected auth snapshot: %#v", report)
 	}
 }
 
@@ -600,7 +697,7 @@ func buildAPICompatibleProvider(opts providerShimRunOptions) (*apiprovider.Provi
 	return providerfactory.BuildAPICompatibleProvider(providerFactoryConfigFromOptions(opts))
 }
 
-func buildSidecarProvider(opts providerShimRunOptions) (*apiprovider.Provider, error) {
+func buildSidecarProvider(opts providerShimRunOptions) (providershim.APICompatibleProvider, error) {
 	return providerfactory.BuildSidecarProvider(providerFactoryConfigFromOptions(opts))
 }
 

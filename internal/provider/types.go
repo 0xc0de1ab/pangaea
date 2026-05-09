@@ -2,7 +2,10 @@
 // the v2 router, node-agent, and provider-shim packages.
 package provider
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Kind string
 
@@ -58,6 +61,8 @@ type ProviderIdentity struct {
 	NodeID             string  `json:"node_id"`
 	HostName           string  `json:"host_name"`
 	ContainerID        string  `json:"container_id,omitempty"`
+	ContainerKind      string  `json:"container_kind,omitempty"`
+	ContainerName      string  `json:"container_name,omitempty"`
 	Service            Service `json:"service"`
 	Kind               Kind    `json:"kind"`
 	Account            Account `json:"account,omitempty"`
@@ -69,11 +74,37 @@ type Account struct {
 }
 
 type Model struct {
-	ID               string       `json:"id"`
-	Aliases          []string     `json:"aliases,omitempty"`
-	Capabilities     []Capability `json:"capabilities,omitempty"`
-	ContextTokens    int          `json:"context_tokens,omitempty"`
-	MaxContextTokens int          `json:"max_context_tokens,omitempty"`
+	ID               string       `json:"id" yaml:"id"`
+	Aliases          []string     `json:"aliases,omitempty" yaml:"aliases,omitempty"`
+	Capabilities     []Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	ContextTokens    int          `json:"context_tokens,omitempty" yaml:"context_tokens,omitempty"`
+	MaxContextTokens int          `json:"max_context_tokens,omitempty" yaml:"max_context_tokens,omitempty"`
+	Kind             string       `json:"kind,omitempty" yaml:"kind,omitempty"`
+	GroupMembers     []string     `json:"group_members,omitempty" yaml:"group_members,omitempty"`
+	Quota            *ModelQuota  `json:"quota,omitempty" yaml:"quota,omitempty"`
+}
+
+type ModelQuota struct {
+	RemainingPct float64   `json:"remaining_pct,omitempty" yaml:"remaining_pct,omitempty"`
+	ResetAt      time.Time `json:"reset_at,omitempty" yaml:"reset_at,omitempty"`
+	Source       string    `json:"source,omitempty" yaml:"source,omitempty"`
+}
+
+func (q ModelQuota) MarshalJSON() ([]byte, error) {
+	type modelQuotaJSON struct {
+		RemainingPct float64    `json:"remaining_pct,omitempty"`
+		ResetAt      *time.Time `json:"reset_at,omitempty"`
+		Source       string     `json:"source,omitempty"`
+	}
+	out := modelQuotaJSON{
+		RemainingPct: q.RemainingPct,
+		Source:       q.Source,
+	}
+	if !q.ResetAt.IsZero() {
+		resetAt := q.ResetAt.UTC()
+		out.ResetAt = &resetAt
+	}
+	return json.Marshal(out)
 }
 
 type HealthStatus string
@@ -104,6 +135,7 @@ const (
 	AuthRevoked     AuthStatus = "revoked"
 	AuthConflict    AuthStatus = "conflict"
 	AuthUnavailable AuthStatus = "unavailable"
+	AuthNoLogin     AuthStatus = "no_login"
 )
 
 type AuthState struct {
@@ -116,6 +148,41 @@ type AuthState struct {
 	SelectedSource  string     `json:"selected_source,omitempty"`
 	ReplicaCount    int        `json:"replica_count,omitempty"`
 	BootstrapSource string     `json:"bootstrap_source,omitempty"`
+}
+
+func (a AuthState) MarshalJSON() ([]byte, error) {
+	type authStateJSON struct {
+		Status          AuthStatus `json:"status"`
+		Account         *Account   `json:"account,omitempty"`
+		ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+		Refreshable     bool       `json:"refreshable"`
+		LastRefreshAt   *time.Time `json:"last_refresh_at,omitempty"`
+		LastRefreshErr  string     `json:"last_refresh_error,omitempty"`
+		SelectedSource  string     `json:"selected_source,omitempty"`
+		ReplicaCount    int        `json:"replica_count,omitempty"`
+		BootstrapSource string     `json:"bootstrap_source,omitempty"`
+	}
+	out := authStateJSON{
+		Status:          a.Status,
+		Refreshable:     a.Refreshable,
+		LastRefreshErr:  a.LastRefreshErr,
+		SelectedSource:  a.SelectedSource,
+		ReplicaCount:    a.ReplicaCount,
+		BootstrapSource: a.BootstrapSource,
+	}
+	if a.Account != (Account{}) {
+		account := a.Account
+		out.Account = &account
+	}
+	if !a.ExpiresAt.IsZero() {
+		expiresAt := a.ExpiresAt
+		out.ExpiresAt = &expiresAt
+	}
+	if !a.LastRefreshAt.IsZero() {
+		lastRefreshAt := a.LastRefreshAt
+		out.LastRefreshAt = &lastRefreshAt
+	}
+	return json.Marshal(out)
 }
 
 type LimitState struct {

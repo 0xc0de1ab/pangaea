@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import {
   flexRender,
@@ -61,9 +61,11 @@ export function DataTable<T>({ rows, columns, empty, getRowId, onRowClick, compa
     getSortedRowModel: getSortedRowModel(),
     getRowId: getRowId ? (row, index) => getRowId(row, index) : undefined,
   });
+  const visibleRows = table.getRowModel().rows;
+  const rowSetKey = visibleRows.map((row) => row.id).join("|");
 
   if (rows.length === 0) {
-    return <EmptyState>{empty}</EmptyState>;
+    return <EmptyState className="table-empty-transition">{empty}</EmptyState>;
   }
 
   return (
@@ -97,9 +99,14 @@ export function DataTable<T>({ rows, columns, empty, getRowId, onRowClick, compa
             </tr>
           ))}
         </thead>
-        <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr key={row.id} onClick={onRowClick ? () => onRowClick(row.original) : undefined} className={onRowClick ? "click-row" : undefined}>
+        <tbody key={rowSetKey}>
+          {visibleRows.map((row, index) => (
+            <tr
+              key={row.id}
+              onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+              className={cx("table-row", onRowClick && "click-row")}
+              style={{ "--row-delay": `${Math.min(index, 10) * 14}ms` } as CSSProperties}
+            >
               {row.getVisibleCells().map((cell) => {
                 const meta = cell.column.columnDef.meta as ColumnMeta | undefined;
                 return (

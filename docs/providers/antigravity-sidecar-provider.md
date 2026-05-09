@@ -31,7 +31,7 @@ Auth/session state comes from Antigravity local state. Container bootstrap copie
 `state.vscdb` into the runtime state volume when a source file is available.
 Supported bootstrap sources include an explicit `PANGAEA_ANTIGRAVITY_AUTH_PATH`,
 repo assets, Linux local Antigravity state, and WSL Windows user state under
-`/mnt/c/Users/<USER>/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb`.
+`<wsl-windows-users-root>/<USER>/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb`.
 The shim reads the copied DB file to derive the user email for the provider
 `Account` field.
 
@@ -95,7 +95,7 @@ Provider-specific. If unsupported, report non-refreshable.
 
 Reference implementation:
 
-- `/workspace/antigravity-cli/antigravity-compat-proxy`
+- `../antigravity-cli/antigravity-compat-proxy`
 
 The Pangaea repo provides the wrapper/supervisor image. The actual
 Antigravity-compatible relay binary can be supplied by an image extension or

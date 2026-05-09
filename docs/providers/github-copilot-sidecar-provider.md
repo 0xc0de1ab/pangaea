@@ -102,7 +102,7 @@ operator-approved users.
 
 ## Limitations
 
-- Current `/workspace/github-copilot-sidecar` is only an empty skeleton, so the
+- Current `../github-copilot-sidecar` is only an empty skeleton, so the
   Pangaea port supplies the shim/container integration but not a Copilot relay.
 - Vendor ToS and account sharing risks require explicit policy.
 - Auth automation may not be feasible.

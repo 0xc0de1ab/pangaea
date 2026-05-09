@@ -17,7 +17,7 @@ function inferTone(value?: string): NonNullable<StatusBadgeProps["tone"]> {
   if (["degraded", "draining", "auth-updating", "refresh_soon", "refreshing", "warning", "released"].includes(value)) {
     return "warn";
   }
-  if (["down", "expired", "revoked", "conflict", "unavailable", "failed", "rejected", "provider_error", "critical", "disabled"].includes(value)) {
+  if (["down", "expired", "revoked", "conflict", "unavailable", "no_login", "failed", "rejected", "provider_error", "critical", "disabled"].includes(value)) {
     return "danger";
   }
   return "unknown";

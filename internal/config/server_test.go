@@ -37,7 +37,7 @@ self_node:
   enabled: false
 ssh_nodes:
   - node_id: "a2"
-    target: "dh.kam@a2"
+    target: "operator@a2"
 `
 	c, err := LoadServer(writeServer(t, body))
 	if err != nil {

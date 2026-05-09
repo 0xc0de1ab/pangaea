@@ -25,25 +25,25 @@ containerized provider router다.
 
 이 monorepo는 다음 기존 프로젝트 기능을 흡수한다.
 
-- `/workspace/pangaea`
+- `.`
   - mTLS/JWT WebSocket transport
   - auth format parser/validator
   - usage probe
   - reverse connectivity
   - notifier와 운영 event 경험
-- `/workspace/cli-sidecar`
+- `../cli-sidecar`
   - canonical OpenAI/Anthropic/Gemini transform
   - generic/tmux/pty/mitm CLI adapters
   - OpenAI/Gemini-compatible local server 경험
-- `/workspace/antigravity-cli/*-compat-proxy`
+- `../antigravity-cli/*-compat-proxy`
   - Antigravity, Codex, Claude, Gemini bridge 구현 자산
   - provider local server/app-server protocol 조사 내용
-- `/workspace/antigravity-cli/antigravity-router`
+- `../antigravity-cli/antigravity-router`
   - router, user, quota, dashboard 초기 자산
-- `/workspace/cline-sidecar`
+- `../cline-sidecar`
   - IDE extension relay
   - workspace executor capability 모델
-- `/workspace/github-copilot-sidecar`
+- `../github-copilot-sidecar`
   - future sidecar provider placeholder
 
 Provider별 proxy 서버 구현을 그대로 합치는 것은 목표가 아니다. Bridge와
@@ -131,7 +131,7 @@ Provider identity는 다음을 분리한다.
 - `node_id`: router protocol identity
 - `container_id`: runtime container identity
 - `service`: provider service family, 예: `codex`, `claude`, `gemini`, `glm`
-- `provider_id`: 설정상 논리 provider, 예: `codex-samtest`
+- `provider_id`: 설정상 논리 provider, 예: `codex-primary`
 - `provider_instance_id`: 실제 연결된 shim instance
 - `account_id`: provider account identity
 - `account_display`: email 또는 operator-friendly label
@@ -142,9 +142,9 @@ Provider identity는 다음을 분리한다.
 
 ```text
 host_name=snowbox
-  provider_id=codex-samtest  service=codex  account=samtest4u@gmail.com
-  provider_id=codex-nullcode service=codex  account=nullcode@gmail.com
-  provider_id=gemini-samtest service=gemini account=samtest4u@gmail.com
+  provider_id=codex-primary  service=codex  account=primary@example.test
+  provider_id=codex-secondary service=codex  account=secondary@example.test
+  provider_id=gemini-primary service=gemini account=primary@example.test
 ```
 
 Auth bootstrap source path는 provider별로 지정 가능해야 한다. 기본 경로만
