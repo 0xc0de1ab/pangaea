@@ -72,7 +72,7 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 		}
 		args = append(args, "--label", key+"="+value)
 	}
-	args = append(args, "--label", "pangaea.provider_id="+spec.ProviderID)
+	args = append(args, "--label", "pangaea.provider_type="+spec.ProviderType)
 	if spec.ProviderInstanceID != "" {
 		args = append(args, "--label", "pangaea.provider_instance_id="+spec.ProviderInstanceID)
 	}
@@ -167,7 +167,7 @@ func appendMountArgs(args []string, mounts []MountSpec) []string {
 
 func isManagedPangaeaLabel(key string) bool {
 	switch key {
-	case "pangaea.provider_id", "pangaea.provider_instance_id":
+	case "pangaea.provider_type", "pangaea.provider_instance_id":
 		return true
 	default:
 		return false

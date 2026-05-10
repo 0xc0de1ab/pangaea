@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bot, Braces, Clipboard, ListChecks, MessageSquare, Radio, RefreshCw, Sparkles, X, type LucideIcon } from "lucide-react";
 import { ServiceIcon } from "../components/ServiceIcon";
 import { api } from "../lib/api";
-import { providerAccountLabel, providerID } from "../lib/derive";
+import { providerAccountLabel, providerInstanceID } from "../lib/derive";
 import { copyText, cx, fmtTime, middleEllipsis, n } from "../lib/format";
 import type { ProviderProtocol } from "../lib/protocols";
 import { serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
@@ -31,6 +31,7 @@ type ModelRow = {
   capabilities?: string[];
   contextTokens?: number;
   maxContextTokens?: number;
+  maxOutputTokens?: number;
   quota?: ProviderModel["quota"];
 };
 
@@ -62,7 +63,7 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
   const [exiting, setExiting] = useState(false);
   const [state, setState] = useState<WorkbenchState>({ loading: false });
   const [clock, setClock] = useState(() => Date.now());
-  const targetKey = target ? `${providerID(target.provider)}:${target.endpoint?.id ?? "provider"}:${target.kind}` : "";
+  const targetKey = target ? `${providerInstanceID(target.provider)}:${target.endpoint?.id ?? "provider"}:${target.kind}` : "";
   const activeTarget = target ?? renderTarget;
 
   const load = useCallback(async (activeTarget: EndpointDataWorkbenchTarget, cancelled: () => boolean) => {
@@ -76,7 +77,7 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
         return;
       }
       const snapshots = await api.usage(token);
-      const usage = snapshots.find((snapshot) => snapshot.provider_instance_id === providerID(activeTarget.provider)) ?? activeTarget.usage;
+      const usage = snapshots.find((snapshot) => snapshot.provider_instance_id === providerInstanceID(activeTarget.provider)) ?? activeTarget.usage;
       if (!cancelled()) {
         setState({ loading: false, usage });
       }
@@ -155,7 +156,7 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
             <div>
               <h2>{workbenchLabel} {title}</h2>
               <p>
-                <span className="mono">{middleEllipsis(providerID(provider), 18, 12)}</span>
+                <span className="mono">{middleEllipsis(providerInstanceID(provider), 18, 12)}</span>
                 <span>{providerAccountLabel(provider)}</span>
               </p>
             </div>
@@ -171,7 +172,7 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
             <span>{protocolTitle}</span>
           </div>
           <div className="chat-route">
-            <span className="mono">{endpoint?.model || providerID(provider)}</span>
+            <span className="mono">{endpoint?.model || providerInstanceID(provider)}</span>
             <span className="mono">{path}</span>
           </div>
           <button className="icon-button small" type="button" title="Refresh" disabled={state.loading || exiting} onClick={() => void load(activeTarget, () => false)}>
@@ -185,20 +186,26 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
 
         <div className="data-workbench-body">
           {state.error ? <div className="inline-error endpoint-error">{state.error}</div> : null}
-          {activeTarget.kind === "models" ? <ModelsTable rows={modelRows} loading={state.loading} /> : <UsageTable snapshot={state.usage ?? activeTarget.usage} rows={usageRows} loading={state.loading} now={clock} scopeKey={targetKey} />}
+          {activeTarget.kind === "models" ? <ModelsTable rows={modelRows} loading={state.loading} showQuota={shouldShowModelQuota(provider)} /> : <UsageTable snapshot={state.usage ?? activeTarget.usage} rows={usageRows} loading={state.loading} now={clock} scopeKey={targetKey} />}
         </div>
       </aside>
     </div>
   );
 }
 
-function ModelsTable({ rows, loading }: { rows: ModelRow[]; loading: boolean }) {
+function shouldShowModelQuota(provider: ProviderRegistration) {
+  const service = provider.identity.service.trim().toLowerCase();
+  const providerType = provider.identity.provider_type.trim().toLowerCase();
+  return service !== "antigravity" && service !== "antigravity-sidecar" && providerType !== "antigravity-sidecar";
+}
+
+function ModelsTable({ rows, loading, showQuota }: { rows: ModelRow[]; loading: boolean; showQuota: boolean }) {
   if (!loading && rows.length === 0) {
     return <div className="chat-empty">No models reported</div>;
   }
   return (
     <div className="workbench-table-frame">
-      <table className="workbench-table models-table">
+      <table className={cx("workbench-table models-table", !showQuota && "models-table-no-quota")}>
         <thead>
           <tr>
             <th>Model</th>
@@ -206,7 +213,8 @@ function ModelsTable({ rows, loading }: { rows: ModelRow[]; loading: boolean }) 
             <th>API</th>
             <th>Capabilities</th>
             <th>Context</th>
-            <th>Quota</th>
+            <th>Output</th>
+            {showQuota ? <th>Quota</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -226,7 +234,10 @@ function ModelsTable({ rows, loading }: { rows: ModelRow[]; loading: boolean }) 
               <td className="numeric mono" title={contextWindowTitle(row.contextTokens, row.maxContextTokens)}>
                 {formatContextWindow(row.contextTokens, row.maxContextTokens)}
               </td>
-              <td><ModelQuotaCell quota={row.quota} /></td>
+              <td className="numeric mono" title={outputLimitTitle(row.maxOutputTokens)}>
+                {formatTokenWindow(row.maxOutputTokens)}
+              </td>
+              {showQuota ? <td><ModelQuotaCell quota={row.quota} /></td> : null}
             </tr>
           ))}
         </tbody>
@@ -305,6 +316,10 @@ function contextWindowTitle(contextTokens?: number, maxContextTokens?: number) {
     parts.push(`Max context window: ${n(maxContextTokens)} tokens`);
   }
   return parts.join("\n");
+}
+
+function outputLimitTitle(maxOutputTokens?: number) {
+  return maxOutputTokens ? `Max output: ${n(maxOutputTokens)} tokens` : "";
 }
 
 function formatTokenWindow(value?: number) {
@@ -546,6 +561,7 @@ function normalizeModelRows(endpoint: ServiceEndpoint | undefined, providerModel
       capabilities: model.capabilities ?? [],
       contextTokens: model.context_tokens,
       maxContextTokens: model.max_context_tokens,
+      maxOutputTokens: model.max_output_tokens ?? raw?.maxOutputTokens,
       quota: model.quota,
     });
   }
@@ -593,6 +609,9 @@ function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, rawModels:
         display: stringValue(record.displayName) || name,
         protocol: endpoint.protocolLabel,
         capabilities: asArray(record.supportedGenerationMethods).map((value) => String(value)),
+        contextTokens: numberValue(record.inputTokenLimit),
+        maxContextTokens: numberValue(record.inputTokenLimit),
+        maxOutputTokens: numberValue(record.outputTokenLimit),
       };
     }).filter((row) => row.id);
   }

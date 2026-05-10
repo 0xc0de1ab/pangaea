@@ -39,8 +39,8 @@ func TestHealthyRegistrationAndReports(t *testing.T) {
 	}
 
 	heartbeat := sim.Heartbeat()
-	if heartbeat.Identity.ProviderID != registration.Identity.ProviderID {
-		t.Fatalf("heartbeat provider_id = %q, want %q", heartbeat.Identity.ProviderID, registration.Identity.ProviderID)
+	if heartbeat.Identity.ProviderType != registration.Identity.ProviderType {
+		t.Fatalf("heartbeat provider_type = %q, want %q", heartbeat.Identity.ProviderType, registration.Identity.ProviderType)
 	}
 	if !heartbeat.ReportedAt.Equal(now) {
 		t.Fatalf("heartbeat reported_at = %v, want %v", heartbeat.ReportedAt, now)

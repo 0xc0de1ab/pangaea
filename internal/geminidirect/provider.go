@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -26,11 +27,12 @@ import (
 )
 
 const (
-	defaultBaseURL        = "https://cloudcode-pa.googleapis.com"
-	defaultUserAgent      = "GeminiCLI/0.41.2/gemini-3-pro-preview (linux; x64; terminal) google-api-nodejs-client/9.15.1"
-	defaultAPIClient      = "gl-node/24.14.0"
-	authRefreshThreshold  = 5 * time.Minute
-	usageSourceDirectHTTP = "gemini-direct-http"
+	defaultBaseURL            = "https://cloudcode-pa.googleapis.com"
+	defaultUserAgent          = "GeminiCLI/0.41.2/gemini-3-pro-preview (linux; x64; terminal) google-api-nodejs-client/9.15.1"
+	defaultAPIClient          = "gl-node/24.14.0"
+	authRefreshThreshold      = 5 * time.Minute
+	usageSourceDirectHTTP     = "gemini-direct-http"
+	geminiVersionProbeTimeout = 2 * time.Second
 )
 
 var ErrConfig = errors.New("invalid gemini direct-http provider config")
@@ -98,9 +100,15 @@ func New(opts Options) (*Provider, error) {
 	if apiClient == "" {
 		apiClient = envOrDefault("PANGAEA_GEMINI_DIRECT_API_CLIENT", defaultAPIClient)
 	}
+	registration := opts.Registration
+	if strings.TrimSpace(registration.Identity.TargetVersion) == "" {
+		if version, err := detectGeminiClientVersion(); err == nil {
+			registration.Identity.TargetVersion = version
+		}
+	}
 	now := time.Now().UTC()
 	return &Provider{
-		registration:   opts.Registration,
+		registration:   registration,
 		baseURL:        parsed,
 		authPath:       opts.AuthPath,
 		client:         client,
@@ -135,22 +143,26 @@ func (p *Provider) Close() error {
 	return closer.Close()
 }
 
+func (p *Provider) ForceModelDiscovery() bool {
+	return true
+}
+
 func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 	if p == nil {
 		return nil, ErrConfig
 	}
-	models := cloneModels(p.registration.Models)
-	if len(models) == 0 {
-		models = defaultModels(p.registration.Capabilities)
-	}
+	configured := cloneModels(p.registration.Models)
 	quota, err := p.retrieveQuota(ctx)
 	if err != nil {
 		p.recordHealth(err)
 		p.recordAuth(err)
-		return models, nil
+		return configured, nil
 	}
-	enrichModelQuota(models, quota)
-	return models, nil
+	discovered := modelsFromQuota(quota, p.registration.Capabilities)
+	if len(discovered) == 0 {
+		return configured, nil
+	}
+	return mergeGeminiModels(configured, discovered), nil
 }
 
 func (p *Provider) Invoke(ctx context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
@@ -361,7 +373,7 @@ func (p *Provider) validateInvocation(registration provider.Registration, reques
 		return fmt.Errorf("%w: provider instance mismatch", ErrConfig)
 	}
 	if err := request.Validate(); err != nil {
-		return err
+		return fmt.Errorf("%w: validate compat request: %v", ErrConfig, err)
 	}
 	return nil
 }
@@ -369,21 +381,21 @@ func (p *Provider) validateInvocation(registration provider.Registration, reques
 func (p *Provider) codeAssistRequest(ctx context.Context, request compat.Request) (codeAssistGenerateRequest, error) {
 	tools, err := p.toolDefinitions(ctx, request.Tools)
 	if err != nil {
-		return codeAssistGenerateRequest{}, err
+		return codeAssistGenerateRequest{}, fmt.Errorf("%w: build tool definitions: %v", ErrConfig, err)
 	}
 	request.Tools = tools
 	upstream, err := compat.GeminiGenerateContentRequestFromCanonical(request)
 	if err != nil {
-		return codeAssistGenerateRequest{}, err
+		return codeAssistGenerateRequest{}, fmt.Errorf("%w: convert canonical request to Gemini request: %v", ErrConfig, err)
 	}
 	model := resolveModel(request.Model)
 	body, err := codeAssistRequestBody(upstream, model, request.ReasoningEffort)
 	if err != nil {
-		return codeAssistGenerateRequest{}, err
+		return codeAssistGenerateRequest{}, fmt.Errorf("%w: build Code Assist request body: %v", ErrConfig, err)
 	}
 	project, err := p.projectForRequest(ctx)
 	if err != nil {
-		return codeAssistGenerateRequest{}, err
+		return codeAssistGenerateRequest{}, fmt.Errorf("%w: resolve Code Assist project: %v", ErrConfig, err)
 	}
 	return codeAssistGenerateRequest{
 		Model:        model,
@@ -424,10 +436,14 @@ func applyCodeAssistDefaults(body map[string]any, model string, reasoningEffort 
 		generationConfig["topK"] = float64(64)
 	}
 	if _, ok := generationConfig["thinkingConfig"]; !ok {
-		generationConfig["thinkingConfig"] = defaultThinkingConfig(model, reasoningEffort)
+		if thinkingConfig := defaultThinkingConfig(model, reasoningEffort); len(thinkingConfig) > 0 {
+			generationConfig["thinkingConfig"] = thinkingConfig
+		}
 	} else if thinkingConfig, ok := generationConfig["thinkingConfig"].(map[string]any); ok {
-		if _, exists := thinkingConfig["includeThoughts"]; !exists {
-			thinkingConfig["includeThoughts"] = true
+		if strings.TrimSpace(reasoningEffort) != "" {
+			if _, exists := thinkingConfig["includeThoughts"]; !exists {
+				thinkingConfig["includeThoughts"] = true
+			}
 		}
 		if strings.TrimSpace(reasoningEffort) != "" {
 			if _, exists := thinkingConfig["thinkingLevel"]; !exists && !strings.Contains(strings.ToLower(model), "2.5") {
@@ -446,15 +462,16 @@ func applyCodeAssistDefaults(body map[string]any, model string, reasoningEffort 
 }
 
 func defaultThinkingConfig(model string, reasoningEffort string) map[string]any {
-	out := map[string]any{"includeThoughts": true}
 	model = strings.ToLower(strings.TrimSpace(model))
 	reasoningEffort = strings.ToLower(strings.TrimSpace(reasoningEffort))
+	if reasoningEffort == "" {
+		return nil
+	}
+	out := map[string]any{"includeThoughts": true}
 	switch {
-	case strings.Contains(model, "2.5") && !strings.Contains(model, "lite"):
+	case strings.Contains(model, "2.5"):
 		out["thinkingBudget"] = float64(8192)
-	case strings.Contains(model, "2.5") && reasoningEffort != "":
-		out["thinkingBudget"] = float64(8192)
-	case reasoningEffort != "":
+	default:
 		out["thinkingLevel"] = strings.ToUpper(reasoningEffort)
 	}
 	return out
@@ -844,6 +861,44 @@ func envOrDefault(name string, fallback string) string {
 	return fallback
 }
 
+func detectGeminiClientVersion() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), geminiVersionProbeTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "gemini", "--version").Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", err
+	}
+	for _, field := range strings.Fields(string(output)) {
+		field = strings.Trim(field, " \t\r\n,;()[]{}")
+		field = strings.TrimPrefix(field, "v")
+		if looksLikeGeminiVersion(field) {
+			return field, nil
+		}
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func looksLikeGeminiVersion(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if (r < '0' || r > '9') && r != '-' && r != '+' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func initialHealth(health provider.Health, now time.Time) provider.Health {
 	if health.Status == "" {
 		health.Status = provider.HealthReady
@@ -871,9 +926,9 @@ func cloneModels(in []provider.Model) []provider.Model {
 
 func resolveModel(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "auto-gemini-3":
+	case "", "gemini-default", "gemini-auto", "gemini-auto-3", "auto-gemini-3":
 		return "gemini-3-flash-preview"
-	case "auto-gemini-2.5":
+	case "gemini-auto-2.5", "auto-gemini-2.5":
 		return "gemini-2.5-flash"
 	default:
 		return strings.TrimSpace(model)

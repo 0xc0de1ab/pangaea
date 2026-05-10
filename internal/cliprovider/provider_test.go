@@ -179,14 +179,14 @@ func newTestProvider(t *testing.T, service provider.Service, runner CommandRunne
 
 func newTestProviderWithOptions(t *testing.T, opts Options) *Provider {
 	t.Helper()
-	if opts.Registration.Identity.ProviderID == "" {
+	if opts.Registration.Identity.ProviderType == "" {
 		service := opts.Service
 		if service == "" {
 			service = provider.ServiceClaude
 		}
 		opts.Registration = provider.Registration{
 			Identity: provider.ProviderIdentity{
-				ProviderID:         string(service) + "-test",
+				ProviderType:       string(service) + "-test",
 				ProviderInstanceID: string(service) + "-test-a1",
 				NodeID:             "node-a1",
 				HostName:           "snowbox",

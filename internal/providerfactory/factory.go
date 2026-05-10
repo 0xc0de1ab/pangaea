@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,13 +28,14 @@ const authExpiryRefreshThreshold = 5 * time.Minute
 const antigravityStateFormatName = "antigravity-state-vscdb-format"
 
 type Config struct {
-	ProviderID               string
+	ProviderType             string
 	ProviderInstanceID       string
 	NodeID                   string
 	HostName                 string
 	ContainerID              string
 	ContainerKind            string
 	ContainerName            string
+	TargetVersion            string
 	Service                  string
 	Account                  string
 	ProviderMode             string
@@ -532,8 +535,8 @@ func buildProviderRegistrationWithoutUpstream(cfg Config, kind provider.Kind, au
 }
 
 func buildProviderRegistrationWithOptions(cfg Config, kind provider.Kind, auth provider.AuthState, extraCapabilities []provider.Capability, requireUpstreamBaseURL bool) (provider.Registration, error) {
-	if cfg.ProviderID == "" {
-		return provider.Registration{}, fmt.Errorf("--provider-id is required")
+	if cfg.ProviderType == "" {
+		return provider.Registration{}, fmt.Errorf("--provider-type is required")
 	}
 	if cfg.ProviderInstanceID == "" {
 		return provider.Registration{}, fmt.Errorf("--provider-instance-id is required")
@@ -587,15 +590,17 @@ func buildProviderRegistrationWithOptions(cfg Config, kind provider.Kind, auth p
 	if err != nil {
 		return provider.Registration{}, err
 	}
+	targetVersion := resolveTargetVersion(cfg, service)
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         cfg.ProviderID,
+			ProviderType:       cfg.ProviderType,
 			ProviderInstanceID: cfg.ProviderInstanceID,
 			NodeID:             cfg.NodeID,
 			HostName:           cfg.HostName,
 			ContainerID:        cfg.ContainerID,
 			ContainerKind:      cfg.ContainerKind,
 			ContainerName:      cfg.ContainerName,
+			TargetVersion:      targetVersion,
 			Service:            service,
 			Kind:               kind,
 			Account:            account,
@@ -615,13 +620,110 @@ func registrationModels(cfg Config, modelCapabilities []provider.Capability, sin
 	if strings.TrimSpace(cfg.Model) == "" {
 		return nil, nil
 	}
-	return []provider.Model{{
+	model := provider.Model{
 		ID:               strings.TrimSpace(cfg.Model),
 		Aliases:          singleAliases,
 		Capabilities:     dedupeCapabilities(modelCapabilities),
 		ContextTokens:    defaultContextTokens(provider.Service(cfg.Service), strings.TrimSpace(cfg.Model)),
 		MaxContextTokens: defaultContextTokens(provider.Service(cfg.Service), strings.TrimSpace(cfg.Model)),
-	}}, nil
+		MaxOutputTokens:  defaultOutputTokens(provider.Service(cfg.Service), strings.TrimSpace(cfg.Model)),
+	}
+	applyKnownModelMetadata(provider.Service(cfg.Service), &model)
+	return []provider.Model{model}, nil
+}
+
+func resolveTargetVersion(cfg Config, service provider.Service) string {
+	if version := strings.TrimSpace(cfg.TargetVersion); version != "" {
+		return version
+	}
+	switch service {
+	case provider.ServiceCodex:
+		return detectCommandTargetVersion("codex")
+	case provider.ServiceGemini:
+		return detectCommandTargetVersion("gemini")
+	case provider.ServiceClaude:
+		return detectCommandTargetVersion("claude")
+	case provider.ServiceAntigravity:
+		if version := detectHTTPHealthTargetVersion(cfg.UpstreamBaseURL); version != "" {
+			return version
+		}
+	}
+	return ""
+}
+
+func detectCommandTargetVersion(name string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, name, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return parseTargetVersionOutput(string(output))
+}
+
+func parseTargetVersionOutput(output string) string {
+	trimmed := strings.TrimSpace(output)
+	for _, field := range strings.Fields(trimmed) {
+		field = strings.Trim(field, " \t\r\n,;()[]{}")
+		field = strings.TrimPrefix(field, "v")
+		if looksLikeVersionNumber(field) {
+			return field
+		}
+	}
+	if len(trimmed) > 96 {
+		return trimmed[:96]
+	}
+	return trimmed
+}
+
+func looksLikeVersionNumber(value string) bool {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if (r < '0' || r > '9') && r != '-' && r != '+' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func detectHTTPHealthTargetVersion(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" || strings.HasPrefix(baseURL, "ws://") || strings.HasPrefix(baseURL, "wss://") {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/v1/health", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return ""
+	}
+	var parsed struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Version)
 }
 
 func parseModelList(service provider.Service, raw string, capabilities []provider.Capability) ([]provider.Model, error) {
@@ -655,6 +757,7 @@ func parseModelList(service provider.Service, raw string, capabilities []provide
 			Capabilities:     dedupeCapabilities(capabilities),
 			ContextTokens:    defaultContextTokens(service, id),
 			MaxContextTokens: defaultContextTokens(service, id),
+			MaxOutputTokens:  defaultOutputTokens(service, id),
 		})
 		applyKnownModelMetadata(service, &models[len(models)-1])
 	}
@@ -688,6 +791,19 @@ func defaultContextTokens(service provider.Service, model string) int {
 	switch {
 	case strings.Contains(model, "gemini-"):
 		return 1_048_576
+	default:
+		return 0
+	}
+}
+
+func defaultOutputTokens(service provider.Service, model string) int {
+	if service != provider.ServiceGemini {
+		return 0
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(model, "gemini-"):
+		return 65_536
 	default:
 		return 0
 	}
@@ -895,6 +1011,7 @@ func (p *nativeUsageProbeProvider) ApplyAuthPush(ctx context.Context, push contr
 		}
 		return auth, fmt.Errorf("pushed auth status %s", result.Status)
 	}
+	auth.Subscription = subscriptionFromAuthSummary(p.format, snapshot)
 	return auth, nil
 }
 
@@ -918,6 +1035,8 @@ func (p *nativeUsageProbeProvider) Usage() (provider.UsageReport, error) {
 	}
 	base.ObservedAt = time.Now().UTC()
 	base.Source = joinUsageSources(base.Source, p.format.Name()+"/usage-probe")
+	base.PlanTier = firstNonEmptyString(base.PlanTier, native.PlanTier)
+	base.Subscription = mergeSubscriptionInfo(base.Subscription, subscriptionFromNativeUsage(p.format.Name(), native))
 	base.NativeSummary = native
 	return base, nil
 }
@@ -964,6 +1083,22 @@ func (p *nativeUsageProbeProvider) ForceModelDiscovery() bool {
 		return reporter.ForceModelDiscovery()
 	}
 	return false
+}
+
+func (p *nativeUsageProbeProvider) TargetVersion(ctx context.Context) (string, error) {
+	if p == nil || p.APICompatibleProvider == nil {
+		return "", fmt.Errorf("target version reporter unavailable")
+	}
+	if reporter, ok := p.APICompatibleProvider.(interface {
+		TargetVersion(context.Context) (string, error)
+	}); ok {
+		return reporter.TargetVersion(ctx)
+	}
+	registration, err := p.APICompatibleProvider.Registration()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(registration.Identity.TargetVersion), nil
 }
 
 func (p *nativeUsageProbeProvider) InvokeStream(ctx context.Context, registration provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
@@ -1077,6 +1212,7 @@ func initialAuthStateFromFile(ctx context.Context, path string, format formats.F
 		LastRefreshErr:  lastRefreshErr,
 		SelectedSource:  "container",
 		BootstrapSource: "copy",
+		Subscription:    subscriptionFromAuthSummary(format, snapshot),
 	}
 	if accountAware, ok := format.(formats.AccountAware); ok {
 		if id, err := accountAware.Account(ctx, snapshot, path); err == nil {
@@ -1089,6 +1225,86 @@ func initialAuthStateFromFile(ctx context.Context, path string, format formats.F
 		}
 	}
 	return auth, nil
+}
+
+func subscriptionFromAuthSummary(format formats.Format, snapshot formats.Snapshot) *provider.SubscriptionInfo {
+	if format == nil || snapshot == nil {
+		return nil
+	}
+	summary := format.Redact(snapshot)
+	tier := strings.TrimSpace(summary.Subscription)
+	if tier == "" {
+		return nil
+	}
+	return &provider.SubscriptionInfo{
+		Tier:   tier,
+		Source: format.Name() + "/auth-summary",
+	}
+}
+
+func subscriptionFromNativeUsage(formatName string, native formats.UsageReport) *provider.SubscriptionInfo {
+	info := provider.SubscriptionInfo{
+		Tier:   strings.TrimSpace(native.PlanTier),
+		Source: strings.TrimSpace(formatName) + "/usage-probe",
+	}
+	if info.Source == "/usage-probe" {
+		info.Source = "usage-probe"
+	}
+	for _, note := range native.Notes {
+		key, value, ok := strings.Cut(strings.TrimSpace(note), ":")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "tier":
+			info.Name = value
+		case "status":
+			info.Status = value
+		case "paid-tier":
+			info.PaidTier = value
+		case "rate-limit-tier":
+			info.RateLimitTier = value
+		}
+	}
+	if info.Tier == "" && info.Name == "" && info.Status == "" && info.PaidTier == "" && info.RateLimitTier == "" {
+		return nil
+	}
+	return &info
+}
+
+func mergeSubscriptionInfo(base, native *provider.SubscriptionInfo) *provider.SubscriptionInfo {
+	if base == nil || *base == (provider.SubscriptionInfo{}) {
+		return native
+	}
+	if native == nil || *native == (provider.SubscriptionInfo{}) {
+		return base
+	}
+	merged := *base
+	if merged.Tier == "" {
+		merged.Tier = native.Tier
+	}
+	if merged.Name == "" {
+		merged.Name = native.Name
+	}
+	if merged.Status == "" {
+		merged.Status = native.Status
+	}
+	if merged.PaidTier == "" {
+		merged.PaidTier = native.PaidTier
+	}
+	if merged.RateLimitTier == "" {
+		merged.RateLimitTier = native.RateLimitTier
+	}
+	if merged.Source == "" {
+		merged.Source = native.Source
+	} else if native.Source != "" && !strings.Contains(merged.Source, native.Source) {
+		merged.Source = joinUsageSources(merged.Source, native.Source)
+	}
+	return &merged
 }
 
 func waitForAuthBootstrap(ctx context.Context, authPath string, timeout time.Duration) error {

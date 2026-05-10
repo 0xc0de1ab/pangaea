@@ -35,8 +35,14 @@ func TestBuildSetupProviderDockerPlanUsesHostIdentityAndGeminiSettings(t *testin
 	if err != nil {
 		t.Fatalf("build setup provider plan: %v", err)
 	}
-	if plan.Spec.ID != "gemini-cli" || plan.Spec.InstanceID != "gemini-operator-example.test" {
-		t.Fatalf("unexpected provider ids: %#v", plan.Spec)
+	if plan.Spec.ProviderType != "gemini-cli" || plan.Spec.InstanceID != "gemini-operator-example.test" {
+		t.Fatalf("unexpected provider types: %#v", plan.Spec)
+	}
+	if len(plan.Spec.Models) == 0 || plan.Spec.Models[0].ID != "auto-gemini-3" || plan.Spec.Models[0].Kind != "group" {
+		t.Fatalf("gemini default model should be the auto group: %#v", plan.Spec.Models)
+	}
+	if got := strings.Join(plan.Spec.Models[0].Aliases, ","); !strings.HasPrefix(got, "gemini-default,") {
+		t.Fatalf("gemini default alias should point at auto group: %#v", plan.Spec.Models[0].Aliases)
 	}
 	if plan.Spec.HostName != "snowbox" || plan.Config.Node.HostName != "snowbox" {
 		t.Fatalf("host names not preserved: spec=%q config=%q", plan.Spec.HostName, plan.Config.Node.HostName)
@@ -59,10 +65,11 @@ func TestBuildSetupProviderKindManifestUsesLocalHostNameAndDownwardContainerIden
 		t.Fatal(err)
 	}
 	plan, err := buildSetupProviderPlan(setupProviderOptions{
-		Type:     "kind",
-		Service:  "gemini",
-		AuthPath: authPath,
-		OutDir:   filepath.Join(dir, "out"),
+		Type:       "kind",
+		Service:    "gemini",
+		AuthPath:   authPath,
+		OutDir:     filepath.Join(dir, "out"),
+		RouterData: "ws://router/router/v1/data/ws",
 	})
 	if err != nil {
 		t.Fatalf("build setup provider plan: %v", err)
@@ -82,11 +89,20 @@ func TestBuildSetupProviderKindManifestUsesLocalHostNameAndDownwardContainerIden
 	if plan.HostName == "" || !strings.Contains(manifest, "value: "+plan.HostName) {
 		t.Fatalf("manifest should report setup host name %q:\n%s", plan.HostName, manifest)
 	}
+	if !strings.Contains(manifest, "value: auto-gemini-3") {
+		t.Fatalf("manifest should use Gemini auto group as default model:\n%s", manifest)
+	}
+	if strings.Contains(manifest, "PANGAEA_MODELS") {
+		t.Fatalf("Gemini direct-http manifest should discover models from Code Assist quota buckets instead of static PANGAEA_MODELS:\n%s", manifest)
+	}
 	if strings.Contains(manifest, "value: $(PANGAEA_HOST_HOSTNAME)") {
 		t.Fatalf("manifest should not use k8s node name as provider host by default:\n%s", manifest)
 	}
 	if plan.Spec.Service != provider.ServiceGemini {
 		t.Fatalf("service = %q", plan.Spec.Service)
+	}
+	if !strings.Contains(manifest, "provider_instance_id=gemini-operator-example.test") {
+		t.Fatalf("manifest should add provider instance id to data ws url:\n%s", manifest)
 	}
 }
 
@@ -132,6 +148,56 @@ func TestSetupProviderModeSelectsProviderMode(t *testing.T) {
 	}
 	if codexDirect.Spec.Kind != provider.KindCLIContainer || codexDirect.Spec.ProviderMode != "http-direct" || codexDirect.Spec.Upstream.BaseURL != "" || len(codexDirect.Spec.Shim.Command) != 0 {
 		t.Fatalf("unexpected codex http-direct spec: kind=%q provider_mode=%q upstream=%#v command=%v", codexDirect.Spec.Kind, codexDirect.Spec.ProviderMode, codexDirect.Spec.Upstream, codexDirect.Spec.Shim.Command)
+	}
+
+	antigravity, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:    "kind",
+		Mode:    "ls-core-sidecar",
+		Service: "antigravity",
+		OutDir:  filepath.Join(dir, "antigravity"),
+	})
+	if err != nil {
+		t.Fatalf("build antigravity ls-core-sidecar setup provider plan: %v", err)
+	}
+	if antigravity.Spec.Kind != provider.KindSidecar || antigravity.Spec.ProviderMode != "ls-core-sidecar" || antigravity.Spec.Upstream.BaseURL != "http://127.0.0.1:8080" {
+		t.Fatalf("unexpected antigravity spec: kind=%q provider_mode=%q upstream=%#v", antigravity.Spec.Kind, antigravity.Spec.ProviderMode, antigravity.Spec.Upstream)
+	}
+}
+
+func TestBuildSetupProviderAntigravityKindManifestUsesRuntimeAndShimContainers(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "state.vscdb")
+	if err := os.WriteFile(authPath, []byte("not-real-but-non-empty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:     "kind",
+		Service:  "antigravity",
+		AuthPath: authPath,
+		OutDir:   filepath.Join(dir, "out"),
+	})
+	if err != nil {
+		t.Fatalf("build setup provider plan: %v", err)
+	}
+	if plan.Spec.ProviderType != "antigravity-sidecar" || plan.Spec.ProviderMode != "ls-core-sidecar" {
+		t.Fatalf("unexpected antigravity identity: %#v", plan.Spec)
+	}
+	manifest := string(plan.Artifacts[0].Content)
+	for _, want := range []string{
+		"bootstrap-antigravity",
+		"name: runtime",
+		"image: pangaea/antigravity-runtime:kind",
+		"name: shim",
+		"image: pangaea/provider-antigravity-sidecar:kind",
+		"PANGAEA_SHIM_MODE",
+		"sidecar-agent",
+		"PANGAEA_AUTH_FORMAT",
+		"antigravity-state-vscdb-format",
+		"state.vscdb",
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("antigravity manifest missing %q:\n%s", want, manifest)
+		}
 	}
 }
 

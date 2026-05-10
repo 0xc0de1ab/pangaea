@@ -37,7 +37,7 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_ROUTER_CONTROL_URL", "ws://router/control")
 	t.Setenv("PANGAEA_ROUTER_PEER_TOKEN", "peer-secret")
 	t.Setenv("PANGAEA_STREAM_TOKEN_KEY", "env-stream-token-key")
-	t.Setenv("PANGAEA_PROVIDER_ID", "codex-primary")
+	t.Setenv("PANGAEA_PROVIDER_TYPE", "codex-primary")
 	t.Setenv("PANGAEA_PROVIDER_INSTANCE_ID", "codex-primary-a1")
 	t.Setenv("PANGAEA_NODE_ID", "node-a1")
 	t.Setenv("PANGAEA_HOST_NAME", "snowbox")
@@ -71,7 +71,7 @@ func TestProviderShimRunOptionsApplyEnvDefaults(t *testing.T) {
 	t.Setenv("PANGAEA_MCP_TOOL_ROUNDS", "7")
 
 	opts := applyProviderShimEnvDefaults(providerShimRunOptions{RefreshLoginShell: true, StreamTokenKey: defaultStreamTokenKey, UpstreamDialect: "openai"})
-	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.RouterPeerToken != "peer-secret" || opts.ProviderID != "codex-primary" {
+	if !opts.CLIContainer || opts.RouterControlURL != "ws://router/control" || opts.RouterPeerToken != "peer-secret" || opts.ProviderType != "codex-primary" {
 		t.Fatalf("env defaults did not populate identity/mode: %#v", opts)
 	}
 	if opts.StreamTokenKey != "env-stream-token-key" {
@@ -164,7 +164,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 	if cmd.Flags().Lookup("stream-token-key") == nil {
 		t.Fatalf("expected stream-token-key flag")
 	}
-	for _, name := range []string{"api-compatible", "cli-container", "sidecar", "provider-id", "provider-instance-id", "node-id", "host-name", "container-id", "container-kind", "container-name", "service", "account", "provider-mode", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "shim-protocols", "shim-capabilities", "model", "models", "model-alias", "model-capabilities", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "cli-request-timeout", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
+	for _, name := range []string{"api-compatible", "cli-container", "sidecar", "provider-type", "provider-instance-id", "node-id", "host-name", "container-id", "container-kind", "container-name", "service", "account", "provider-mode", "upstream-base-url", "upstream-dialect", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode", "upstream-api-key-header", "upstream-api-key-query-param", "shim-protocols", "shim-capabilities", "model", "models", "model-alias", "model-capabilities", "auth-path", "auth-format", "auth-bootstrap-timeout", "refresh-command", "refresh-login-shell", "cli-request-timeout", "refresh-timeout", "refresh-threshold", "refresh-cooldown"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -173,7 +173,7 @@ func TestProviderShimRunCommandExists(t *testing.T) {
 
 func TestBuildAPICompatibleProviderRejectsIncompleteAPIKeyHeaderMode(t *testing.T) {
 	_, err := buildAPICompatibleProvider(providerShimRunOptions{
-		ProviderID:         "gemini-api",
+		ProviderType:       "gemini-api",
 		ProviderInstanceID: "gemini-api-0001",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -191,7 +191,7 @@ func TestBuildAPICompatibleProviderRejectsIncompleteAPIKeyHeaderMode(t *testing.
 
 func TestBuildAPICompatibleProvider(t *testing.T) {
 	apiProvider, err := buildAPICompatibleProvider(providerShimRunOptions{
-		ProviderID:         "deepseek-api",
+		ProviderType:       "deepseek-api",
 		ProviderInstanceID: "deepseek-api-0001",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -227,7 +227,7 @@ func TestBuildAPICompatibleProvider(t *testing.T) {
 
 func TestBuildAPICompatibleProviderRequiresFields(t *testing.T) {
 	_, err := buildAPICompatibleProvider(providerShimRunOptions{
-		ProviderID:         "deepseek-api",
+		ProviderType:       "deepseek-api",
 		ProviderInstanceID: "deepseek-api-0001",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -249,7 +249,7 @@ func TestBuildCLIContainerProviderUsesAuthFileAndRefreshCommand(t *testing.T) {
 	}
 
 	apiProvider, refresher, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:         "codex-primary",
+		ProviderType:       "codex-primary",
 		ProviderInstanceID: "codex-primary-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -303,7 +303,7 @@ func TestBuildCLIContainerProviderReportsCodexWebSocketAsAppServer(t *testing.T)
 	}
 
 	apiProvider, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:         "codex-cli",
+		ProviderType:       "codex-cli",
 		ProviderInstanceID: "codex-cli",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -340,7 +340,7 @@ func TestBuildCLIContainerProviderUsesConfiguredMultiDialectCapabilities(t *test
 	}
 
 	apiProvider, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:           "codex-cli",
+		ProviderType:         "codex-cli",
 		ProviderInstanceID:   "codex-cli",
 		NodeID:               "node-a1",
 		HostName:             "snowbox",
@@ -436,6 +436,39 @@ func TestNativeUsageProbeProviderPreservesStreaming(t *testing.T) {
 	}
 }
 
+func TestNativeUsageProbeProviderSurfacesSubscription(t *testing.T) {
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"auth":"ok"}`), 0o600); err != nil {
+		t.Fatalf("write auth fixture: %v", err)
+	}
+	wrapped := wrapNativeUsageProbe(&streamingUsageProbeTestProvider{}, authPath, providerShimTestUsageProbeFormat{})
+	usageReporter, ok := wrapped.(interface {
+		Usage() (provider.UsageReport, error)
+	})
+	if !ok {
+		t.Fatalf("wrapped provider does not expose Usage")
+	}
+	usage, err := usageReporter.Usage()
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if usage.PlanTier != "enterprise" {
+		t.Fatalf("PlanTier = %q", usage.PlanTier)
+	}
+	if usage.Subscription == nil {
+		t.Fatalf("Subscription missing: %#v", usage)
+	}
+	if got, want := usage.Subscription.Name, "Enterprise"; got != want {
+		t.Fatalf("Subscription.Name = %q, want %q", got, want)
+	}
+	if got, want := usage.Subscription.PaidTier, "ai-pro"; got != want {
+		t.Fatalf("Subscription.PaidTier = %q, want %q", got, want)
+	}
+	if got, want := usage.Subscription.RateLimitTier, "premium"; got != want {
+		t.Fatalf("Subscription.RateLimitTier = %q, want %q", got, want)
+	}
+}
+
 func TestBuildCLIContainerProviderUsesClaudeCLIAdapterWithoutUpstreamURL(t *testing.T) {
 	registerProviderShimTestFormat()
 	dir := t.TempDir()
@@ -445,7 +478,7 @@ func TestBuildCLIContainerProviderUsesClaudeCLIAdapterWithoutUpstreamURL(t *test
 	}
 
 	apiProvider, refresher, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:         "claude-primary",
+		ProviderType:       "claude-primary",
 		ProviderInstanceID: "claude-primary-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -485,7 +518,7 @@ func TestBuildCLIContainerProviderUsesClaudeCLIAdapterWithoutUpstreamURL(t *test
 
 func TestBuildSidecarProviderForGitHubCopilot(t *testing.T) {
 	apiProvider, err := buildSidecarProvider(providerShimRunOptions{
-		ProviderID:         "copilot-sidecar",
+		ProviderType:       "copilot-sidecar",
 		ProviderInstanceID: "copilot-sidecar-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -515,7 +548,7 @@ func TestBuildSidecarProviderForGitHubCopilot(t *testing.T) {
 
 func TestBuildSidecarProviderForAntigravity(t *testing.T) {
 	apiProvider, err := buildSidecarProvider(providerShimRunOptions{
-		ProviderID:         "antigravity-sidecar",
+		ProviderType:       "antigravity-sidecar",
 		ProviderInstanceID: "antigravity-sidecar-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -573,7 +606,7 @@ func TestBuildSidecarProviderReportsAuthSnapshot(t *testing.T) {
 	}
 
 	apiProvider, err := buildSidecarProvider(providerShimRunOptions{
-		ProviderID:         "antigravity-sidecar",
+		ProviderType:       "antigravity-sidecar",
 		ProviderInstanceID: "antigravity-sidecar-a1",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -625,7 +658,7 @@ func TestBuildCLIContainerProviderWaitsForAuthBootstrap(t *testing.T) {
 	}()
 
 	apiProvider, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:           "codex-wait",
+		ProviderType:         "codex-wait",
 		ProviderInstanceID:   "codex-wait-a1",
 		NodeID:               "node-a1",
 		HostName:             "snowbox",
@@ -656,7 +689,7 @@ func TestBuildCLIContainerProviderWaitsForAuthBootstrap(t *testing.T) {
 func TestBuildCLIContainerProviderTimesOutWaitingForAuthBootstrap(t *testing.T) {
 	registerProviderShimTestFormat()
 	_, _, err := buildCLIContainerProvider(context.Background(), providerShimRunOptions{
-		ProviderID:           "codex-missing",
+		ProviderType:         "codex-missing",
 		ProviderInstanceID:   "codex-missing-a1",
 		NodeID:               "node-a1",
 		HostName:             "snowbox",
@@ -771,7 +804,11 @@ type providerShimTestUsageProbeFormat struct {
 }
 
 func (providerShimTestUsageProbeFormat) Probe(context.Context, formats.Snapshot, string, *http.Client) (formats.UsageReport, error) {
-	return formats.UsageReport{RemainingPct: 99}, nil
+	return formats.UsageReport{
+		PlanTier:     "enterprise",
+		RemainingPct: 99,
+		Notes:        []string{"tier: Enterprise", "paid-tier: ai-pro", "rate-limit-tier: premium"},
+	}, nil
 }
 
 type streamingUsageProbeTestProvider struct {

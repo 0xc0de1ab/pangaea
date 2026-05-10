@@ -56,13 +56,14 @@ const (
 )
 
 type ProviderIdentity struct {
-	ProviderID         string  `json:"provider_id"`
+	ProviderType       string  `json:"provider_type"`
 	ProviderInstanceID string  `json:"provider_instance_id"`
 	NodeID             string  `json:"node_id"`
 	HostName           string  `json:"host_name"`
 	ContainerID        string  `json:"container_id,omitempty"`
 	ContainerKind      string  `json:"container_kind,omitempty"`
 	ContainerName      string  `json:"container_name,omitempty"`
+	TargetVersion      string  `json:"target_version,omitempty"`
 	Service            Service `json:"service"`
 	Kind               Kind    `json:"kind"`
 	Account            Account `json:"account,omitempty"`
@@ -79,6 +80,7 @@ type Model struct {
 	Capabilities     []Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 	ContextTokens    int          `json:"context_tokens,omitempty" yaml:"context_tokens,omitempty"`
 	MaxContextTokens int          `json:"max_context_tokens,omitempty" yaml:"max_context_tokens,omitempty"`
+	MaxOutputTokens  int          `json:"max_output_tokens,omitempty" yaml:"max_output_tokens,omitempty"`
 	Kind             string       `json:"kind,omitempty" yaml:"kind,omitempty"`
 	GroupMembers     []string     `json:"group_members,omitempty" yaml:"group_members,omitempty"`
 	Quota            *ModelQuota  `json:"quota,omitempty" yaml:"quota,omitempty"`
@@ -139,28 +141,30 @@ const (
 )
 
 type AuthState struct {
-	Status          AuthStatus `json:"status"`
-	Account         Account    `json:"account,omitempty"`
-	ExpiresAt       time.Time  `json:"expires_at,omitempty"`
-	Refreshable     bool       `json:"refreshable"`
-	LastRefreshAt   time.Time  `json:"last_refresh_at,omitempty"`
-	LastRefreshErr  string     `json:"last_refresh_error,omitempty"`
-	SelectedSource  string     `json:"selected_source,omitempty"`
-	ReplicaCount    int        `json:"replica_count,omitempty"`
-	BootstrapSource string     `json:"bootstrap_source,omitempty"`
+	Status          AuthStatus        `json:"status"`
+	Account         Account           `json:"account,omitempty"`
+	Subscription    *SubscriptionInfo `json:"subscription,omitempty"`
+	ExpiresAt       time.Time         `json:"expires_at,omitempty"`
+	Refreshable     bool              `json:"refreshable"`
+	LastRefreshAt   time.Time         `json:"last_refresh_at,omitempty"`
+	LastRefreshErr  string            `json:"last_refresh_error,omitempty"`
+	SelectedSource  string            `json:"selected_source,omitempty"`
+	ReplicaCount    int               `json:"replica_count,omitempty"`
+	BootstrapSource string            `json:"bootstrap_source,omitempty"`
 }
 
 func (a AuthState) MarshalJSON() ([]byte, error) {
 	type authStateJSON struct {
-		Status          AuthStatus `json:"status"`
-		Account         *Account   `json:"account,omitempty"`
-		ExpiresAt       *time.Time `json:"expires_at,omitempty"`
-		Refreshable     bool       `json:"refreshable"`
-		LastRefreshAt   *time.Time `json:"last_refresh_at,omitempty"`
-		LastRefreshErr  string     `json:"last_refresh_error,omitempty"`
-		SelectedSource  string     `json:"selected_source,omitempty"`
-		ReplicaCount    int        `json:"replica_count,omitempty"`
-		BootstrapSource string     `json:"bootstrap_source,omitempty"`
+		Status          AuthStatus        `json:"status"`
+		Account         *Account          `json:"account,omitempty"`
+		Subscription    *SubscriptionInfo `json:"subscription,omitempty"`
+		ExpiresAt       *time.Time        `json:"expires_at,omitempty"`
+		Refreshable     bool              `json:"refreshable"`
+		LastRefreshAt   *time.Time        `json:"last_refresh_at,omitempty"`
+		LastRefreshErr  string            `json:"last_refresh_error,omitempty"`
+		SelectedSource  string            `json:"selected_source,omitempty"`
+		ReplicaCount    int               `json:"replica_count,omitempty"`
+		BootstrapSource string            `json:"bootstrap_source,omitempty"`
 	}
 	out := authStateJSON{
 		Status:          a.Status,
@@ -173,6 +177,10 @@ func (a AuthState) MarshalJSON() ([]byte, error) {
 	if a.Account != (Account{}) {
 		account := a.Account
 		out.Account = &account
+	}
+	if a.Subscription != nil && *a.Subscription != (SubscriptionInfo{}) {
+		subscription := *a.Subscription
+		out.Subscription = &subscription
 	}
 	if !a.ExpiresAt.IsZero() {
 		expiresAt := a.ExpiresAt
@@ -191,14 +199,25 @@ type LimitState struct {
 	ActiveStreams  int `json:"active_streams,omitempty"`
 }
 
+type SubscriptionInfo struct {
+	Tier          string `json:"tier,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Status        string `json:"status,omitempty"`
+	PaidTier      string `json:"paid_tier,omitempty"`
+	RateLimitTier string `json:"rate_limit_tier,omitempty"`
+	Source        string `json:"source,omitempty"`
+}
+
 type UsageReport struct {
-	ObservedAt    time.Time `json:"observed_at"`
-	Source        string    `json:"source,omitempty"`
-	Requests      int64     `json:"requests,omitempty"`
-	InputTokens   int64     `json:"input_tokens,omitempty"`
-	OutputTokens  int64     `json:"output_tokens,omitempty"`
-	TotalTokens   int64     `json:"total_tokens,omitempty"`
-	NativeSummary any       `json:"native_summary,omitempty"`
+	ObservedAt    time.Time         `json:"observed_at"`
+	Source        string            `json:"source,omitempty"`
+	PlanTier      string            `json:"plan_tier,omitempty"`
+	Subscription  *SubscriptionInfo `json:"subscription,omitempty"`
+	Requests      int64             `json:"requests,omitempty"`
+	InputTokens   int64             `json:"input_tokens,omitempty"`
+	OutputTokens  int64             `json:"output_tokens,omitempty"`
+	TotalTokens   int64             `json:"total_tokens,omitempty"`
+	NativeSummary any               `json:"native_summary,omitempty"`
 }
 
 type Registration struct {

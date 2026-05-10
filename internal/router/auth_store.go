@@ -31,7 +31,7 @@ type AuthRecord struct {
 	Source             string              `json:"source,omitempty"`
 	Filename           string              `json:"filename"`
 	Format             string              `json:"format,omitempty"`
-	LatestProviderID   string              `json:"latest_provider_id,omitempty"`
+	LatestProviderType string              `json:"latest_provider_type,omitempty"`
 	ProviderInstanceID string              `json:"provider_instance_id,omitempty"`
 	NodeID             string              `json:"node_id,omitempty"`
 	HostName           string              `json:"host_name,omitempty"`
@@ -44,7 +44,7 @@ type AuthRecord struct {
 }
 
 type AuthReplica struct {
-	ProviderID         string              `json:"provider_id,omitempty"`
+	ProviderType       string              `json:"provider_type,omitempty"`
 	ProviderInstanceID string              `json:"provider_instance_id"`
 	NodeID             string              `json:"node_id,omitempty"`
 	HostName           string              `json:"host_name,omitempty"`
@@ -64,7 +64,7 @@ type AuthEvent struct {
 	Type               string              `json:"type"`
 	Service            provider.Service    `json:"service,omitempty"`
 	Account            provider.Account    `json:"account,omitempty"`
-	ProviderID         string              `json:"provider_id,omitempty"`
+	ProviderType       string              `json:"provider_type,omitempty"`
 	ProviderInstanceID string              `json:"provider_instance_id,omitempty"`
 	NodeID             string              `json:"node_id,omitempty"`
 	HostName           string              `json:"host_name,omitempty"`
@@ -118,7 +118,7 @@ func (e *Engine) RecordAuthDownload(authID string) {
 		Type:               "auth.download",
 		Service:            record.Service,
 		Account:            record.Account,
-		ProviderID:         record.LatestProviderID,
+		ProviderType:       record.LatestProviderType,
 		ProviderInstanceID: record.ProviderInstanceID,
 		NodeID:             record.NodeID,
 		HostName:           record.HostName,
@@ -154,7 +154,7 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 	}
 	authID := authRecordID(identity.Service, account, providerInstanceID)
 	replica := AuthReplica{
-		ProviderID:         identity.ProviderID,
+		ProviderType:       identity.ProviderType,
 		ProviderInstanceID: providerInstanceID,
 		NodeID:             identity.NodeID,
 		HostName:           identity.HostName,
@@ -194,7 +194,7 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 	record.Source = firstNonEmpty(source, auth.SelectedSource, record.Source)
 	record.Filename = firstNonEmpty(filename, record.Filename, authFilename(identity.Service, format))
 	record.Format = firstNonEmpty(format, record.Format)
-	record.LatestProviderID = identity.ProviderID
+	record.LatestProviderType = identity.ProviderType
 	record.ProviderInstanceID = providerInstanceID
 	record.NodeID = identity.NodeID
 	record.HostName = identity.HostName
@@ -214,7 +214,7 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 		Type:               eventType,
 		Service:            identity.Service,
 		Account:            account,
-		ProviderID:         identity.ProviderID,
+		ProviderType:       identity.ProviderType,
 		ProviderInstanceID: providerInstanceID,
 		NodeID:             identity.NodeID,
 		HostName:           identity.HostName,

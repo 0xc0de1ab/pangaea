@@ -102,7 +102,7 @@ spec:
           env:
             - name: PANGAEA_SHIM_MODE
               value: sidecar-agent
-            - name: PANGAEA_PROVIDER_ID
+            - name: PANGAEA_PROVIDER_TYPE
               value: antigravity-sidecar
             - name: PANGAEA_PROVIDER_INSTANCE_ID
               value: antigravity-sidecar

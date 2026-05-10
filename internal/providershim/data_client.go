@@ -305,7 +305,7 @@ func (s *dataClientState) handleStreamDataRequest(ctx context.Context, signer *t
 	if streamInvoker, ok := invoker.(providerStreamInvoker); ok {
 		compatResponse, err := streamInvoker.InvokeStream(ctx, registration, request.Request, func(event compat.Event) error {
 			if err := event.Validate(); err != nil {
-				return err
+				return fmt.Errorf("validate stream event %s: %w", event.Type, err)
 			}
 			return s.writeResponse(ctx, tunnel.DataResponse{
 				Type:      tunnel.DataFrameEvent,

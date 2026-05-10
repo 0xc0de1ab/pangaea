@@ -121,7 +121,7 @@ Examples:
 - GitHub Copilot sidecar
 
 Container 이름은 운영자-facing service identity가 아니다. Dashboard와 usage
-view는 `host_name`, `service`, `provider_id`, `account`를 중심으로 보여준다.
+view는 `host_name`, `service`, `provider_type`, `account`를 중심으로 보여준다.
 
 ## Provider Identity Model
 
@@ -131,7 +131,7 @@ Provider identity는 다음을 분리한다.
 - `node_id`: router protocol identity
 - `container_id`: runtime container identity
 - `service`: provider service family, 예: `codex`, `claude`, `gemini`, `glm`
-- `provider_id`: 설정상 논리 provider, 예: `codex-primary`
+- `provider_type`: 설정상 논리 provider, 예: `codex-primary`
 - `provider_instance_id`: 실제 연결된 shim instance
 - `account_id`: provider account identity
 - `account_display`: email 또는 operator-friendly label
@@ -142,9 +142,9 @@ Provider identity는 다음을 분리한다.
 
 ```text
 host_name=snowbox
-  provider_id=codex-primary  service=codex  account=primary@example.test
-  provider_id=codex-secondary service=codex  account=secondary@example.test
-  provider_id=gemini-primary service=gemini account=primary@example.test
+  provider_type=codex-primary  service=codex  account=primary@example.test
+  provider_type=codex-secondary service=codex  account=secondary@example.test
+  provider_type=gemini-primary service=gemini account=primary@example.test
 ```
 
 Auth bootstrap source path는 provider별로 지정 가능해야 한다. 기본 경로만

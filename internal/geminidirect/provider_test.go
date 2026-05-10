@@ -187,6 +187,71 @@ func TestModelsEnrichesQuota(t *testing.T) {
 	}
 }
 
+func TestModelsAreDiscoveredFromQuotaBuckets(t *testing.T) {
+	authPath := writeAuthFile(t, time.Now().Add(time.Hour))
+	resetAt := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireBearer(t, r)
+		switch r.URL.Path {
+		case "/v1internal:loadCodeAssist":
+			_ = json.NewEncoder(w).Encode(loadCodeAssistResponse{CloudaiCompanionProject: "fine-canyon-test"})
+		case "/v1internal:retrieveUserQuota":
+			_ = json.NewEncoder(w).Encode(retrieveUserQuotaResponse{Buckets: []quotaBucket{
+				{ModelID: "gemini-3.1-pro", RemainingFraction: 0.9, ResetTime: resetAt},
+				{ModelID: "gemini-3-flash-preview", RemainingFraction: 0.8, ResetTime: resetAt},
+				{ModelID: "gemini-3.1-flash-lite-preview", RemainingFraction: 1, ResetTime: resetAt},
+				{ModelID: "gemma-4-31b-it", RemainingFraction: 0.6, ResetTime: resetAt},
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(t, srv.URL, authPath)
+	if !p.ForceModelDiscovery() {
+		t.Fatal("gemini direct provider must force model discovery even when static models are configured")
+	}
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	byID := map[string]provider.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	pro, ok := byID["gemini-3.1-pro-preview"]
+	if !ok {
+		t.Fatalf("discovered models missing canonical pro entry: %#v", models)
+	}
+	if !containsString(pro.Aliases, "gemini-3.1-pro") {
+		t.Fatalf("pro aliases = %#v, want raw quota id", pro.Aliases)
+	}
+	if pro.Quota == nil || pro.Quota.RemainingPct != 90 {
+		t.Fatalf("pro quota = %#v", pro.Quota)
+	}
+	auto := byID["auto-gemini-3"]
+	if auto.Kind != "group" {
+		t.Fatalf("auto kind = %q", auto.Kind)
+	}
+	if !reflect.DeepEqual(auto.GroupMembers, []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview"}) {
+		t.Fatalf("auto group members = %#v", auto.GroupMembers)
+	}
+	if auto.Quota == nil || auto.Quota.RemainingPct != 80 {
+		t.Fatalf("auto quota = %#v", auto.Quota)
+	}
+	gemma, ok := byID["gemma-4-31b-it"]
+	if !ok {
+		t.Fatalf("quota-discovered gemma model missing: %#v", models)
+	}
+	if gemma.Quota == nil || gemma.Quota.RemainingPct != 60 {
+		t.Fatalf("gemma quota = %#v", gemma.Quota)
+	}
+	if !containsString(gemma.Aliases, "Gemma 4 31B IT") {
+		t.Fatalf("gemma aliases = %#v", gemma.Aliases)
+	}
+}
+
 func TestAuthReadsExpiryFromFile(t *testing.T) {
 	authPath := writeAuthFile(t, time.Now().Add(-time.Minute))
 	p := newTestProvider(t, "http://127.0.0.1:1", authPath)
@@ -196,6 +261,49 @@ func TestAuthReadsExpiryFromFile(t *testing.T) {
 	}
 	if auth.Status != provider.AuthExpired {
 		t.Fatalf("auth status = %q, want expired", auth.Status)
+	}
+}
+
+func TestCodeAssistDefaultsDoNotForceThinkingForGemini25Flash(t *testing.T) {
+	body, err := codeAssistRequestBody(compat.GeminiGenerateContentRequest{
+		Contents: []compat.GeminiContent{{
+			Role:  "user",
+			Parts: []compat.GeminiPart{{Text: "hello"}},
+		}},
+		GenerationConfig: &compat.GeminiGenerationConfig{MaxOutputTokens: 1024},
+	}, "gemini-2.5-flash", "")
+	if err != nil {
+		t.Fatalf("codeAssistRequestBody: %v", err)
+	}
+	generationConfig, ok := body["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig missing: %#v", body)
+	}
+	if _, exists := generationConfig["thinkingConfig"]; exists {
+		t.Fatalf("unexpected default thinkingConfig for non-reasoning request: %#v", generationConfig["thinkingConfig"])
+	}
+	if generationConfig["maxOutputTokens"] != float64(1024) {
+		t.Fatalf("maxOutputTokens = %#v", generationConfig["maxOutputTokens"])
+	}
+}
+
+func TestCodeAssistDefaultsApplyThinkingWhenReasoningRequested(t *testing.T) {
+	body, err := codeAssistRequestBody(compat.GeminiGenerateContentRequest{
+		Contents: []compat.GeminiContent{{
+			Role:  "user",
+			Parts: []compat.GeminiPart{{Text: "hello"}},
+		}},
+	}, "gemini-2.5-flash", "high")
+	if err != nil {
+		t.Fatalf("codeAssistRequestBody: %v", err)
+	}
+	generationConfig := body["generationConfig"].(map[string]any)
+	thinkingConfig, ok := generationConfig["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinkingConfig missing: %#v", generationConfig)
+	}
+	if thinkingConfig["includeThoughts"] != true || thinkingConfig["thinkingBudget"] != float64(8192) {
+		t.Fatalf("thinkingConfig = %#v", thinkingConfig)
 	}
 }
 
@@ -354,11 +462,20 @@ func newTestProvider(t *testing.T, baseURL string, authPath string) *Provider {
 	return p
 }
 
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func testRegistration() provider.Registration {
 	now := time.Now().UTC()
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "gemini-cli",
+			ProviderType:       "gemini-cli",
 			ProviderInstanceID: "gemini-cli",
 			NodeID:             "node-1",
 			HostName:           "host-1",

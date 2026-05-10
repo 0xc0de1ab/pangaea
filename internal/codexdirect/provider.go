@@ -108,9 +108,13 @@ func New(opts Options) (*Provider, error) {
 			return nil, fmt.Errorf("%w: detect codex client version: %v", ErrConfig, err)
 		}
 	}
+	registration := opts.Registration
+	if strings.TrimSpace(registration.Identity.TargetVersion) == "" {
+		registration.Identity.TargetVersion = clientVersion
+	}
 	now := time.Now().UTC()
 	return &Provider{
-		registration:  opts.Registration,
+		registration:  registration,
 		baseURL:       parsed,
 		authPath:      strings.TrimSpace(opts.AuthPath),
 		client:        client,

@@ -68,7 +68,7 @@ type Trace struct {
 	NodeID             string `json:"node_id,omitempty"`
 	HostName           string `json:"host_name,omitempty"`
 	ContainerID        string `json:"container_id,omitempty"`
-	ProviderID         string `json:"provider_id,omitempty"`
+	ProviderType       string `json:"provider_type,omitempty"`
 	ProviderInstanceID string `json:"provider_instance_id,omitempty"`
 	AccountID          string `json:"account_id,omitempty"`
 	ModelID            string `json:"model_id,omitempty"`
@@ -132,7 +132,7 @@ type ContainerReport struct {
 	ContainerID        string            `json:"container_id"`
 	ContainerKind      string            `json:"container_kind,omitempty"`
 	ContainerName      string            `json:"container_name,omitempty"`
-	ProviderID         string            `json:"provider_id,omitempty"`
+	ProviderType       string            `json:"provider_type,omitempty"`
 	ProviderInstanceID string            `json:"provider_instance_id,omitempty"`
 	Image              string            `json:"image,omitempty"`
 	State              string            `json:"state,omitempty"`

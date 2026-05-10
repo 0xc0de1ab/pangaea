@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Activity, Box, Clipboard, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
@@ -10,28 +10,46 @@ import { StatusBadge } from "../components/StatusBadge";
 import { ChatWorkbench, type ChatWorkbenchTarget } from "./ChatWorkbench";
 import { EndpointDataWorkbench, type EndpointDataWorkbenchTarget } from "./EndpointDataWorkbench";
 import { api } from "../lib/api";
-import { providerAccountLabel, providerID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
-import { age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
+import { providerAccountLabel, providerInstanceID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
+import { age, copyText, cx, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
 import { providerServiceEndpoints, serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
 import type { ProviderIdentity, ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
 import dockerIcon from "../assets/icons/docker-mark-ocean-blue.svg";
 import kubernetesIcon from "../assets/icons/kubernetes.svg";
 
 export function ProvidersView({ data, queries, search, token, onAction, refresh }: DashboardViewProps) {
-  const [selected, setSelected] = useState<ProviderRegistration | null>(null);
+  const [selectedProviderID, setSelectedProviderID] = useState<string | null>(null);
   const [chatTarget, setChatTarget] = useState<ChatWorkbenchTarget | null>(null);
   const [dataTarget, setDataTarget] = useState<EndpointDataWorkbenchTarget | null>(null);
   const rows = useMemo(() => {
     return [...data.providers]
-      .sort((a, b) => `${a.identity.service}:${a.identity.host_name}:${providerAccountLabel(a)}:${providerID(a)}`.localeCompare(`${b.identity.service}:${b.identity.host_name}:${providerAccountLabel(b)}:${providerID(b)}`))
+      .sort((a, b) => `${a.identity.service}:${a.identity.host_name}:${providerAccountLabel(a)}:${providerInstanceID(a)}`.localeCompare(`${b.identity.service}:${b.identity.host_name}:${providerAccountLabel(b)}:${providerInstanceID(b)}`))
       .filter((provider) => hasText(provider, search));
   }, [data.providers, search]);
   const control = sessionSet(data.controlSessions);
   const dataSession = sessionSet(data.dataSessions);
   const usage = providerUsageMap(data.usage);
+  const selected = useMemo(
+    () => selectedProviderID ? data.providers.find((provider) => providerInstanceID(provider) === selectedProviderID) ?? null : null,
+    [data.providers, selectedProviderID],
+  );
+  const selectedUsage = selected ? usage.get(providerInstanceID(selected)) : undefined;
+  const selectedControlConnected = selected ? control.has(providerInstanceID(selected)) : false;
+  const selectedDataConnected = selected ? dataSession.has(providerInstanceID(selected)) : false;
+  const detailChangeValues = useMemo(
+    () => selected ? providerDetailChangeValues(selected, selectedUsage, selectedControlConnected, selectedDataConnected) : {},
+    [selected, selectedUsage, selectedControlConnected, selectedDataConnected],
+  );
+  const detailChanged = useChangedHighlights(selectedProviderID ?? "", detailChangeValues, Boolean(selected));
+
+  useEffect(() => {
+    if (selectedProviderID && !selected && !queries.providers.isFetching) {
+      setSelectedProviderID(null);
+    }
+  }, [queries.providers.isFetching, selected, selectedProviderID]);
 
   function providerAction(provider: ProviderRegistration, kind: "drain" | "resume" | "refresh") {
-    const id = providerID(provider);
+    const id = providerInstanceID(provider);
     const scope = serviceHostAccount(provider);
     onAction({
       title: kind === "drain" ? "Drain provider" : kind === "resume" ? "Resume routing" : "Refresh provider auth",
@@ -58,18 +76,18 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
 
   const columns: DashboardColumn<ProviderRegistration>[] = [
     {
-      id: "provider",
-      header: "Provider Instance",
-      sortValue: (row) => providerID(row),
+      id: "node",
+      header: "Node",
+      sortValue: (row) => row.identity.node_id,
       cell: (row) => (
-        <span className="id-cell">
-          <span className="mono">{middleEllipsis(providerID(row), 12, 9)}</span>
-          <button className="mini-icon" type="button" aria-label="Copy provider id" onClick={(event) => { event.stopPropagation(); copyText(providerID(row)); }}>
+        <span className="id-cell" title={providerInstanceID(row)}>
+          <span className="mono">{middleEllipsis(row.identity.node_id, 10, 6)}</span>
+          <button className="mini-icon" type="button" aria-label="Copy node id" onClick={(event) => { event.stopPropagation(); copyText(row.identity.node_id); }}>
             <Clipboard aria-hidden="true" size={13} />
           </button>
         </span>
       ),
-      width: "210px",
+      width: "128px",
     },
     { id: "service", header: "Svc", sortValue: (row) => row.identity.service, cell: (row) => <ServiceLogoCell service={row.identity.service} />, align: "center", width: "56px" },
     { id: "kind", header: "Kind", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
@@ -87,11 +105,11 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     {
       id: "sessions",
       header: "Sessions",
-      sortValue: (row) => Number(control.has(providerID(row))) + Number(dataSession.has(providerID(row))),
+      sortValue: (row) => Number(control.has(providerInstanceID(row))) + Number(dataSession.has(providerInstanceID(row))),
       cell: (row) => (
         <div className="session-pair">
-          <StatusBadge value={control.has(providerID(row)) ? "control" : "no control"} tone={control.has(providerID(row)) ? "ok" : "warn"} />
-          <StatusBadge value={dataSession.has(providerID(row)) ? "data" : "no data"} tone={dataSession.has(providerID(row)) ? "ok" : "danger"} />
+          <StatusBadge value={control.has(providerInstanceID(row)) ? "control" : "no control"} tone={control.has(providerInstanceID(row)) ? "ok" : "warn"} />
+          <StatusBadge value={dataSession.has(providerInstanceID(row)) ? "data" : "no data"} tone={dataSession.has(providerInstanceID(row)) ? "ok" : "danger"} />
         </div>
       ),
       width: "210px",
@@ -102,8 +120,8 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     {
       id: "usage",
       header: "Requests",
-      sortValue: (row) => usage.get(providerID(row))?.usage?.requests ?? 0,
-      cell: (row) => n(usage.get(providerID(row))?.usage?.requests ?? 0),
+      sortValue: (row) => usage.get(providerInstanceID(row))?.usage?.requests ?? 0,
+      cell: (row) => n(usage.get(providerInstanceID(row))?.usage?.requests ?? 0),
       align: "right",
       width: "98px",
     },
@@ -140,27 +158,28 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
           </button>
         }
       >
-        <DataTable rows={rows} columns={columns} empty="No providers registered" getRowId={(row) => providerID(row)} onRowClick={setSelected} compact />
+        <DataTable rows={rows} columns={columns} empty="No providers registered" getRowId={(row) => providerInstanceID(row)} onRowClick={(row) => setSelectedProviderID(providerInstanceID(row))} compact />
       </Section>
 
       <Drawer
         open={!!selected}
-        onClose={() => setSelected(null)}
-        title={selected ? middleEllipsis(providerID(selected), 18, 12) : "Provider"}
+        onClose={() => setSelectedProviderID(null)}
+        title={selected ? middleEllipsis(providerInstanceID(selected), 18, 12) : "Provider"}
         subtitle={selected ? serviceHostAccount(selected) : undefined}
       >
         {selected ? (
           <ProviderDetail
             provider={selected}
-            controlConnected={control.has(providerID(selected))}
-            dataConnected={dataSession.has(providerID(selected))}
-            usage={usage.get(providerID(selected))}
+            controlConnected={selectedControlConnected}
+            dataConnected={selectedDataConnected}
+            usage={selectedUsage}
+            changed={detailChanged}
             onDrain={() => providerAction(selected, "drain")}
             onResume={() => providerAction(selected, "resume")}
             onRefreshAuth={() => providerAction(selected, "refresh")}
             onOpenChat={(endpoint) => setChatTarget({ provider: selected, endpoint })}
             onOpenModels={() => setDataTarget({ kind: "models", provider: selected })}
-            onOpenUsage={() => setDataTarget({ kind: "usage", provider: selected, usage: usage.get(providerID(selected)) })}
+            onOpenUsage={() => setDataTarget({ kind: "usage", provider: selected, usage: usage.get(providerInstanceID(selected)) })}
           />
         ) : null}
       </Drawer>
@@ -168,6 +187,94 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
       <EndpointDataWorkbench target={dataTarget} token={token} onClose={() => setDataTarget(null)} />
     </div>
   );
+}
+
+function providerDetailChangeValues(provider: ProviderRegistration, usage: ProviderUsageSnapshot | undefined, controlConnected: boolean, dataConnected: boolean) {
+  const subscription = providerSubscription(provider, usage);
+  return {
+    "summary:providerType": provider.identity.provider_type,
+    "summary:targetVersion": provider.identity.target_version ?? "",
+    "summary:instance": provider.identity.provider_instance_id,
+    "summary:node": provider.identity.node_id,
+    "summary:host": `${provider.identity.host_name}|${containerSummary(provider.identity)}`,
+    "summary:account": providerAccountLabel(provider),
+    "summary:subscription": subscription ? JSON.stringify(subscription) : "",
+    "summary:container": containerSummary(provider.identity),
+    "summary:registered": fmtTime(provider.registered_at),
+    "state:badges": [
+      provider.health?.status ?? "",
+      provider.health?.reason ?? "",
+      provider.auth?.status ?? "",
+      provider.auth?.last_refresh_error ?? "",
+      controlConnected ? "control" : "no-control",
+      dataConnected ? "data" : "no-data",
+    ].join("|"),
+    "state:healthCheck": provider.health?.checked_at ?? "",
+    "state:authExpires": provider.auth?.expires_at ?? "",
+    "state:lastRefresh": provider.auth?.last_refresh_at ?? "",
+    "state:refreshable": provider.auth?.refreshable ? "yes" : "no",
+    "models:list": (provider.models ?? []).map((model) => [
+      model.id,
+      model.kind ?? "",
+      model.aliases?.join(",") ?? "",
+      model.capabilities?.join(",") ?? "",
+      model.context_tokens ?? "",
+      model.max_context_tokens ?? "",
+      model.max_output_tokens ?? "",
+    ].join(":")).join("|"),
+    "load:queue": String(provider.limits?.queue_depth ?? 0),
+    "load:streams": String(provider.limits?.active_streams ?? 0),
+    "load:maxConcurrency": String(provider.limits?.max_concurrency ?? 0),
+    "load:requests": String(usage?.usage?.requests ?? 0),
+    "load:tokens": String(usage?.usage?.total_tokens ?? 0),
+    "load:usageAge": usage?.updated_at || usage?.usage?.observed_at || "",
+    "capabilities:list": (provider.capabilities ?? []).join("|"),
+  };
+}
+
+function useChangedHighlights(scopeKey: string, values: Record<string, string>, active: boolean, durationMs = 2_000) {
+  const previousRef = useRef<Record<string, string> | null>(null);
+  const scopeRef = useRef(scopeKey);
+  const [changed, setChanged] = useState<Set<string>>(() => new Set());
+  const signature = stableValueSignature(values);
+
+  useEffect(() => {
+    if (scopeRef.current === scopeKey) return;
+    scopeRef.current = scopeKey;
+    previousRef.current = null;
+    setChanged(new Set());
+  }, [scopeKey]);
+
+  useEffect(() => {
+    if (!active) return;
+    const previous = previousRef.current;
+    previousRef.current = values;
+    if (!previous) {
+      setChanged(new Set());
+      return;
+    }
+    const changedKeys = Object.keys(values).filter((key) => previous[key] !== values[key]);
+    if (!changedKeys.length) return;
+    setChanged((current) => {
+      const next = new Set(current);
+      changedKeys.forEach((key) => next.add(key));
+      return next;
+    });
+    const timeout = window.setTimeout(() => {
+      setChanged((current) => {
+        const next = new Set(current);
+        changedKeys.forEach((key) => next.delete(key));
+        return next;
+      });
+    }, durationMs);
+    return () => window.clearTimeout(timeout);
+  }, [active, durationMs, scopeKey, signature]);
+
+  return changed;
+}
+
+function stableValueSignature(values: Record<string, string>) {
+  return Object.keys(values).sort().map((key) => `${key}=${values[key]}`).join("\n");
 }
 
 type ServiceTooltipPosition = {
@@ -308,6 +415,7 @@ type ProviderDetailProps = {
   controlConnected: boolean;
   dataConnected: boolean;
   usage?: ProviderUsageSnapshot;
+  changed: Set<string>;
   onDrain: () => void;
   onResume: () => void;
   onRefreshAuth: () => void;
@@ -316,7 +424,7 @@ type ProviderDetailProps = {
   onOpenUsage: () => void;
 };
 
-function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDrain, onResume, onRefreshAuth, onOpenChat, onOpenModels, onOpenUsage }: ProviderDetailProps) {
+function ProviderDetail({ provider, controlConnected, dataConnected, usage, changed, onDrain, onResume, onRefreshAuth, onOpenChat, onOpenModels, onOpenUsage }: ProviderDetailProps) {
   return (
     <div className="detail-stack">
       <div className="drawer-action-row">
@@ -337,29 +445,31 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
       <div className="detail-section">
         <h3>Summary</h3>
         <div className="kv-list">
-          <div className="kv-key">Provider ID</div><div className="kv-value mono">{provider.identity.provider_id}</div>
-          <div className="kv-key">Instance</div><div className="kv-value mono">{provider.identity.provider_instance_id}</div>
-          <div className="kv-key">Node</div><div className="kv-value mono">{provider.identity.node_id}</div>
-          <div className="kv-key">Host</div><div className="kv-value"><HostCell identity={provider.identity} /></div>
-          <div className="kv-key">Account</div><div className="kv-value">{providerAccountLabel(provider)}</div>
-          <div className="kv-key">Container</div><div className="kv-value mono">{containerSummary(provider.identity)}</div>
-          <div className="kv-key">Registered</div><div className="kv-value">{fmtTime(provider.registered_at)}</div>
+          <div className="kv-key">Provider Type</div><DetailValue changed={changed} changeKey="summary:providerType" className="mono">{provider.identity.provider_type}</DetailValue>
+          <div className="kv-key">Target Version</div><DetailValue changed={changed} changeKey="summary:targetVersion" className="mono">{provider.identity.target_version || "Not reported"}</DetailValue>
+          <div className="kv-key">Instance</div><DetailValue changed={changed} changeKey="summary:instance" className="mono">{provider.identity.provider_instance_id}</DetailValue>
+          <div className="kv-key">Node</div><DetailValue changed={changed} changeKey="summary:node" className="mono">{provider.identity.node_id}</DetailValue>
+          <div className="kv-key">Host</div><DetailValue changed={changed} changeKey="summary:host"><HostCell identity={provider.identity} /></DetailValue>
+          <div className="kv-key">Account</div><DetailValue changed={changed} changeKey="summary:account">{providerAccountLabel(provider)}</DetailValue>
+          <div className="kv-key">Your Plan</div><DetailValue changed={changed} changeKey="summary:subscription"><SubscriptionValue provider={provider} usage={usage} /></DetailValue>
+          <div className="kv-key">Container</div><DetailValue changed={changed} changeKey="summary:container" className="mono">{containerSummary(provider.identity)}</DetailValue>
+          <div className="kv-key">Registered</div><DetailValue changed={changed} changeKey="summary:registered">{fmtTime(provider.registered_at)}</DetailValue>
         </div>
       </div>
 
       <div className="detail-section">
         <h3>State</h3>
-        <div className="badge-row">
+        <div className={cx("badge-row", changed.has("state:badges") && "provider-value-changed")}>
           <StatusBadge value={provider.health?.status} title={provider.health?.reason} />
           <StatusBadge value={provider.auth?.status} title={provider.auth?.last_refresh_error} />
           <StatusBadge value={controlConnected ? "control connected" : "control missing"} tone={controlConnected ? "ok" : "warn"} />
           <StatusBadge value={dataConnected ? "data connected" : "data missing"} tone={dataConnected ? "ok" : "danger"} />
         </div>
         <div className="kv-list">
-          <div className="kv-key">Health check</div><div className="kv-value">{age(provider.health?.checked_at)}</div>
-          <div className="kv-key">Auth expires</div><div className="kv-value">{fmtTime(provider.auth?.expires_at)}</div>
-          <div className="kv-key">Last refresh</div><div className="kv-value">{fmtTime(provider.auth?.last_refresh_at)}</div>
-          <div className="kv-key">Refreshable</div><div className="kv-value">{provider.auth?.refreshable ? "yes" : "no"}</div>
+          <div className="kv-key">Health check</div><DetailValue changed={changed} changeKey="state:healthCheck">{age(provider.health?.checked_at)}</DetailValue>
+          <div className="kv-key">Auth expires</div><DetailValue changed={changed} changeKey="state:authExpires">{fmtTime(provider.auth?.expires_at)}</DetailValue>
+          <div className="kv-key">Last refresh</div><DetailValue changed={changed} changeKey="state:lastRefresh">{fmtTime(provider.auth?.last_refresh_at)}</DetailValue>
+          <div className="kv-key">Refreshable</div><DetailValue changed={changed} changeKey="state:refreshable">{provider.auth?.refreshable ? "yes" : "no"}</DetailValue>
         </div>
       </div>
 
@@ -373,7 +483,7 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
             Open
           </button>
         </div>
-        <div className="tag-list">
+        <div className={cx("tag-list", changed.has("models:list") && "provider-value-changed")}>
           {(provider.models ?? []).map((model) => (
             <span className={model.kind === "group" || model.group_members?.length ? "tag mono model-tag-group" : "tag mono"} key={model.id}>
               {model.kind === "group" || model.group_members?.length ? <span className="model-group-badge mini" title="Group model">G</span> : null}
@@ -393,18 +503,18 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
           </button>
         </div>
         <div className="kv-list">
-          <div className="kv-key">Queue depth</div><div className="kv-value">{n(provider.limits?.queue_depth ?? 0)}</div>
-          <div className="kv-key">Active streams</div><div className="kv-value">{n(provider.limits?.active_streams ?? 0)}</div>
-          <div className="kv-key">Max concurrency</div><div className="kv-value">{n(provider.limits?.max_concurrency ?? 0)}</div>
-          <div className="kv-key">Requests</div><div className="kv-value">{n(usage?.usage?.requests ?? 0)}</div>
-          <div className="kv-key">Tokens</div><div className="kv-value">{n(usage?.usage?.total_tokens ?? 0)}</div>
-          <div className="kv-key">Usage age</div><div className="kv-value">{age(usage?.updated_at || usage?.usage?.observed_at)}</div>
+          <div className="kv-key">Queue depth</div><DetailValue changed={changed} changeKey="load:queue">{n(provider.limits?.queue_depth ?? 0)}</DetailValue>
+          <div className="kv-key">Active streams</div><DetailValue changed={changed} changeKey="load:streams">{n(provider.limits?.active_streams ?? 0)}</DetailValue>
+          <div className="kv-key">Max concurrency</div><DetailValue changed={changed} changeKey="load:maxConcurrency">{n(provider.limits?.max_concurrency ?? 0)}</DetailValue>
+          <div className="kv-key">Requests</div><DetailValue changed={changed} changeKey="load:requests">{n(usage?.usage?.requests ?? 0)}</DetailValue>
+          <div className="kv-key">Tokens</div><DetailValue changed={changed} changeKey="load:tokens">{n(usage?.usage?.total_tokens ?? 0)}</DetailValue>
+          <div className="kv-key">Usage age</div><DetailValue changed={changed} changeKey="load:usageAge">{age(usage?.updated_at || usage?.usage?.observed_at)}</DetailValue>
         </div>
       </div>
 
       <div className="detail-section">
         <h3>Capabilities</h3>
-        <div className="tag-list">
+        <div className={cx("tag-list", changed.has("capabilities:list") && "provider-value-changed")}>
           {(provider.capabilities ?? []).map((capability) => (
             <span className="tag mono" key={capability}>{capability}</span>
           ))}
@@ -412,6 +522,105 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, onDr
       </div>
     </div>
   );
+}
+
+function DetailValue({ children, changed, changeKey, className }: { children: ReactNode; changed: Set<string>; changeKey: string; className?: string }) {
+  return (
+    <div className={cx("kv-value", className, changed.has(changeKey) && "provider-value-changed")}>
+      {children}
+    </div>
+  );
+}
+
+function SubscriptionValue({ provider, usage }: { provider: ProviderRegistration; usage?: ProviderUsageSnapshot }) {
+  const subscription = providerSubscription(provider, usage);
+  if (!subscription) {
+    return <span className="muted">Not reported</span>;
+  }
+  const display = subscription.name || humanSubscriptionTier(subscription.tier) || subscription.paidTier || subscription.rateLimitTier || "Reported";
+  return (
+    <div className="subscription-value">
+      <strong>{display}</strong>
+      {subscription.tier && subscription.tier !== display ? <span className="tag mono">{subscription.tier}</span> : null}
+      {subscription.paidTier ? <span className="tag mono">paid {subscription.paidTier}</span> : null}
+      {subscription.rateLimitTier ? <span className="tag mono">rate {subscription.rateLimitTier}</span> : null}
+      {subscription.status ? <span className="subscription-status">{subscription.status}</span> : null}
+      {subscription.source ? <span className="muted mono">{subscription.source}</span> : null}
+    </div>
+  );
+}
+
+function providerSubscription(provider: ProviderRegistration, usage?: ProviderUsageSnapshot) {
+  const native = asRecord(usage?.usage?.native_summary);
+  const nativeNotes = asStringArray(native?.notes);
+  const tier =
+    trimOrUndefined(usage?.usage?.subscription?.tier) ||
+    trimOrUndefined(usage?.usage?.plan_tier) ||
+    trimOrUndefined(provider.auth?.subscription?.tier) ||
+    trimOrUndefined(native?.plan_tier);
+  const name =
+    trimOrUndefined(usage?.usage?.subscription?.name) ||
+    trimOrUndefined(provider.auth?.subscription?.name) ||
+    noteValue(nativeNotes, "tier");
+  const paidTier =
+    trimOrUndefined(usage?.usage?.subscription?.paid_tier) ||
+    trimOrUndefined(provider.auth?.subscription?.paid_tier) ||
+    noteValue(nativeNotes, "paid-tier");
+  const rateLimitTier =
+    trimOrUndefined(usage?.usage?.subscription?.rate_limit_tier) ||
+    trimOrUndefined(provider.auth?.subscription?.rate_limit_tier) ||
+    noteValue(nativeNotes, "rate-limit-tier");
+  const status = trimOrUndefined(usage?.usage?.subscription?.status) || trimOrUndefined(provider.auth?.subscription?.status) || noteValue(nativeNotes, "status");
+  const source = trimOrUndefined(usage?.usage?.subscription?.source) || trimOrUndefined(provider.auth?.subscription?.source);
+  if (!tier && !name && !paidTier && !rateLimitTier && !status) {
+    return null;
+  }
+  return { tier, name, paidTier, rateLimitTier, status, source };
+}
+
+function noteValue(notes: string[], key: string) {
+  const prefix = `${key.toLowerCase()}:`;
+  for (const note of notes) {
+    const trimmed = note.trim();
+    if (trimmed.toLowerCase().startsWith(prefix)) {
+      return trimOrUndefined(trimmed.slice(prefix.length));
+    }
+  }
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function asStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function trimOrUndefined(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function humanSubscriptionTier(value?: string) {
+  const raw = value?.trim();
+  if (!raw) return "";
+  const normalized = raw.toLowerCase().replace(/[_-]+/g, " ");
+  const known: Record<string, string> = {
+    enterprise: "Enterprise",
+    team: "Team",
+    pro: "Pro",
+    plus: "Plus",
+    max: "Max",
+    "gpt pro": "GPT Pro",
+    "ai pro": "AI Pro",
+    "standard tier": "Standard",
+  };
+  if (known[normalized]) return known[normalized];
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function ProviderEndpointTable({ provider, onOpenChat }: { provider: ProviderRegistration; onOpenChat: (endpoint: ServiceEndpoint) => void }) {

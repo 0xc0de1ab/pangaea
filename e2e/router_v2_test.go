@@ -148,7 +148,7 @@ func TestE2E_V2RouterDataPlaneFallbackWhenSelectedSessionMissing(t *testing.T) {
 	}
 	registry := provider.NewRegistry()
 	missing := routerV2E2ERegistration(time.Now())
-	missing.Identity.ProviderID = "providersim-missing"
+	missing.Identity.ProviderType = "providersim-missing"
 	missing.Identity.ProviderInstanceID = "providersim-missing-0001"
 	missing.Identity.HostName = "missing-host"
 	missing.Identity.Account = provider.Account{ID: "acct-missing", Display: "missing@example.test"}
@@ -236,21 +236,21 @@ func TestE2E_V2NodeAgentProviderInventory(t *testing.T) {
 			HeartbeatInterval: 20 * time.Millisecond,
 			Runtime:           control.RuntimeInfo{Kind: "docker", Version: "26.1.0"},
 			ProviderSpecs: []nodeagent.ProviderSpec{{
-				ID:          "codex-primary",
-				InstanceID:  "codex-primary-0001",
-				Kind:        provider.KindCLIContainer,
-				Image:       "pangaea/provider-codex:test",
-				AccountHint: "primary@example.test",
-				Service:     provider.ServiceCodex,
-				Shim:        nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
+				ProviderType: "codex-primary",
+				InstanceID:   "codex-primary-0001",
+				Kind:         provider.KindCLIContainer,
+				Image:        "pangaea/provider-codex:test",
+				AccountHint:  "primary@example.test",
+				Service:      provider.ServiceCodex,
+				Shim:         nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
 			}, {
-				ID:          "gemini-secondary",
-				InstanceID:  "gemini-secondary-0001",
-				Kind:        provider.KindCLIContainer,
-				Image:       "pangaea/provider-gemini:test",
-				AccountHint: "secondary@example.test",
-				Service:     provider.ServiceGemini,
-				Shim:        nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityAuthRefreshOneshot}},
+				ProviderType: "gemini-secondary",
+				InstanceID:   "gemini-secondary-0001",
+				Kind:         provider.KindCLIContainer,
+				Image:        "pangaea/provider-gemini:test",
+				AccountHint:  "secondary@example.test",
+				Service:      provider.ServiceGemini,
+				Shim:         nodeagent.ShimSpec{Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityAuthRefreshOneshot}},
 			}},
 		})
 	}()
@@ -299,6 +299,28 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 		}
 		if r.URL.Path == "/v1/models/status" {
 			_ = json.NewEncoder(w).Encode(map[string]any{})
+			return
+		}
+		if r.URL.Path == "/v1/health" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "healthy",
+				"target_version": "test-sidecar-1.0.0",
+			})
+			return
+		}
+		if r.URL.Path == "/v1/account" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":  "Sidecar Test",
+				"email": "antigravity@example.test",
+				"planStatus": map[string]any{
+					"planInfo": map[string]any{"planName": "Pro"},
+				},
+				"userTier": map[string]any{
+					"id":                      "g1-ultra-tier",
+					"name":                    "Google AI Ultra",
+					"upgradeSubscriptionText": "You are subscribed to the best plan.",
+				},
+			})
 			return
 		}
 		if r.URL.Path != "/v1/chat/completions" {
@@ -535,6 +557,28 @@ func TestE2E_V2SidecarProviderShimAntigravityAndCopilot(t *testing.T) {
 		}
 		if r.URL.Path == "/v1/models/status" {
 			_ = json.NewEncoder(w).Encode(map[string]any{})
+			return
+		}
+		if r.URL.Path == "/v1/health" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "healthy",
+				"target_version": "test-sidecar-1.0.0",
+			})
+			return
+		}
+		if r.URL.Path == "/v1/account" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":  "Sidecar Test",
+				"email": "antigravity@example.test",
+				"planStatus": map[string]any{
+					"planInfo": map[string]any{"planName": "Pro"},
+				},
+				"userTier": map[string]any{
+					"id":                      "g1-ultra-tier",
+					"name":                    "Google AI Ultra",
+					"upgradeSubscriptionText": "You are subscribed to the best plan.",
+				},
+			})
 			return
 		}
 		if r.URL.Path != "/v1/chat/completions" {
@@ -1559,7 +1603,7 @@ func routerV2E2ERegistration(now time.Time) provider.Registration {
 	account := provider.Account{ID: "acct-providersim", Display: "providersim@example.test"}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "providersim-multi",
+			ProviderType:       "providersim-multi",
 			ProviderInstanceID: "providersim-multi-0001",
 			NodeID:             "providersim-node",
 			HostName:           "providersim-host",
@@ -1604,7 +1648,7 @@ func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
 	account := provider.Account{ID: "acct-deepseek", Display: "deepseek-api@example.test"}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "deepseek-api",
+			ProviderType:       "deepseek-api",
 			ProviderInstanceID: "deepseek-api-0001",
 			NodeID:             "api-node",
 			HostName:           "api-host",
@@ -1629,11 +1673,11 @@ func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
 	}
 }
 
-func apiCompatibleAnthropicE2ERegistration(now time.Time, service provider.Service, providerID string, instanceID string, hostName string, accountDisplay string, modelID string, alias string) provider.Registration {
-	account := provider.Account{ID: "acct-" + providerID, Display: accountDisplay}
+func apiCompatibleAnthropicE2ERegistration(now time.Time, service provider.Service, providerType string, instanceID string, hostName string, accountDisplay string, modelID string, alias string) provider.Registration {
+	account := provider.Account{ID: "acct-" + providerType, Display: accountDisplay}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         providerID,
+			ProviderType:       providerType,
 			ProviderInstanceID: instanceID,
 			NodeID:             "api-node",
 			HostName:           hostName,
@@ -1659,8 +1703,8 @@ func apiCompatibleAnthropicE2ERegistration(now time.Time, service provider.Servi
 	}
 }
 
-func sidecarE2ERegistration(now time.Time, service provider.Service, providerID string, instanceID string, hostName string, accountDisplay string, modelID string, alias string) provider.Registration {
-	account := provider.Account{ID: "acct-" + providerID, Display: accountDisplay}
+func sidecarE2ERegistration(now time.Time, service provider.Service, providerType string, instanceID string, hostName string, accountDisplay string, modelID string, alias string) provider.Registration {
+	account := provider.Account{ID: "acct-" + providerType, Display: accountDisplay}
 	capabilities := []provider.Capability{
 		provider.CapabilityOpenAIChat,
 		provider.CapabilityStreamSSE,
@@ -1683,7 +1727,7 @@ func sidecarE2ERegistration(now time.Time, service provider.Service, providerID 
 	}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         providerID,
+			ProviderType:       providerType,
 			ProviderInstanceID: instanceID,
 			NodeID:             "sidecar-node",
 			HostName:           hostName,
@@ -1707,7 +1751,7 @@ func cliContainerE2ERegistration(now time.Time) provider.Registration {
 	account := provider.Account{ID: "acct-codex-cli", Display: "codex-cli@example.test"}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "codex-cli",
+			ProviderType:       "codex-cli",
 			ProviderInstanceID: "codex-cli-0001",
 			NodeID:             "cli-node",
 			HostName:           "cli-host",
@@ -1813,7 +1857,7 @@ routes:
       models: [providersim-default]
       api_dialects: [openai]
     candidates:
-      - provider: providersim-multi
+      - provider_type: providersim-multi
         account: providersim@example.test
         host_name: providersim-host
         weight: 100
@@ -1826,7 +1870,7 @@ routes:
       models: [claude-default]
       api_dialects: [anthropic]
     candidates:
-      - provider: providersim-multi
+      - provider_type: providersim-multi
         account: providersim@example.test
         host_name: providersim-host
         weight: 100
@@ -1839,7 +1883,7 @@ routes:
       models: [gemini-default]
       api_dialects: [gemini]
     candidates:
-      - provider: providersim-multi
+      - provider_type: providersim-multi
         account: providersim@example.test
         host_name: providersim-host
         weight: 100
@@ -1862,11 +1906,11 @@ routes:
       models: [providersim-default]
       api_dialects: [openai]
     candidates:
-      - provider: providersim-missing
+      - provider_type: providersim-missing
         account: missing@example.test
         host_name: missing-host
         weight: 100
-      - provider: providersim-multi
+      - provider_type: providersim-multi
         account: providersim@example.test
         host_name: providersim-host
         weight: 10
@@ -1889,7 +1933,7 @@ routes:
       models: [deepseek-default]
       api_dialects: [openai]
     candidates:
-      - provider: deepseek-api
+      - provider_type: deepseek-api
         account: deepseek-api@example.test
         host_name: api-host
         weight: 100
@@ -1915,7 +1959,7 @@ routes:
       models: [glm-default]
       api_dialects: [anthropic]
     candidates:
-      - provider: glm-api
+      - provider_type: glm-api
         account: glm-api@example.test
         host_name: api-host
         weight: 100
@@ -1927,7 +1971,7 @@ routes:
       models: [minimax-default]
       api_dialects: [anthropic]
     candidates:
-      - provider: minimax-api
+      - provider_type: minimax-api
         account: minimax-api@example.test
         host_name: api-host
         weight: 100
@@ -1953,7 +1997,7 @@ routes:
       models: [antigravity-default]
       api_dialects: [openai]
     candidates:
-      - provider: antigravity-sidecar
+      - provider_type: antigravity-sidecar
         account: antigravity@example.test
         host_name: sidecar-host
         weight: 100
@@ -1965,7 +2009,7 @@ routes:
       models: [copilot-default]
       api_dialects: [openai]
     candidates:
-      - provider: github-copilot-sidecar
+      - provider_type: github-copilot-sidecar
         account: copilot@example.test
         host_name: sidecar-host
         weight: 100
@@ -1987,7 +2031,7 @@ routes:
       models: [codex-default]
       api_dialects: [openai]
     candidates:
-      - provider: codex-cli
+      - provider_type: codex-cli
         account: codex-cli@example.test
         host_name: cli-host
         weight: 100

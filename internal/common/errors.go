@@ -7,19 +7,19 @@ import (
 
 // Sentinel errors. Callers identify categories with errors.Is.
 var (
-	ErrProfileNotFound       = errors.New("profile not found")
-	ErrFormatNotRegistered   = errors.New("format not registered")
-	ErrInvalidMessage        = errors.New("invalid message")
-	ErrTLSHandshake          = errors.New("tls handshake failed")
-	ErrParseFailed           = errors.New("parse failed")
-	ErrExpired               = errors.New("credential expired")
-	ErrLiveCheckUnreachable  = errors.New("live check unreachable")
-	ErrApplyFailed           = errors.New("apply failed")
-	ErrLockTimeout           = errors.New("lock acquisition timed out")
-	ErrConfigInvalid         = errors.New("config invalid")
-	ErrCNMismatch            = errors.New("client common name not allowed")
-	ErrSessionDisplaced      = errors.New("session displaced by newer connection")
-	ErrShutdown              = errors.New("shutdown in progress")
+	ErrProfileNotFound      = errors.New("profile not found")
+	ErrFormatNotRegistered  = errors.New("format not registered")
+	ErrInvalidMessage       = errors.New("invalid message")
+	ErrTLSHandshake         = errors.New("tls handshake failed")
+	ErrParseFailed          = errors.New("parse failed")
+	ErrExpired              = errors.New("credential expired")
+	ErrLiveCheckUnreachable = errors.New("live check unreachable")
+	ErrApplyFailed          = errors.New("apply failed")
+	ErrLockTimeout          = errors.New("lock acquisition timed out")
+	ErrConfigInvalid        = errors.New("config invalid")
+	ErrCNMismatch           = errors.New("client common name not allowed")
+	ErrSessionDisplaced     = errors.New("session displaced by newer connection")
+	ErrShutdown             = errors.New("shutdown in progress")
 )
 
 // wrapped links a free-form message to an underlying error *and* a category

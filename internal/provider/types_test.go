@@ -19,18 +19,18 @@ func TestProviderIdentityValidateRequiresOperatorHostName(t *testing.T) {
 
 func TestProviderIdentityAllowsMultipleAccountsOnSameHost(t *testing.T) {
 	first := validIdentity()
-	first.ProviderID = "codex-primary"
+	first.ProviderType = "codex-primary"
 	first.ProviderInstanceID = "codex-primary-a1-01"
 	first.Account = Account{ID: "acct-primary", Display: "primary@example.test"}
 
 	second := validIdentity()
-	second.ProviderID = "codex-secondary"
+	second.ProviderType = "codex-secondary"
 	second.ProviderInstanceID = "codex-secondary-a1-01"
 	second.Account = Account{ID: "acct-secondary", Display: "secondary@example.test"}
 
 	for _, identity := range []ProviderIdentity{first, second} {
 		if err := identity.Validate(); err != nil {
-			t.Fatalf("expected valid identity for %s: %v", identity.ProviderID, err)
+			t.Fatalf("expected valid identity for %s: %v", identity.ProviderType, err)
 		}
 	}
 }
@@ -109,7 +109,7 @@ func TestAuthStateMarshalOmitsZeroTimes(t *testing.T) {
 
 func validIdentity() ProviderIdentity {
 	return ProviderIdentity{
-		ProviderID:         "codex-primary",
+		ProviderType:       "codex-primary",
 		ProviderInstanceID: "codex-primary-a1-01",
 		NodeID:             "node-a1",
 		HostName:           "a1",

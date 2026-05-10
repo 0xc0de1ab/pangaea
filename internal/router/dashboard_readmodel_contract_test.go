@@ -74,7 +74,7 @@ func TestDashboardProvidersReadModelIncludesProviderIdentity(t *testing.T) {
 	got := dashboardFindObjectByStringField(t, providers, "provider_instance_id", "codex-primary-a1")
 
 	dashboardAssertStringField(t, got, "provider_instance_id", "codex-primary-a1")
-	dashboardAssertStringField(t, got, "provider_id", "codex-cli")
+	dashboardAssertStringField(t, got, "provider_type", "codex-cli")
 	dashboardAssertStringField(t, got, "service", string(provider.ServiceCodex))
 	dashboardAssertStringField(t, got, "provider_kind", string(provider.KindCLIContainer))
 	dashboardAssertStringField(t, got, "host_name", "snowbox")
@@ -125,7 +125,7 @@ func newDashboardContractHandler(t *testing.T) (http.Handler, string) {
 		HostName: "snowbox",
 		Containers: []control.ContainerReport{{
 			ContainerID:        "container-a1",
-			ProviderID:         "codex-cli",
+			ProviderType:       "codex-cli",
 			ProviderInstanceID: "codex-primary-a1",
 			Image:              "pangaea/codex:contract",
 			State:              "running",

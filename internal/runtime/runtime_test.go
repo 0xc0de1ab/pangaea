@@ -136,8 +136,8 @@ func TestDefaultSecurityProfile(t *testing.T) {
 
 func TestContainerSpecValidateAcceptsMinimalSpec(t *testing.T) {
 	spec := ContainerSpec{
-		ProviderID: "codex-primary",
-		Image:      ImageRef("pangaea/provider-codex:2026.05.1"),
+		ProviderType: "codex-primary",
+		Image:        ImageRef("pangaea/provider-codex:2026.05.1"),
 	}
 
 	if err := spec.Validate(); err != nil {
@@ -153,9 +153,9 @@ func TestContainerSpecValidateAcceptsOptionalIdentityFields(t *testing.T) {
 	}
 }
 
-func TestContainerSpecValidateRejectsMissingProviderID(t *testing.T) {
+func TestContainerSpecValidateRejectsMissingProviderType(t *testing.T) {
 	spec := validContainerSpec()
-	spec.ProviderID = " "
+	spec.ProviderType = " "
 
 	if err := spec.Validate(); !errors.Is(err, ErrInvalidContainerSpec) {
 		t.Fatalf("expected ErrInvalidContainerSpec, got %v", err)
@@ -209,7 +209,7 @@ func TestContainerSpecValidateRejectsInvalidResourceLimits(t *testing.T) {
 
 func validContainerSpec() ContainerSpec {
 	return ContainerSpec{
-		ProviderID:         "codex-primary",
+		ProviderType:       "codex-primary",
 		ProviderInstanceID: "codex-primary/a1/01",
 		NodeID:             "node-a1",
 		HostName:           "snowbox",
@@ -217,7 +217,7 @@ func validContainerSpec() ContainerSpec {
 		Image:              ImageRef("pangaea/provider-codex:2026.05.1"),
 		Command:            []string{"/usr/local/bin/provider-entrypoint"},
 		Env: map[string]string{
-			"PANGAEA_PROVIDER_ID": "codex-primary",
+			"PANGAEA_PROVIDER_TYPE": "codex-primary",
 		},
 		AuthCopy: &CopySpec{
 			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",

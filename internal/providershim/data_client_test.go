@@ -271,7 +271,7 @@ func waitForDataSession(t *testing.T, broker *router.DataBroker, providerInstanc
 func testDataClientRegistration(providerInstanceID string) provider.Registration {
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "providersim-openai",
+			ProviderType:       "providersim-openai",
 			ProviderInstanceID: providerInstanceID,
 			NodeID:             "node-a1",
 			HostName:           "snowbox",

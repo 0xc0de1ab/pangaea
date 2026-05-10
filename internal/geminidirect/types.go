@@ -263,28 +263,18 @@ func enrichModelQuota(models []provider.Model, quota retrieveUserQuotaResponse) 
 	if len(models) == 0 || len(quota.Buckets) == 0 {
 		return
 	}
-	byModel := map[string]quotaBucket{}
-	for _, bucket := range quota.Buckets {
-		modelID := strings.TrimSpace(bucket.ModelID)
-		if modelID == "" {
-			continue
-		}
-		byModel[modelID] = bucket
-	}
+	byModel := quotaBucketsByModel(quota)
 	for i := range models {
 		candidates := []string{models[i].ID}
+		candidates = append(candidates, models[i].Aliases...)
 		candidates = append(candidates, models[i].GroupMembers...)
 		var best *provider.ModelQuota
 		for _, id := range candidates {
-			bucket, ok := byModel[id]
+			bucket, ok := byModel[normalizeModelID(id)]
 			if !ok {
 				continue
 			}
-			current := &provider.ModelQuota{
-				RemainingPct: bucket.RemainingFraction * 100,
-				Source:       "gemini-codeassist-quota",
-				ResetAt:      parseResetTime(bucket.ResetTime),
-			}
+			current := quotaToModelQuota(bucket)
 			if best == nil || current.RemainingPct < best.RemainingPct {
 				best = current
 			}
@@ -293,6 +283,37 @@ func enrichModelQuota(models []provider.Model, quota retrieveUserQuotaResponse) 
 			models[i].Quota = best
 		}
 	}
+}
+
+func modelsFromQuota(quota retrieveUserQuotaResponse, capabilities []provider.Capability) []provider.Model {
+	if len(quota.Buckets) == 0 {
+		return nil
+	}
+	caps := geminiModelCapabilities(capabilities)
+	models := make([]provider.Model, 0, len(quota.Buckets)+2)
+	seen := map[string]struct{}{}
+	for _, bucket := range quota.Buckets {
+		rawID := normalizeModelID(bucket.ModelID)
+		if rawID == "" {
+			continue
+		}
+		modelID := canonicalGeminiModelID(rawID)
+		if _, ok := seen[modelID]; ok {
+			continue
+		}
+		seen[modelID] = struct{}{}
+		models = append(models, provider.Model{
+			ID:               modelID,
+			Aliases:          geminiModelAliases(rawID, modelID),
+			Capabilities:     caps,
+			ContextTokens:    geminiContextTokens(modelID),
+			MaxContextTokens: geminiContextTokens(modelID),
+			MaxOutputTokens:  geminiMaxOutputTokens(modelID),
+		})
+	}
+	models = prependGeminiAutoGroups(models, caps)
+	enrichModelQuota(models, quota)
+	return models
 }
 
 func parseResetTime(raw string) time.Time {
@@ -309,7 +330,231 @@ func parseResetTime(raw string) time.Time {
 	return time.Time{}
 }
 
-func defaultModels(capabilities []provider.Capability) []provider.Model {
+func quotaBucketsByModel(quota retrieveUserQuotaResponse) map[string]quotaBucket {
+	byModel := map[string]quotaBucket{}
+	for _, bucket := range quota.Buckets {
+		rawID := normalizeModelID(bucket.ModelID)
+		if rawID == "" {
+			continue
+		}
+		putQuotaBucket(byModel, rawID, bucket)
+		putQuotaBucket(byModel, canonicalGeminiModelID(rawID), bucket)
+	}
+	return byModel
+}
+
+func putQuotaBucket(byModel map[string]quotaBucket, modelID string, bucket quotaBucket) {
+	modelID = normalizeModelID(modelID)
+	if modelID == "" {
+		return
+	}
+	if existing, ok := byModel[modelID]; ok && existing.RemainingFraction <= bucket.RemainingFraction {
+		return
+	}
+	byModel[modelID] = bucket
+}
+
+func quotaToModelQuota(bucket quotaBucket) *provider.ModelQuota {
+	return &provider.ModelQuota{
+		RemainingPct: bucket.RemainingFraction * 100,
+		Source:       "gemini-codeassist-quota",
+		ResetAt:      parseResetTime(bucket.ResetTime),
+	}
+}
+
+func prependGeminiAutoGroups(models []provider.Model, capabilities []provider.Capability) []provider.Model {
+	if len(models) == 0 {
+		return models
+	}
+	available := map[string]struct{}{}
+	for _, model := range models {
+		available[normalizeModelID(model.ID)] = struct{}{}
+	}
+	groups := make([]provider.Model, 0, 2)
+	if members := availableGeminiGroupMembers(available, []string{"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview"}); len(members) > 0 {
+		groups = append(groups, provider.Model{
+			ID:               "auto-gemini-3",
+			Aliases:          []string{"gemini-default", "gemini-auto", "Auto Gemini 3", "Auto (Gemini 3)"},
+			Capabilities:     capabilities,
+			ContextTokens:    geminiContextTokens("auto-gemini-3"),
+			MaxContextTokens: geminiContextTokens("auto-gemini-3"),
+			MaxOutputTokens:  geminiMaxOutputTokens("auto-gemini-3"),
+			Kind:             "group",
+			GroupMembers:     members,
+		})
+	}
+	if members := availableGeminiGroupMembers(available, []string{"gemini-2.5-pro", "gemini-2.5-flash"}); len(members) > 0 {
+		groups = append(groups, provider.Model{
+			ID:               "auto-gemini-2.5",
+			Aliases:          []string{"gemini-auto-2.5", "Auto Gemini 2.5", "Auto (Gemini 2.5)"},
+			Capabilities:     capabilities,
+			ContextTokens:    geminiContextTokens("auto-gemini-2.5"),
+			MaxContextTokens: geminiContextTokens("auto-gemini-2.5"),
+			MaxOutputTokens:  geminiMaxOutputTokens("auto-gemini-2.5"),
+			Kind:             "group",
+			GroupMembers:     members,
+		})
+	}
+	if len(groups) == 0 {
+		return models
+	}
+	return append(groups, models...)
+}
+
+func availableGeminiGroupMembers(available map[string]struct{}, candidates []string) []string {
+	members := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = normalizeModelID(candidate)
+		if _, ok := available[candidate]; ok {
+			members = append(members, candidate)
+		}
+	}
+	return members
+}
+
+func mergeGeminiModels(configured []provider.Model, discovered []provider.Model) []provider.Model {
+	if len(configured) == 0 {
+		return cloneModels(discovered)
+	}
+	out := cloneModels(configured)
+	index := make(map[string]int, len(out))
+	for i, model := range out {
+		index[normalizeModelID(model.ID)] = i
+	}
+	for _, model := range discovered {
+		model.ID = normalizeModelID(model.ID)
+		if model.ID == "" {
+			continue
+		}
+		if i, ok := index[model.ID]; ok {
+			out[i] = mergeGeminiModel(out[i], model)
+			continue
+		}
+		index[model.ID] = len(out)
+		out = append(out, cloneModels([]provider.Model{model})[0])
+	}
+	return out
+}
+
+func mergeGeminiModel(configured provider.Model, discovered provider.Model) provider.Model {
+	configured.ID = normalizeModelID(configured.ID)
+	configured.Aliases = mergeGeminiStrings(configured.Aliases, discovered.Aliases)
+	configured.Capabilities = dedupeCapabilities(append(configured.Capabilities, discovered.Capabilities...))
+	if configured.ContextTokens == 0 {
+		configured.ContextTokens = discovered.ContextTokens
+	}
+	if configured.MaxContextTokens == 0 {
+		configured.MaxContextTokens = discovered.MaxContextTokens
+	}
+	if configured.MaxOutputTokens == 0 {
+		configured.MaxOutputTokens = discovered.MaxOutputTokens
+	}
+	if configured.Kind == "" {
+		configured.Kind = discovered.Kind
+	}
+	configured.GroupMembers = mergeGeminiStrings(configured.GroupMembers, discovered.GroupMembers)
+	if discovered.Quota != nil {
+		quota := *discovered.Quota
+		configured.Quota = &quota
+	}
+	return configured
+}
+
+func mergeGeminiStrings(a []string, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, value := range append(a, b...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func canonicalGeminiModelID(modelID string) string {
+	modelID = normalizeModelID(modelID)
+	switch modelID {
+	case "gemini-3.1-pro":
+		return "gemini-3.1-pro-preview"
+	case "gemini-3-pro":
+		return "gemini-3-pro-preview"
+	case "gemini-3-flash":
+		return "gemini-3-flash-preview"
+	case "gemini-3.1-flash-lite":
+		return "gemini-3.1-flash-lite-preview"
+	default:
+		return modelID
+	}
+}
+
+func normalizeModelID(modelID string) string {
+	return strings.ToLower(strings.TrimSpace(modelID))
+}
+
+func geminiModelAliases(rawID string, modelID string) []string {
+	rawID = normalizeModelID(rawID)
+	modelID = normalizeModelID(modelID)
+	var aliases []string
+	if rawID != "" && rawID != modelID {
+		aliases = append(aliases, rawID)
+	}
+	if display := humanizeGeminiModelID(modelID); display != "" && display != modelID {
+		aliases = append(aliases, display)
+	}
+	if rawDisplay := humanizeGeminiModelID(rawID); rawDisplay != "" && rawDisplay != humanizeGeminiModelID(modelID) {
+		aliases = append(aliases, rawDisplay)
+	}
+	switch modelID {
+	case "gemini-2.5-flash":
+		aliases = append(aliases, "flash")
+	case "gemini-2.5-flash-lite":
+		aliases = append(aliases, "flash-lite")
+	}
+	return mergeGeminiStrings(nil, aliases)
+}
+
+func humanizeGeminiModelID(modelID string) string {
+	modelID = normalizeModelID(modelID)
+	if modelID == "" {
+		return ""
+	}
+	parts := strings.Split(modelID, "-")
+	words := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part {
+		case "gemini":
+			words = append(words, "Gemini")
+		case "gemma":
+			words = append(words, "Gemma")
+		case "pro":
+			words = append(words, "Pro")
+		case "flash":
+			words = append(words, "Flash")
+		case "lite":
+			words = append(words, "Lite")
+		case "preview":
+			words = append(words, "Preview")
+		case "it":
+			words = append(words, "IT")
+		default:
+			if strings.HasSuffix(part, "b") {
+				words = append(words, strings.TrimSuffix(part, "b")+"B")
+			} else {
+				words = append(words, part)
+			}
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+func geminiModelCapabilities(capabilities []provider.Capability) []provider.Capability {
 	caps := dedupeCapabilities(capabilities)
 	if len(caps) == 0 {
 		caps = []provider.Capability{
@@ -319,16 +564,23 @@ func defaultModels(capabilities []provider.Capability) []provider.Model {
 			provider.CapabilityStreamSSE,
 		}
 	}
-	return []provider.Model{
-		{ID: "auto-gemini-3", Aliases: []string{"Auto (Gemini 3)"}, Kind: "group", GroupMembers: []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "auto-gemini-2.5", Aliases: []string{"Auto (Gemini 2.5)"}, Kind: "group", GroupMembers: []string{"gemini-2.5-pro", "gemini-2.5-flash"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-3.1-pro-preview", Aliases: []string{"Gemini 3.1 Pro Preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-3-flash-preview", Aliases: []string{"Gemini 3 Flash Preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-3.1-flash-lite-preview", Aliases: []string{"Gemini 3.1 Flash Lite Preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-2.5-pro", Aliases: []string{"Gemini 2.5 Pro"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-2.5-flash", Aliases: []string{"Gemini 2.5 Flash"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-2.5-flash-lite", Aliases: []string{"Gemini 2.5 Flash Lite"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
+	return caps
+}
+
+func geminiContextTokens(modelID string) int {
+	modelID = normalizeModelID(modelID)
+	if strings.Contains(modelID, "gemini-") {
+		return 1_048_576
 	}
+	return 0
+}
+
+func geminiMaxOutputTokens(modelID string) int {
+	modelID = normalizeModelID(modelID)
+	if strings.Contains(modelID, "gemini-") {
+		return 65_536
+	}
+	return 0
 }
 
 func dedupeCapabilities(in []provider.Capability) []provider.Capability {

@@ -284,7 +284,7 @@ Every request/event carries:
 - `node_id`
 - `host_name`
 - `container_id`
-- `provider_id`
+- `provider_type`
 - `provider_instance_id`
 - `account_id`
 - `stream_id`

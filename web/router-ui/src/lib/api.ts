@@ -180,17 +180,32 @@ async function requestStream(endpoint: string, options: RequestOptions, onPayloa
 function consumeSSEBuffer(buffer: string, endpoint: string, onPayload: (payload: unknown) => void, flush = false) {
   let cursor = 0;
   for (;;) {
-    const match = /\r?\n\r?\n/g.exec(buffer.slice(cursor));
-    if (!match) break;
-    const frameEnd = cursor + match.index;
+    const boundary = findSSEFrameBoundary(buffer, cursor);
+    if (!boundary) break;
+    const frameEnd = boundary.index;
     emitSSEFrame(buffer.slice(cursor, frameEnd), endpoint, onPayload);
-    cursor = frameEnd + match[0].length;
+    cursor = boundary.nextIndex;
   }
   if (flush && cursor < buffer.length) {
     emitSSEFrame(buffer.slice(cursor), endpoint, onPayload);
     return "";
   }
   return buffer.slice(cursor);
+}
+
+function findSSEFrameBoundary(buffer: string, start: number) {
+  for (let index = start; index < buffer.length - 1; index += 1) {
+    if (buffer[index] !== "\n") {
+      continue;
+    }
+    if (buffer[index + 1] === "\n") {
+      return { index, nextIndex: index + 2 };
+    }
+    if (buffer[index + 1] === "\r" && buffer[index + 2] === "\n") {
+      return { index, nextIndex: index + 3 };
+    }
+  }
+  return null;
 }
 
 function emitSSEFrame(frame: string, endpoint: string, onPayload: (payload: unknown) => void) {
@@ -241,13 +256,14 @@ function streamPayloadError(payload: unknown) {
   return String(error);
 }
 
-async function bufferedChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token?: string, reasoningEffort?: string): Promise<DashboardChatResult> {
+async function bufferedChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token?: string, reasoningEffort?: string, upstreamMaxOutputTokens?: number): Promise<DashboardChatResult> {
+	const maxTokens = maxTokensForChat(protocol, model, upstreamMaxOutputTokens);
   switch (protocol) {
     case "openai": {
       const response = await request<{ choices?: Array<{ message?: { content?: string } }> }>("/v1/chat/completions", {
         token,
         method: "POST",
-        body: compactBody({ model, messages: openAIMessages(messages), max_tokens: 2048, stream: false, reasoning_effort: reasoningEffort }),
+        body: compactBody({ model, messages: openAIMessages(messages), max_tokens: maxTokens, stream: false, reasoning_effort: reasoningEffort }),
       });
       return { content: response.choices?.[0]?.message?.content ?? "", raw: response };
     }
@@ -256,7 +272,7 @@ async function bufferedChat(protocol: DashboardChatProtocol, model: string, mess
         token,
         method: "POST",
         headers: { "anthropic-version": "2023-06-01" },
-        body: compactBody({ model, max_tokens: 2048, messages: anthropicMessages(messages), stream: false, reasoning_effort: reasoningEffort }),
+        body: compactBody({ model, max_tokens: maxTokens, messages: anthropicMessages(messages), stream: false, reasoning_effort: reasoningEffort }),
       });
       return { content: extractAnthropicText(response), raw: response };
     }
@@ -272,8 +288,9 @@ async function bufferedChat(protocol: DashboardChatProtocol, model: string, mess
   }
 }
 
-async function streamingChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token: string | undefined, onDelta: (delta: string) => void, reasoningEffort?: string): Promise<DashboardChatResult> {
-  let content = "";
+async function streamingChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token: string | undefined, onDelta: (delta: string) => void, reasoningEffort?: string, upstreamMaxOutputTokens?: number): Promise<DashboardChatResult> {
+	let content = "";
+	const maxTokens = maxTokensForChat(protocol, model, upstreamMaxOutputTokens);
   const append = (delta: string) => {
     if (!delta) return;
     content += delta;
@@ -284,7 +301,7 @@ async function streamingChat(protocol: DashboardChatProtocol, model: string, mes
       await requestStream("/v1/chat/completions", {
         token,
         method: "POST",
-        body: compactBody({ model, messages: openAIMessages(messages), max_tokens: 2048, stream: true, reasoning_effort: reasoningEffort }),
+        body: compactBody({ model, messages: openAIMessages(messages), max_tokens: maxTokens, stream: true, reasoning_effort: reasoningEffort }),
       }, (payload) => append(extractOpenAIStreamDelta(payload)));
       return { content };
     case "anthropic":
@@ -292,7 +309,7 @@ async function streamingChat(protocol: DashboardChatProtocol, model: string, mes
         token,
         method: "POST",
         headers: { "anthropic-version": "2023-06-01" },
-        body: compactBody({ model, max_tokens: 2048, messages: anthropicMessages(messages), stream: true, reasoning_effort: reasoningEffort }),
+        body: compactBody({ model, max_tokens: maxTokens, messages: anthropicMessages(messages), stream: true, reasoning_effort: reasoningEffort }),
       }, (payload) => append(extractAnthropicStreamDelta(payload)));
       return { content };
     case "gemini":
@@ -303,6 +320,17 @@ async function streamingChat(protocol: DashboardChatProtocol, model: string, mes
       }, (payload) => append(extractGeminiText(payload)));
       return { content };
   }
+}
+
+function maxTokensForChat(protocol: DashboardChatProtocol, model: string, upstreamMaxOutputTokens?: number): number | undefined {
+	if (protocol === "anthropic") {
+		return upstreamMaxOutputTokens && upstreamMaxOutputTokens > 0 ? upstreamMaxOutputTokens : defaultAnthropicMaxTokens(model);
+	}
+	return undefined;
+}
+
+function defaultAnthropicMaxTokens(_model: string) {
+	return 1024;
 }
 
 async function requestGeminiStreamWithFallback(model: string, options: RequestOptions, onPayload: (payload: unknown) => void) {
@@ -467,7 +495,7 @@ export const api = {
       headers: { "anthropic-version": "2023-06-01", "x-api-dialect": "anthropic" },
     }),
   geminiModels: (token?: string) =>
-    request<{ models?: Array<{ name: string; displayName?: string; version?: string; supportedGenerationMethods?: string[] }> }>("/v1beta/models", { token }),
+    request<{ models?: Array<{ name: string; displayName?: string; version?: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number; outputTokenLimit?: number }> }>("/v1beta/models", { token }),
   openAIChat: (model: string, token?: string) =>
     request<unknown>("/v1/chat/completions", {
       token,

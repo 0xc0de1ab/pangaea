@@ -5,7 +5,7 @@ This environment runs the Pangaea router in a local kind cluster.
 ## Codex Runtime
 
 The Codex script deploys one Codex AppServer provider into kind as a Kubernetes
-Deployment named `pangaea-codex-runtime`. The default provider id and instance id
+Deployment named `pangaea-codex-runtime`. The default provider type and instance id
 are both `codex-cli`; set
 `PANGAEA_PROVIDER_INSTANCE_ID` only when running multiple Codex accounts on the
 same host.

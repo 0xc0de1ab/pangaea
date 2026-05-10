@@ -140,7 +140,7 @@ func TestProviderRegisterRoundTrip(t *testing.T) {
 	ts := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
 	registration := ProviderRegisterPayload{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "codex-primary",
+			ProviderType:       "codex-primary",
 			ProviderInstanceID: "codex-primary/a1/01",
 			NodeID:             "a1",
 			HostName:           "snowbox",

@@ -23,9 +23,9 @@ const (
 	EvtReconnectScheduled = "reconnect.scheduled"
 
 	// Generic.
-	EvtApplyFailed = "apply.failed"
-	EvtConfigLoad  = "config.loaded"
+	EvtApplyFailed  = "apply.failed"
+	EvtConfigLoad   = "config.loaded"
 	EvtConfigReload = "config.reloaded"
-	EvtShutdown    = "shutdown"
-	EvtStartup     = "startup"
+	EvtShutdown     = "shutdown"
+	EvtStartup      = "startup"
 )

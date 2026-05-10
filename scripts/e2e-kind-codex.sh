@@ -11,7 +11,7 @@ router_port="${PANGAEA_ROUTER_PORT:-18080}"
 router_api_key="${PANGAEA_ROUTER_API_KEY:-1}"
 router_peer_token="${PANGAEA_ROUTER_PEER_TOKEN:-kind-peer-token}"
 stream_token_key="${PANGAEA_STREAM_TOKEN_KEY:-kind-stream-token-key}"
-provider_id="${PANGAEA_PROVIDER_ID:-codex-cli}"
+provider_type="${PANGAEA_PROVIDER_TYPE:-codex-cli}"
 provider_instance_id="${PANGAEA_PROVIDER_INSTANCE_ID:-codex-cli}"
 codex_model="${PANGAEA_CODEX_MODEL:-gpt-5.5}"
 node_id="${PANGAEA_NODE_ID:-kind-codex}"
@@ -196,7 +196,7 @@ fi
 cp "${repo_root}/deploy/kind/codex-runtime.yaml" "${work_dir}/codex-runtime.rendered.yaml"
 perl -0pi -e "s/namespace: pangaea-e2e/namespace: ${namespace}/g; s/pangaea-router\\.pangaea-e2e\\.svc\\.cluster\\.local/pangaea-router.${namespace}.svc.cluster.local/g" "${work_dir}/codex-runtime.rendered.yaml"
 perl -0pi -e "s#image: pangaea/provider-codex:kind#image: ${codex_image}#g" "${work_dir}/codex-runtime.rendered.yaml"
-perl -0pi -e "s/value: codex-provider-id/value: ${provider_id}/g; s/value: codex-provider-instance-id/value: ${provider_instance_id}/g; s/value: codex-node-id/value: ${node_id}/g; s/value: codex-host-name/value: ${host_name}/g; s/value: codex-model-id/value: ${codex_model}/g" "${work_dir}/codex-runtime.rendered.yaml"
+perl -0pi -e "s/value: codex-provider-type/value: ${provider_type}/g; s/value: codex-provider-instance-id/value: ${provider_instance_id}/g; s/value: codex-node-id/value: ${node_id}/g; s/value: codex-host-name/value: ${host_name}/g; s/value: codex-model-id/value: ${codex_model}/g" "${work_dir}/codex-runtime.rendered.yaml"
 if [ -n "${account_hint}" ]; then
   ACCOUNT_HINT="${account_hint}" perl -0pi -e 'my $v = $ENV{ACCOUNT_HINT}; $v =~ s/\\/\\\\/g; $v =~ s/"/\\"/g; s/value: ""/value: "$v"/' "${work_dir}/codex-runtime.rendered.yaml"
 fi

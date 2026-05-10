@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultDataRequestTimeout    = 2 * time.Minute
+	defaultDataRequestTimeout    = 10 * time.Minute
 	defaultCapabilityTokenMaxTTL = 30 * time.Second
 )
 
@@ -30,15 +30,22 @@ var (
 )
 
 type DataBroker struct {
-	mu       sync.RWMutex
-	signer   *tunnel.TokenSigner
-	sessions map[string]*dataSession
-	nextID   atomic.Uint64
+	mu                    sync.RWMutex
+	signer                *tunnel.TokenSigner
+	sessions              map[string]*dataSession
+	requestTimeout        time.Duration
+	capabilityTokenMaxTTL time.Duration
+	nextID                atomic.Uint64
+}
+
+type DataBrokerOptions struct {
+	RequestTimeout        time.Duration
+	CapabilityTokenMaxTTL time.Duration
 }
 
 type DataSessionSnapshot struct {
 	ProviderInstanceID string           `json:"provider_instance_id"`
-	ProviderID         string           `json:"provider_id,omitempty"`
+	ProviderType       string           `json:"provider_type,omitempty"`
 	NodeID             string           `json:"node_id,omitempty"`
 	HostName           string           `json:"host_name,omitempty"`
 	Service            provider.Service `json:"service,omitempty"`
@@ -48,13 +55,27 @@ type DataSessionSnapshot struct {
 }
 
 func NewDataBroker(tokenKey []byte) (*DataBroker, error) {
+	return NewDataBrokerWithOptions(tokenKey, DataBrokerOptions{})
+}
+
+func NewDataBrokerWithOptions(tokenKey []byte, opts DataBrokerOptions) (*DataBroker, error) {
 	signer, err := tunnel.NewTokenSigner(tokenKey)
 	if err != nil {
 		return nil, err
 	}
+	requestTimeout := opts.RequestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = defaultDataRequestTimeout
+	}
+	capabilityTokenMaxTTL := opts.CapabilityTokenMaxTTL
+	if capabilityTokenMaxTTL <= 0 {
+		capabilityTokenMaxTTL = defaultCapabilityTokenMaxTTL
+	}
 	return &DataBroker{
-		signer:   signer,
-		sessions: make(map[string]*dataSession),
+		signer:                signer,
+		sessions:              make(map[string]*dataSession),
+		requestTimeout:        requestTimeout,
+		capabilityTokenMaxTTL: capabilityTokenMaxTTL,
 	}, nil
 }
 
@@ -139,11 +160,19 @@ func (b *DataBroker) newDataRequest(ctx context.Context, registration provider.R
 	}
 	request.Stream = acceptEvents
 	now := time.Now().UTC()
-	deadline := now.Add(defaultDataRequestTimeout)
+	requestTimeout := b.requestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = defaultDataRequestTimeout
+	}
+	deadline := now.Add(requestTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
-	tokenDeadline := now.Add(defaultCapabilityTokenMaxTTL)
+	capabilityTokenMaxTTL := b.capabilityTokenMaxTTL
+	if capabilityTokenMaxTTL <= 0 {
+		capabilityTokenMaxTTL = defaultCapabilityTokenMaxTTL
+	}
+	tokenDeadline := now.Add(capabilityTokenMaxTTL)
 	if deadline.Before(tokenDeadline) {
 		tokenDeadline = deadline
 	}
@@ -248,7 +277,7 @@ func (e *Engine) EnrichDataSessions(sessions []DataSessionSnapshot) []DataSessio
 			continue
 		}
 		identity := registration.Identity
-		out[i].ProviderID = identity.ProviderID
+		out[i].ProviderType = identity.ProviderType
 		out[i].NodeID = identity.NodeID
 		out[i].HostName = identity.HostName
 		out[i].Service = identity.Service
@@ -362,7 +391,7 @@ func (s *dataSession) invokeStream(ctx context.Context, request tunnel.DataReque
 			switch response.Type {
 			case tunnel.DataFrameEvent:
 				if err := response.Event.Validate(); err != nil {
-					return compat.Response{}, err
+					return compat.Response{}, fmt.Errorf("%w: validate data stream event %s: %v", ErrDataRequestFailed, response.Event.Type, err)
 				}
 				if err := emit(response.Event); err != nil {
 					s.sendCancel(request)
@@ -370,7 +399,7 @@ func (s *dataSession) invokeStream(ctx context.Context, request tunnel.DataReque
 				}
 			case "", tunnel.DataFrameResponse:
 				if err := response.Response.Validate(); err != nil {
-					return compat.Response{}, err
+					return compat.Response{}, fmt.Errorf("%w: validate data stream response: %v", ErrDataRequestFailed, err)
 				}
 				return response.Response, nil
 			default:

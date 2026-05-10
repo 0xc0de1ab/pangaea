@@ -11,7 +11,7 @@ router_port="${PANGAEA_ROUTER_PORT:-18080}"
 router_api_key="${PANGAEA_ROUTER_API_KEY:-1}"
 router_peer_token="${PANGAEA_ROUTER_PEER_TOKEN:-kind-peer-token}"
 stream_token_key="${PANGAEA_STREAM_TOKEN_KEY:-kind-stream-token-key}"
-provider_id="${PANGAEA_PROVIDER_ID:-gemini-cli}"
+provider_type="${PANGAEA_PROVIDER_TYPE:-gemini-cli}"
 provider_instance_id="${PANGAEA_PROVIDER_INSTANCE_ID:-gemini-cli}"
 node_id="${PANGAEA_NODE_ID:-kind-gemini}"
 host_name="${PANGAEA_HOST_NAME:-$(hostname -s 2>/dev/null || hostname)}"
@@ -258,8 +258,8 @@ fi
 cp "${repo_root}/deploy/kind/gemini-runtime.yaml" "${work_dir}/gemini-runtime.rendered.yaml"
 perl -0pi -e "s/namespace: pangaea-e2e/namespace: ${namespace}/g; s/pangaea-router\\.pangaea-e2e\\.svc\\.cluster\\.local/pangaea-router.${namespace}.svc.cluster.local/g" "${work_dir}/gemini-runtime.rendered.yaml"
 perl -0pi -e "s#image: pangaea/provider-gemini:kind#image: ${gemini_image}#g" "${work_dir}/gemini-runtime.rendered.yaml"
-PROVIDER_ID="${provider_id}" PROVIDER_INSTANCE_ID="${provider_instance_id}" NODE_ID="${node_id}" HOST_NAME="${host_name}" perl -0pi -e '
-  s/(- name: PANGAEA_PROVIDER_ID\n\s+value: )[^\n]+/${1}$ENV{PROVIDER_ID}/g;
+PROVIDER_TYPE="${provider_type}" PROVIDER_INSTANCE_ID="${provider_instance_id}" NODE_ID="${node_id}" HOST_NAME="${host_name}" perl -0pi -e '
+  s/(- name: PANGAEA_PROVIDER_TYPE\n\s+value: )[^\n]+/${1}$ENV{PROVIDER_TYPE}/g;
   s/(- name: PANGAEA_PROVIDER_INSTANCE_ID\n\s+value: )[^\n]+/${1}$ENV{PROVIDER_INSTANCE_ID}/g;
   s/(- name: PANGAEA_NODE_ID\n\s+value: )[^\n]+/${1}$ENV{NODE_ID}/g;
   s/(- name: PANGAEA_HOST_NAME\n\s+value: )[^\n]+/${1}$ENV{HOST_NAME}/g;

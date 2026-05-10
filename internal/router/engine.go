@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,9 +73,12 @@ type ProviderLoad interface {
 }
 
 type ModelInfo struct {
-	ID             string                `json:"id"`
-	CanonicalModel string                `json:"canonical_model,omitempty"`
-	Capabilities   []provider.Capability `json:"capabilities,omitempty"`
+	ID               string                `json:"id"`
+	CanonicalModel   string                `json:"canonical_model,omitempty"`
+	Capabilities     []provider.Capability `json:"capabilities,omitempty"`
+	ContextTokens    int                   `json:"context_tokens,omitempty"`
+	MaxContextTokens int                   `json:"max_context_tokens,omitempty"`
+	MaxOutputTokens  int                   `json:"max_output_tokens,omitempty"`
 }
 
 func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.Ledger) (*Engine, error) {
@@ -128,14 +132,46 @@ func (e *Engine) Models() []ModelInfo {
 	}
 	models := make([]ModelInfo, 0, len(e.policy.ModelAliases))
 	for id, alias := range e.policy.ModelAliases {
+		contextTokens, maxContextTokens, maxOutputTokens := e.modelTokenMetadata(id, alias)
 		models = append(models, ModelInfo{
-			ID:             id,
-			CanonicalModel: alias.CanonicalModel,
-			Capabilities:   append([]provider.Capability(nil), alias.RequiredCapabilities...),
+			ID:               id,
+			CanonicalModel:   alias.CanonicalModel,
+			Capabilities:     append([]provider.Capability(nil), alias.RequiredCapabilities...),
+			ContextTokens:    contextTokens,
+			MaxContextTokens: maxContextTokens,
+			MaxOutputTokens:  maxOutputTokens,
 		})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models
+}
+
+func (e *Engine) modelTokenMetadata(id string, alias ModelAlias) (int, int, int) {
+	if e == nil || e.registry == nil {
+		return 0, 0, 0
+	}
+	names := map[string]struct{}{strings.ToLower(strings.TrimSpace(id)): {}}
+	for _, value := range append([]string{alias.CanonicalModel}, alias.CanonicalModels...) {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			names[value] = struct{}{}
+		}
+	}
+	for _, registration := range e.registry.List() {
+		for _, model := range registration.Models {
+			if _, ok := names[strings.ToLower(strings.TrimSpace(model.ID))]; !ok {
+				for _, modelAlias := range model.Aliases {
+					if _, ok = names[strings.ToLower(strings.TrimSpace(modelAlias))]; ok {
+						break
+					}
+				}
+				if !ok {
+					continue
+				}
+			}
+			return model.ContextTokens, model.MaxContextTokens, model.MaxOutputTokens
+		}
+	}
+	return 0, 0, 0
 }
 
 func (e *Engine) Providers() []provider.Registration {
@@ -229,7 +265,7 @@ func (e *Engine) UpdateProviderAuth(providerInstanceID string, auth provider.Aut
 
 type ProviderUsageSnapshot struct {
 	ProviderInstanceID string               `json:"provider_instance_id"`
-	ProviderID         string               `json:"provider_id"`
+	ProviderType       string               `json:"provider_type"`
 	NodeID             string               `json:"node_id"`
 	HostName           string               `json:"host_name"`
 	ContainerID        string               `json:"container_id,omitempty"`
@@ -265,7 +301,7 @@ func (e *Engine) UpdateProviderUsage(providerInstanceID string, usage provider.U
 	identity.Account = accountWithFallback(identity.Account, registration.Auth.Account)
 	snapshot := ProviderUsageSnapshot{
 		ProviderInstanceID: identity.ProviderInstanceID,
-		ProviderID:         identity.ProviderID,
+		ProviderType:       identity.ProviderType,
 		NodeID:             identity.NodeID,
 		HostName:           identity.HostName,
 		ContainerID:        identity.ContainerID,
@@ -305,8 +341,8 @@ func (e *Engine) ProviderUsages() []ProviderUsageSnapshot {
 			return a.HostName < b.HostName
 		case a.Service != b.Service:
 			return a.Service < b.Service
-		case a.ProviderID != b.ProviderID:
-			return a.ProviderID < b.ProviderID
+		case a.ProviderType != b.ProviderType:
+			return a.ProviderType < b.ProviderType
 		case a.Account.Display != b.Account.Display:
 			return a.Account.Display < b.Account.Display
 		default:
@@ -426,7 +462,7 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 		e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
 		invokeRejections = append(invokeRejections, RouteRejection{
 			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
-			ProviderID:         candidate.Identity.ProviderID,
+			ProviderType:       candidate.Identity.ProviderType,
 			Reason:             "invoke failed: " + invokeErr.Error(),
 		})
 		if ctx.Err() != nil {
@@ -535,7 +571,7 @@ func (e *Engine) InvokeStream(ctx context.Context, execution RouteExecutionReque
 		e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
 		invokeRejections = append(invokeRejections, RouteRejection{
 			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
-			ProviderID:         candidate.Identity.ProviderID,
+			ProviderType:       candidate.Identity.ProviderType,
 			Reason:             "invoke failed: " + invokeErr.Error(),
 		})
 		if ctx.Err() != nil || emitted {

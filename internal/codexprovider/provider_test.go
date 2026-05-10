@@ -427,7 +427,7 @@ func testRegistration() provider.Registration {
 	now := time.Now().UTC()
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "codex",
+			ProviderType:       "codex",
 			ProviderInstanceID: "codex-a1",
 			NodeID:             "node-a1",
 			HostName:           "host-a1",

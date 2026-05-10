@@ -64,7 +64,7 @@ runtime:
   kind: docker
   rootless: true
 providers:
-  - id: codex-primary
+  - provider_type: codex-primary
     kind: app-server
     service: codex
     account_hint: primary@example.test
@@ -81,7 +81,7 @@ providers:
 Identity key is not `service`. It is:
 
 ```text
-provider_id + provider_instance_id + account_id
+provider_type + provider_instance_id + account_id
 ```
 
 ## Provider Interfaces

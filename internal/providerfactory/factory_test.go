@@ -107,7 +107,7 @@ func TestGeminiDirectHTTPCLIContainerDoesNotRequireUpstreamBaseURL(t *testing.T)
 	}
 	apiProvider, handled, err := definition.BuildCLIContainerAdapter(nil, BuildContext{
 		Config: Config{
-			ProviderID:         "gemini-cli",
+			ProviderType:       "gemini-cli",
 			ProviderInstanceID: "gemini-cli",
 			NodeID:             "node-1",
 			HostName:           "host-1",
@@ -144,7 +144,7 @@ func TestCodexDirectHTTPCLIContainerDoesNotRequireUpstreamBaseURL(t *testing.T) 
 	}
 	apiProvider, handled, err := definition.BuildCLIContainerAdapter(nil, BuildContext{
 		Config: Config{
-			ProviderID:         "codex-cli",
+			ProviderType:       "codex-cli",
 			ProviderInstanceID: "codex-cli",
 			NodeID:             "node-1",
 			HostName:           "host-1",
@@ -188,7 +188,7 @@ func prependFakeCodexVersion(t *testing.T, version string) {
 func TestBuildCLIContainerProviderWithoutAuthPathReportsNoLogin(t *testing.T) {
 	t.Setenv("PANGAEA_GEMINI_SETTINGS_PATH", filepath.Join(t.TempDir(), "missing-settings.json"))
 	result, err := BuildCLIContainerProvider(context.Background(), Config{
-		ProviderID:         "gemini-cli",
+		ProviderType:       "gemini-cli",
 		ProviderInstanceID: "gemini-cli",
 		NodeID:             "node-1",
 		HostName:           "host-1",

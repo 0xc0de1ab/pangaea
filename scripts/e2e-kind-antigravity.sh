@@ -13,7 +13,7 @@ router_api_key="${PANGAEA_ROUTER_API_KEY:-1}"
 router_peer_token="${PANGAEA_ROUTER_PEER_TOKEN:-kind-peer-token}"
 stream_token_key="${PANGAEA_STREAM_TOKEN_KEY:-kind-stream-token-key}"
 provider_instance_id="${PANGAEA_PROVIDER_INSTANCE_ID:-antigravity-sidecar}"
-provider_id="${PANGAEA_PROVIDER_ID:-antigravity-sidecar}"
+provider_type="${PANGAEA_PROVIDER_TYPE:-antigravity-sidecar}"
 node_id="${PANGAEA_NODE_ID:-kind-antigravity}"
 host_name="${PANGAEA_HOST_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 account_hint="${PANGAEA_ACCOUNT_HINT:-antigravity-runtime-local}"
@@ -331,8 +331,8 @@ fi
 cp "${repo_root}/deploy/kind/antigravity-runtime.yaml" "${work_dir}/antigravity-runtime.rendered.yaml"
 perl -0pi -e "s/namespace: pangaea-e2e/namespace: ${namespace}/g; s/pangaea-router\\.pangaea-e2e\\.svc\\.cluster\\.local/pangaea-router.${namespace}.svc.cluster.local/g" "${work_dir}/antigravity-runtime.rendered.yaml"
 perl -0pi -e "s#image: pangaea/antigravity-runtime:kind#image: ${runtime_image}#g; s#image: pangaea/provider-antigravity-sidecar:kind#image: ${shim_image}#g" "${work_dir}/antigravity-runtime.rendered.yaml"
-PROVIDER_ID="${provider_id}" PROVIDER_INSTANCE_ID="${provider_instance_id}" NODE_ID="${node_id}" HOST_NAME="${host_name}" perl -0pi -e '
-  s/(- name: PANGAEA_PROVIDER_ID\n\s+value: )[^\n]+/${1}$ENV{PROVIDER_ID}/g;
+PROVIDER_TYPE="${provider_type}" PROVIDER_INSTANCE_ID="${provider_instance_id}" NODE_ID="${node_id}" HOST_NAME="${host_name}" perl -0pi -e '
+  s/(- name: PANGAEA_PROVIDER_TYPE\n\s+value: )[^\n]+/${1}$ENV{PROVIDER_TYPE}/g;
   s/(- name: PANGAEA_PROVIDER_INSTANCE_ID\n\s+value: )[^\n]+/${1}$ENV{PROVIDER_INSTANCE_ID}/g;
   s/(- name: PANGAEA_NODE_ID\n\s+value: )[^\n]+/${1}$ENV{NODE_ID}/g;
   s/(- name: PANGAEA_HOST_NAME\n\s+value: )[^\n]+/${1}$ENV{HOST_NAME}/g;

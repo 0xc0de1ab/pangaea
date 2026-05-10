@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import { accountLabel, pct } from "./format";
 
-export function providerID(provider: ProviderRegistration) {
+export function providerInstanceID(provider: ProviderRegistration) {
   return provider.identity.provider_instance_id;
 }
 
@@ -55,7 +55,7 @@ export function deriveIncidents(data: DashboardData): Incident[] {
 
   for (const provider of data.providers) {
     const identity = provider.identity;
-    const id = providerID(provider);
+    const id = providerInstanceID(provider);
     const scope = serviceHostAccount(provider) || id;
     const health = provider.health?.status || "unknown";
     const auth = provider.auth?.status || "unknown";
@@ -215,5 +215,5 @@ export function auditTarget(event: AuditEvent) {
 }
 
 export function containerProvider(container: ContainerSnapshot) {
-  return container.provider_instance_id || container.provider_id || "";
+  return container.provider_instance_id || container.provider_type || "";
 }

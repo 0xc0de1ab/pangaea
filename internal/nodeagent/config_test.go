@@ -21,7 +21,7 @@ runtime:
   kind: docker
   version: 26.1.0
 providers:
-  - id: codex-primary
+  - provider_type: codex-primary
     kind: app-server
     image: pangaea/provider-codex:2026.05.1
     account_hint: primary@example.test
@@ -53,7 +53,7 @@ providers:
       working_dir: /var/lib/pangaea/provider
       protocols: [openai]
       capabilities: [api.openai.chat, models.read, auth.refresh.oneshot]
-  - id: codex-secondary
+  - provider_type: codex-secondary
     kind: cli-container
     account_hint: secondary@example.test
     service: codex
@@ -102,11 +102,12 @@ providers:
 	}
 }
 
-func TestParseConfigYAMLRejectsDuplicateProviderID(t *testing.T) {
+func TestParseConfigYAMLAllowsDuplicateProviderTypeWithDifferentInstances(t *testing.T) {
 	_, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: codex-primary
+  - provider_type: codex-cli
+    instance_id: codex-primary-a1
     kind: cli-container
     service: codex
     auth:
@@ -115,7 +116,8 @@ providers:
       container_path: /b
     shim:
       capabilities: [api.openai.chat]
-  - id: codex-primary
+  - provider_type: codex-cli
+    instance_id: codex-secondary-a1
     kind: cli-container
     service: codex
     auth:
@@ -125,8 +127,8 @@ providers:
     shim:
       capabilities: [api.openai.chat]
 `))
-	if err == nil {
-		t.Fatalf("expected duplicate provider id error")
+	if err != nil {
+		t.Fatalf("duplicate provider type with distinct instances should be valid: %v", err)
 	}
 }
 
@@ -134,7 +136,7 @@ func TestParseConfigYAMLRejectsDuplicateProviderInstanceID(t *testing.T) {
 	_, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: codex-primary
+  - provider_type: codex-primary
     instance_id: codex-shared-a1
     kind: cli-container
     service: codex
@@ -144,7 +146,7 @@ providers:
       container_path: /b
     shim:
       capabilities: [api.openai.chat]
-  - id: codex-secondary
+  - provider_type: codex-secondary
     instance_id: codex-shared-a1
     kind: cli-container
     service: codex
@@ -164,7 +166,7 @@ func TestParseConfigYAMLAcceptsAPIKeyAuthProvider(t *testing.T) {
 	cfg, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: glm-api
+  - provider_type: glm-api
     kind: api-compatible
     service: glm
     models:
@@ -192,7 +194,7 @@ func TestParseConfigYAMLAcceptsAPIKeyAuthCopyProvider(t *testing.T) {
 	cfg, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: glm-api
+  - provider_type: glm-api
     kind: api-compatible
     service: glm
     image: pangaea/provider-api-compatible:test
@@ -223,7 +225,7 @@ func TestParseConfigYAMLRejectsAPIKeyAuthWithoutSource(t *testing.T) {
 	_, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: minimax-api
+  - provider_type: minimax-api
     kind: api-compatible
     service: minimax
     image: pangaea/provider-api-compatible:test
@@ -248,7 +250,7 @@ func TestParseConfigYAMLAcceptsImagePullPolicyNever(t *testing.T) {
 	cfg, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: codex-kind
+  - provider_type: codex-kind
     kind: cli-container
     image: pangaea/provider-codex:kind
     image_pull_policy: never
@@ -272,7 +274,7 @@ func TestParseConfigYAMLAcceptsHostNetworkMode(t *testing.T) {
 	cfg, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: gemini-cli
+  - provider_type: gemini-cli
     kind: cli-container
     image: pangaea/provider-gemini:opi5
     image_pull_policy: never
@@ -293,7 +295,7 @@ func TestParseConfigYAMLRejectsUnknownNetworkMode(t *testing.T) {
 	_, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: gemini-cli
+  - provider_type: gemini-cli
     kind: cli-container
     image: pangaea/provider-gemini:opi5
     network_mode: overlay
@@ -313,7 +315,7 @@ func TestParseConfigYAMLAcceptsPersistentProviderStorage(t *testing.T) {
 	cfg, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: codex-kind
+  - provider_type: codex-kind
     kind: cli-container
     image: pangaea/provider-codex:kind
     service: codex
@@ -336,7 +338,7 @@ func TestParseConfigYAMLRejectsPersistentProviderStorageWithoutHostPath(t *testi
 	_, err := ParseConfigYAML([]byte(`
 version: node-agent/v1
 providers:
-  - id: codex-kind
+  - provider_type: codex-kind
     kind: cli-container
     image: pangaea/provider-codex:kind
     service: codex
@@ -370,7 +372,7 @@ func TestLoadConfigFileDefaultsCodexAuthPathPriority(t *testing.T) {
 	writeTestFile(t, configPath, `
 version: node-agent/v1
 providers:
-  - id: codex-kind
+  - provider_type: codex-kind
     kind: cli-container
     service: codex
     auth:
@@ -410,7 +412,7 @@ func TestLoadConfigFileReportsMissingDefaultCodexAuthCandidates(t *testing.T) {
 	writeTestFile(t, configPath, `
 version: node-agent/v1
 providers:
-  - id: codex-kind
+  - provider_type: codex-kind
     kind: cli-container
     service: codex
     auth:

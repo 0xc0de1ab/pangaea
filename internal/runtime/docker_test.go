@@ -50,17 +50,17 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 		t.Fatalf("write host auth: %v", err)
 	}
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-codex-primary --label pangaea.provider_id=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --env PANGAEA_PROVIDER_ID=codex-primary --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-codex-primary --label pangaea.provider_type=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --env PANGAEA_PROVIDER_TYPE=codex-primary --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{
-		ProviderID:         "codex-primary",
+		ProviderType:       "codex-primary",
 		ProviderInstanceID: "codex-primary-a1",
 		Name:               "pangaea-codex-primary",
 		Image:              "pangaea/provider-codex:test",
 		Command:            []string{"/usr/local/bin/provider-entrypoint"},
 		WorkingDir:         "/work",
-		Env:                map[string]string{"PANGAEA_PROVIDER_ID": "codex-primary"},
+		Env:                map[string]string{"PANGAEA_PROVIDER_TYPE": "codex-primary"},
 		Security:           DefaultSecurityProfile(),
 	}
 	id, err := rt.Create(context.Background(), spec)
@@ -107,11 +107,11 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 func TestDockerRuntimeCreateAddsBindMounts(t *testing.T) {
 	hostDir := filepath.Join(t.TempDir(), "provider-state")
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-codex-primary --label pangaea.provider_id=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --mount type=bind,source=" + hostDir + ",target=/var/lib/pangaea --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-codex-primary --label pangaea.provider_type=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --mount type=bind,source=" + hostDir + ",target=/var/lib/pangaea --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{
-		ProviderID:         "codex-primary",
+		ProviderType:       "codex-primary",
 		ProviderInstanceID: "codex-primary-a1",
 		Name:               "pangaea-codex-primary",
 		Image:              "pangaea/provider-codex:test",
@@ -141,11 +141,11 @@ func TestDockerRuntimeCreateAddsBindMounts(t *testing.T) {
 
 func TestDockerRuntimeCreateAddsNetworkMode(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-gemini-cli --label pangaea.provider_id=gemini-cli --label pangaea.provider_instance_id=gemini-cli-opi5 --network host --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-gemini:opi5": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-gemini-cli --label pangaea.provider_type=gemini-cli --label pangaea.provider_instance_id=gemini-cli-opi5 --network host --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-gemini:opi5": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{
-		ProviderID:         "gemini-cli",
+		ProviderType:       "gemini-cli",
 		ProviderInstanceID: "gemini-cli-opi5",
 		Name:               "pangaea-gemini-cli",
 		Image:              "pangaea/provider-gemini:opi5",
@@ -234,8 +234,8 @@ func TestDockerRuntimeCreateIncludesResourceLimits(t *testing.T) {
 	runner := &recordingRunner{}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	_, err := rt.Create(context.Background(), ContainerSpec{
-		ProviderID: "deepseek-api",
-		Image:      "pangaea/provider-api:test",
+		ProviderType: "deepseek-api",
+		Image:        "pangaea/provider-api:test",
 		Resources: ResourceLimits{
 			CPUs:      "1.5",
 			Memory:    "768MiB",
@@ -261,11 +261,11 @@ func TestDockerRuntimeCreateUsesCanonicalManagedLabels(t *testing.T) {
 	runner := &recordingRunner{}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	_, err := rt.Create(context.Background(), ContainerSpec{
-		ProviderID:         "codex-primary",
+		ProviderType:       "codex-primary",
 		ProviderInstanceID: "codex-primary-a1",
 		Image:              "pangaea/provider-codex:test",
 		Labels: map[string]string{
-			"pangaea.provider_id":          "wrong-provider",
+			"pangaea.provider_type":        "wrong-provider",
 			"pangaea.provider_instance_id": "wrong-instance",
 			"pangaea.service":              "codex",
 		},
@@ -280,7 +280,7 @@ func TestDockerRuntimeCreateUsesCanonicalManagedLabels(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"--label pangaea.provider_id=codex-primary",
+		"--label pangaea.provider_type=codex-primary",
 		"--label pangaea.provider_instance_id=codex-primary-a1",
 		"--label pangaea.service=codex",
 	} {

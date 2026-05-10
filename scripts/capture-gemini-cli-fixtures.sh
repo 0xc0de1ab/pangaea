@@ -257,7 +257,7 @@ prompts=(
   "Describe how to convert Gemini streamed chunks into OpenAI SSE chat chunks."
   "Explain what should be validated before accepting an uploaded image."
   "Explain what should be validated before accepting a text file attachment."
-  "Mention the difference between provider id and provider instance id."
+  "Mention the difference between provider type and provider instance id."
   "Mention why host_name must be the host-side name, not the container hostname."
   "Draft a short auth update event history with three events."
   "Draft a usage quota row with remaining percent and reset time fields."

@@ -63,7 +63,7 @@ spec:
               value: "1"
             - name: PANGAEA_SHIM_MODE
               value: cli-container
-            - name: PANGAEA_PROVIDER_ID
+            - name: PANGAEA_PROVIDER_TYPE
               value: gemini-cli
             - name: PANGAEA_PROVIDER_INSTANCE_ID
               value: gemini-cli
@@ -108,9 +108,7 @@ spec:
             - name: PANGAEA_SHIM_CAPABILITIES
               value: api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse,usage.read,models.read,auth.file,auth.refresh.oneshot
             - name: PANGAEA_MODEL
-              value: gemini-2.5-flash
-            - name: PANGAEA_MODELS
-              value: "gemini-2.5-flash=gemini-default|Gemini 2.5 Flash,gemini-2.5-pro=Gemini 2.5 Pro,gemini-2.5-flash-lite=Gemini 2.5 Flash Lite,auto-gemini-3=Auto Gemini 3,auto-gemini-2.5=Auto Gemini 2.5,gemini-3-pro-preview=Gemini 3 Pro Preview,gemini-3-flash-preview=Gemini 3 Flash Preview,gemini-3.1-pro-preview=Gemini 3.1 Pro Preview,gemini-3.1-flash-lite-preview=Gemini 3.1 Flash Lite Preview"
+              value: auto-gemini-3
             - name: PANGAEA_MODEL_ALIAS
               value: gemini-default
             - name: PANGAEA_MODEL_CAPABILITIES

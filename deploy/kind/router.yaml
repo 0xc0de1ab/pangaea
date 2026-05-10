@@ -48,6 +48,7 @@ spec:
             - --user-id=e2e
             - --state-dir=/var/lib/pangaea/router
             - --state-mode=$(PANGAEA_ROUTER_STATE_MODE)
+            - --data-request-timeout=$(PANGAEA_ROUTER_DATA_REQUEST_TIMEOUT)
           env:
             - name: PANGAEA_ROUTER_API_KEY
               valueFrom:
@@ -66,6 +67,8 @@ spec:
                   key: stream-token-key
             - name: PANGAEA_ROUTER_STATE_MODE
               value: persistent
+            - name: PANGAEA_ROUTER_DATA_REQUEST_TIMEOUT
+              value: 10m
           ports:
             - name: http
               containerPort: 8080

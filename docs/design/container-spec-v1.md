@@ -103,7 +103,7 @@ Recommended paths:
 
 Environment variables:
 
-- `PANGAEA_PROVIDER_ID`
+- `PANGAEA_PROVIDER_TYPE`
 - `PANGAEA_PROVIDER_INSTANCE_ID`
 - `PANGAEA_NODE_ID`
 - `PANGAEA_CONTROL_URL`
@@ -134,7 +134,7 @@ capabilities, not by `service`.
 
 ```yaml
 providers:
-  - id: codex-primary
+  - provider_type: codex-primary
     kind: cli-container
     provider_mode: app-server
     image: pangaea/provider-codex:2026.05.1
@@ -192,7 +192,7 @@ providers:
       base_url: ws://127.0.0.1:8080
       compat: openai
 
-  - id: claude-primary
+  - provider_type: claude-primary
     kind: cli-container
     provider_mode: cli-adapter
     image: pangaea/provider-claude:2026.05.1
@@ -214,7 +214,7 @@ providers:
     upstream:
       compat: anthropic
 
-  - id: codex-secondary
+  - provider_type: codex-secondary
     kind: cli-container
     provider_mode: http-direct
     image: pangaea/provider-codex:2026.05.1
@@ -246,7 +246,7 @@ API provider example:
 
 ```yaml
 providers:
-  - id: glm-anthropic
+  - provider_type: glm-anthropic
     kind: api-compatible
     image: pangaea/provider-api-compatible:2026.05.1
     service: glm
@@ -272,7 +272,7 @@ Sidecar provider example:
 
 ```yaml
 providers:
-  - id: copilot-default
+  - provider_type: copilot-default
     kind: sidecar-agent
     image: pangaea/provider-github-copilot-sidecar:2026.05.1
     host_name: snowbox
@@ -351,7 +351,7 @@ Auth report fields:
 {
   "mode": "file",
   "host_name": "snowbox",
-  "provider_id": "codex-primary",
+  "provider_type": "codex-primary",
   "service": "codex",
   "account_id": "user-H8Pbt...",
   "display": "primary@example.test",

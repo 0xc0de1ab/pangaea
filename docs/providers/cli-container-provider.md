@@ -50,7 +50,7 @@ Example:
 
 ```yaml
 providers:
-  - id: codex-primary
+  - provider_type: codex-primary
     service: codex
     auth:
       bootstrap: copy
@@ -138,7 +138,7 @@ For file-auth CLI containers, the shim also runs the auth format's native
 `UsageProbe` when available and reports it under `usage.native_summary`.
 Claude, Gemini, and Codex auth formats all expose this path.
 
-Usage reports include `host_name`, `provider_id`, `account_id`, and `service`.
+Usage reports include `host_name`, `provider_type`, `account_id`, and `service`.
 
 ## Routing Notes
 

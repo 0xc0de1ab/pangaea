@@ -11,7 +11,7 @@ var (
 )
 
 func (i ProviderIdentity) Validate() error {
-	if blank(i.ProviderID) || blank(i.ProviderInstanceID) || blank(i.NodeID) || blank(i.HostName) {
+	if blank(i.ProviderType) || blank(i.ProviderInstanceID) || blank(i.NodeID) || blank(i.HostName) {
 		return ErrInvalidIdentity
 	}
 	if !i.Service.Valid() || !i.Kind.Valid() {

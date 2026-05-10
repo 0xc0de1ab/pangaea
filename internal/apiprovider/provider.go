@@ -108,6 +108,37 @@ func (p *Provider) Registration() (provider.Registration, error) {
 	return p.registration, nil
 }
 
+func (p *Provider) TargetVersion(ctx context.Context) (string, error) {
+	if p == nil || p.client == nil {
+		return "", ErrAPIProviderConfig
+	}
+	current := strings.TrimSpace(p.registration.Identity.TargetVersion)
+	if p.registration.Identity.Service != provider.ServiceAntigravity {
+		return current, nil
+	}
+	var response struct {
+		TargetVersion string `json:"target_version"`
+		ServerVersion string `json:"server_version"`
+		Version       string `json:"version"`
+	}
+	if err := p.doGETJSON(ctx, "/v1/health", &response); err != nil {
+		return current, err
+	}
+	if version := strings.TrimSpace(firstNonEmpty(response.TargetVersion, response.ServerVersion, response.Version)); version != "" {
+		return version, nil
+	}
+	return current, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (p *Provider) Models(ctx context.Context) ([]provider.Model, error) {
 	if p == nil || p.client == nil {
 		return nil, ErrAPIProviderConfig
@@ -165,6 +196,27 @@ type compatibleModelStatus struct {
 type compatibleModelStatusQuota struct {
 	RemainingFraction float64 `json:"remainingFraction"`
 	ResetTime         string  `json:"resetTime,omitempty"`
+}
+
+type antigravityAccountResponse struct {
+	Name       string                 `json:"name"`
+	Email      string                 `json:"email"`
+	PlanStatus *antigravityPlanStatus `json:"planStatus"`
+	UserTier   *antigravityUserTier   `json:"userTier"`
+}
+
+type antigravityPlanStatus struct {
+	PlanInfo *antigravityPlanInfo `json:"planInfo"`
+}
+
+type antigravityPlanInfo struct {
+	PlanName string `json:"planName"`
+}
+
+type antigravityUserTier struct {
+	ID                      string `json:"id"`
+	Name                    string `json:"name"`
+	UpgradeSubscriptionText string `json:"upgradeSubscriptionText"`
 }
 
 func compatibleModels(items []compatibleModel, capabilities []provider.Capability) []provider.Model {
@@ -290,6 +342,7 @@ func geminiModels(items []geminiModel) []provider.Model {
 			Capabilities:     capabilities,
 			ContextTokens:    item.InputTokenLimit,
 			MaxContextTokens: item.InputTokenLimit,
+			MaxOutputTokens:  item.OutputTokenLimit,
 		})
 	}
 	return models
@@ -426,6 +479,9 @@ func (p *Provider) Auth() (provider.AuthState, error) {
 	if p == nil {
 		return provider.AuthState{}, ErrAPIProviderConfig
 	}
+	if p.registration.Identity.Service == provider.ServiceAntigravity {
+		p.refreshAntigravityAccount()
+	}
 	p.authMu.Lock()
 	defer p.authMu.Unlock()
 	auth := p.auth
@@ -433,6 +489,83 @@ func (p *Provider) Auth() (provider.AuthState, error) {
 		auth.Status = provider.AuthHealthy
 	}
 	return auth, nil
+}
+
+func (p *Provider) refreshAntigravityAccount() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var account antigravityAccountResponse
+	if err := p.doGETJSON(ctx, "/v1/account", &account); err != nil {
+		return
+	}
+	p.authMu.Lock()
+	defer p.authMu.Unlock()
+	if account.Email != "" {
+		p.auth.Account.ID = strings.TrimSpace(account.Email)
+		if p.auth.Account.Display == "" || strings.Contains(p.auth.Account.Display, "@") {
+			p.auth.Account.Display = strings.TrimSpace(account.Email)
+		}
+	}
+	if p.auth.Account.Display == "" {
+		p.auth.Account.Display = strings.TrimSpace(account.Name)
+	}
+	if subscription := subscriptionFromAntigravityAccount(account); subscription != nil {
+		p.auth.Subscription = mergeProviderSubscription(p.auth.Subscription, subscription)
+	}
+}
+
+func subscriptionFromAntigravityAccount(account antigravityAccountResponse) *provider.SubscriptionInfo {
+	var tierName, tierID, status, planName string
+	if account.UserTier != nil {
+		tierName = strings.TrimSpace(account.UserTier.Name)
+		tierID = strings.TrimSpace(account.UserTier.ID)
+		status = strings.TrimSpace(account.UserTier.UpgradeSubscriptionText)
+	}
+	if account.PlanStatus != nil && account.PlanStatus.PlanInfo != nil {
+		planName = strings.TrimSpace(account.PlanStatus.PlanInfo.PlanName)
+	}
+	displayName := firstNonEmpty(tierName, planName)
+	info := provider.SubscriptionInfo{
+		Tier:   firstNonEmpty(tierName, tierID, planName),
+		Name:   displayName,
+		Status: status,
+		Source: "antigravity-account",
+	}
+	if info.Tier == "" && info.Name == "" && info.Status == "" && info.PaidTier == "" {
+		return nil
+	}
+	return &info
+}
+
+func mergeProviderSubscription(base, update *provider.SubscriptionInfo) *provider.SubscriptionInfo {
+	if base == nil || *base == (provider.SubscriptionInfo{}) {
+		return update
+	}
+	if update == nil || *update == (provider.SubscriptionInfo{}) {
+		return base
+	}
+	merged := *base
+	if update.Tier != "" {
+		merged.Tier = update.Tier
+	}
+	if update.Name != "" {
+		merged.Name = update.Name
+	}
+	if update.Status != "" {
+		merged.Status = update.Status
+	}
+	if update.PaidTier != "" {
+		merged.PaidTier = update.PaidTier
+	}
+	if update.RateLimitTier != "" {
+		merged.RateLimitTier = update.RateLimitTier
+	}
+	if merged.Source == "" {
+		merged.Source = update.Source
+	} else if update.Source != "" && !strings.Contains(merged.Source, update.Source) {
+		merged.Source = merged.Source + "+" + update.Source
+	}
+	return &merged
 }
 
 func (p *Provider) invokeOpenAI(ctx context.Context, request compat.Request) (compat.Response, error) {

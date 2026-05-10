@@ -74,21 +74,21 @@ func TestRunControlClientSendsConfiguredProviderInventory(t *testing.T) {
 			HostName:          "snowbox",
 			HeartbeatInterval: time.Second,
 			ProviderSpecs: []ProviderSpec{{
-				ID:          "codex-primary",
-				InstanceID:  "codex-primary-0001",
-				Kind:        provider.KindCLIContainer,
-				Image:       "pangaea/provider-codex:test",
-				AccountHint: "primary@example.test",
-				Service:     provider.ServiceCodex,
-				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
+				ProviderType: "codex-primary",
+				InstanceID:   "codex-primary-0001",
+				Kind:         provider.KindCLIContainer,
+				Image:        "pangaea/provider-codex:test",
+				AccountHint:  "primary@example.test",
+				Service:      provider.ServiceCodex,
+				Shim:         ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAuthRefreshOneshot}},
 			}, {
-				ID:          "codex-secondary",
-				InstanceID:  "codex-secondary-0001",
-				Kind:        provider.KindCLIContainer,
-				Image:       "pangaea/provider-codex:test",
-				AccountHint: "secondary@example.test",
-				Service:     provider.ServiceCodex,
-				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+				ProviderType: "codex-secondary",
+				InstanceID:   "codex-secondary-0001",
+				Kind:         provider.KindCLIContainer,
+				Image:        "pangaea/provider-codex:test",
+				AccountHint:  "secondary@example.test",
+				Service:      provider.ServiceCodex,
+				Shim:         ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 			}},
 		})
 	}()
@@ -135,13 +135,13 @@ func TestRunControlClientReconcilesConfiguredProviderContainers(t *testing.T) {
 			ReconcileInterval: time.Second,
 			ContainerRuntime:  rt,
 			ProviderSpecs: []ProviderSpec{{
-				ID:          "codex-primary",
-				InstanceID:  "codex-primary-0001",
-				Kind:        provider.KindCLIContainer,
-				Image:       "pangaea/provider-codex:test",
-				AccountHint: "primary@example.test",
-				Service:     provider.ServiceCodex,
-				Shim:        ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+				ProviderType: "codex-primary",
+				InstanceID:   "codex-primary-0001",
+				Kind:         provider.KindCLIContainer,
+				Image:        "pangaea/provider-codex:test",
+				AccountHint:  "primary@example.test",
+				Service:      provider.ServiceCodex,
+				Shim:         ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 			}},
 		})
 	}()
@@ -209,7 +209,7 @@ routes:
       models: [providersim-default]
       api_dialects: [openai]
     candidates:
-      - provider: providersim-openai
+      - provider_type: providersim-openai
         weight: 100
 `))
 	if err != nil {

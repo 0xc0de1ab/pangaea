@@ -92,7 +92,7 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 				ContainerID:        status.ID.String(),
 				ContainerKind:      opts.ContainerKind,
 				ContainerName:      firstNonBlank(status.Name, containerSpec.Name),
-				ProviderID:         containerSpec.ProviderID,
+				ProviderType:       containerSpec.ProviderType,
 				ProviderInstanceID: containerSpec.ProviderInstanceID,
 				Image:              status.Image.String(),
 				State:              state,
@@ -137,7 +137,7 @@ func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerS
 		ContainerID:        containerID.String(),
 		ContainerKind:      containerKind,
 		ContainerName:      containerSpec.Name,
-		ProviderID:         containerSpec.ProviderID,
+		ProviderType:       containerSpec.ProviderType,
 		ProviderInstanceID: containerSpec.ProviderInstanceID,
 		Image:              containerSpec.Image.String(),
 		State:              "running",
@@ -188,23 +188,23 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		return runtime.ContainerSpec{}, err
 	}
 	if strings.TrimSpace(spec.Image) == "" {
-		return runtime.ContainerSpec{}, fmt.Errorf("%w: provider %q image is required", ErrNodeAgentConfig, spec.ID)
+		return runtime.ContainerSpec{}, fmt.Errorf("%w: provider %q image is required", ErrNodeAgentConfig, spec.ProviderType)
 	}
 	instanceID := spec.InstanceID
 	if instanceID == "" {
-		instanceID = spec.ID + "-local"
+		instanceID = spec.ProviderType + "-local"
 	}
 	if spec.HostName != "" {
 		hostName = spec.HostName
 	}
-	containerName := defaultContainerName(spec.ID, instanceID)
+	containerName := defaultContainerName(spec.ProviderType, instanceID)
 	labels := map[string]string{
-		"pangaea.provider_id":          spec.ID,
+		"pangaea.provider_type":        spec.ProviderType,
 		"pangaea.provider_instance_id": instanceID,
 		"pangaea.service":              string(spec.Service),
 	}
 	env := map[string]string{
-		"PANGAEA_PROVIDER_ID":           spec.ID,
+		"PANGAEA_PROVIDER_TYPE":         spec.ProviderType,
 		"PANGAEA_PROVIDER_INSTANCE_ID":  instanceID,
 		"PANGAEA_NODE_ID":               nodeID,
 		"PANGAEA_HOST_NAME":             hostName,
@@ -297,7 +297,7 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		env[key] = value
 	}
 	containerSpec := runtime.ContainerSpec{
-		ProviderID:         spec.ID,
+		ProviderType:       spec.ProviderType,
 		ProviderInstanceID: instanceID,
 		NodeID:             nodeID,
 		HostName:           hostName,
@@ -527,8 +527,8 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func defaultContainerName(providerID string, instanceID string) string {
-	return "pangaea-" + sanitizeContainerToken(providerID) + "-" + sanitizeContainerToken(instanceID)
+func defaultContainerName(providerType string, instanceID string) string {
+	return "pangaea-" + sanitizeContainerToken(providerType) + "-" + sanitizeContainerToken(instanceID)
 }
 
 func sanitizeContainerToken(raw string) string {

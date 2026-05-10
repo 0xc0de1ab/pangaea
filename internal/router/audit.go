@@ -39,7 +39,7 @@ type AuditActor struct {
 
 type AuditTarget struct {
 	ProviderInstanceID string           `json:"provider_instance_id,omitempty"`
-	ProviderID         string           `json:"provider_id,omitempty"`
+	ProviderType       string           `json:"provider_type,omitempty"`
 	NodeID             string           `json:"node_id,omitempty"`
 	HostName           string           `json:"host_name,omitempty"`
 	ContainerID        string           `json:"container_id,omitempty"`
@@ -130,7 +130,7 @@ func (e *Engine) AuditEvents(limit int) []AuditEvent {
 func providerAuditTarget(registration provider.Registration) AuditTarget {
 	return AuditTarget{
 		ProviderInstanceID: registration.Identity.ProviderInstanceID,
-		ProviderID:         registration.Identity.ProviderID,
+		ProviderType:       registration.Identity.ProviderType,
 		NodeID:             registration.Identity.NodeID,
 		HostName:           registration.Identity.HostName,
 		ContainerID:        registration.Identity.ContainerID,

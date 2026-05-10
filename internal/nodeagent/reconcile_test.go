@@ -96,12 +96,12 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	uid := 10001
 	gid := 10001
 	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
-		ID:          "codex-primary",
-		InstanceID:  "codex-primary-a1",
-		Kind:        provider.KindAppServer,
-		Image:       "pangaea/provider-codex:test",
-		AccountHint: "primary@example.test",
-		Service:     provider.ServiceCodex,
+		ProviderType: "codex-primary",
+		InstanceID:   "codex-primary-a1",
+		Kind:         provider.KindAppServer,
+		Image:        "pangaea/provider-codex:test",
+		AccountHint:  "primary@example.test",
+		Service:      provider.ServiceCodex,
 		Models: []provider.Model{{
 			ID:           "gpt-5-codex",
 			Aliases:      []string{"codex-default"},
@@ -200,12 +200,12 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 
 func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T) {
 	spec, err := ContainerSpecFromProviderSpecWithOptions(ProviderSpec{
-		ID:         "codex-primary",
-		InstanceID: "codex-primary-a1",
-		Kind:       provider.KindCLIContainer,
-		Image:      "pangaea/provider-codex:test",
-		Service:    provider.ServiceCodex,
-		Shim:       ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		ProviderType: "codex-primary",
+		InstanceID:   "codex-primary-a1",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-codex:test",
+		Service:      provider.ServiceCodex,
+		Shim:         ShimSpec{Protocols: []string{"openai"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 	}, "node-a1", "snowbox", ContainerSpecOptions{
 		RouterControlURL: "ws://router/router/v1/control/ws",
 		RouterDataURL:    "ws://router/router/v1/data/ws",
@@ -229,11 +229,11 @@ func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T
 
 func TestContainerSpecFromProviderSpecCopiesAPIKeyAuth(t *testing.T) {
 	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
-		ID:         "glm-api",
-		InstanceID: "glm-api-a1",
-		Kind:       provider.KindAPICompatible,
-		Image:      "pangaea/provider-api-compatible:test",
-		Service:    provider.ServiceGLM,
+		ProviderType: "glm-api",
+		InstanceID:   "glm-api-a1",
+		Kind:         provider.KindAPICompatible,
+		Image:        "pangaea/provider-api-compatible:test",
+		Service:      provider.ServiceGLM,
 		Models: []provider.Model{{
 			ID:      "glm-4.6",
 			Aliases: []string{"glm-default"},
@@ -280,11 +280,11 @@ func TestContainerSpecFromProviderSpecCopiesAPIKeyAuth(t *testing.T) {
 
 func TestContainerSpecFromProviderSpecAddsPersistentStorageMounts(t *testing.T) {
 	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
-		ID:         "codex-kind",
-		InstanceID: "codex-kind-a1",
-		Kind:       provider.KindCLIContainer,
-		Image:      "pangaea/provider-codex:kind",
-		Service:    provider.ServiceCodex,
+		ProviderType: "codex-kind",
+		InstanceID:   "codex-kind-a1",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-codex:kind",
+		Service:      provider.ServiceCodex,
 		Storage: StorageSpec{
 			Mode:     "persistent",
 			HostPath: "/srv/pangaea/runtime/providers/codex-kind-a1",
@@ -326,11 +326,11 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	uid := 10001
 	rt := &fakeContainerRuntime{stats: runtime.Stats{CPUPercent: 12.5, MemoryBytes: 64 * 1024 * 1024, MemoryPeakBytes: 96 * 1024 * 1024, OOMCount: 1}}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "gemini-secondary",
-		InstanceID: "gemini-secondary-a3",
-		Kind:       provider.KindCLIContainer,
-		Image:      "pangaea/provider-gemini:test",
-		Service:    provider.ServiceGemini,
+		ProviderType: "gemini-secondary",
+		InstanceID:   "gemini-secondary-a3",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-gemini:test",
+		Service:      provider.ServiceGemini,
 		Auth: AuthSpec{
 			Mode:          "file",
 			HostPath:      "/srv/pangaea/auth/gemini/secondary/oauth.json",
@@ -343,7 +343,7 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	if err != nil {
 		t.Fatalf("reconcile provider container: %v", err)
 	}
-	if rt.pulled != "pangaea/provider-gemini:test" || rt.created.ProviderID != "gemini-secondary" || rt.copied == nil || rt.started != "container-1" {
+	if rt.pulled != "pangaea/provider-gemini:test" || rt.created.ProviderType != "gemini-secondary" || rt.copied == nil || rt.started != "container-1" {
 		t.Fatalf("runtime calls not recorded as expected: pulled=%q created=%#v copied=%#v started=%q", rt.pulled, rt.created, rt.copied, rt.started)
 	}
 	if got, want := strings.Join(rt.calls, ","), "pull,create,start,copy"; got != want {
@@ -360,7 +360,7 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 func TestReconcileProviderContainerSkipsPullWhenImagePullPolicyNever(t *testing.T) {
 	rt := &fakeContainerRuntime{}
 	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:              "codex-kind",
+		ProviderType:    "codex-kind",
 		InstanceID:      "codex-kind-a1",
 		Kind:            provider.KindCLIContainer,
 		Image:           "pangaea/provider-codex:kind",
@@ -389,12 +389,12 @@ func TestReconcileProviderContainerReusesExistingContainer(t *testing.T) {
 		found: true,
 	}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-primary",
-		InstanceID: "codex-primary-a1",
-		Kind:       provider.KindCLIContainer,
-		Image:      "pangaea/provider-codex:test",
-		Service:    provider.ServiceCodex,
-		Shim:       ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		ProviderType: "codex-primary",
+		InstanceID:   "codex-primary-a1",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-codex:test",
+		Service:      provider.ServiceCodex,
+		Shim:         ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 	}, "node-a1", "snowbox")
 	if err != nil {
 		t.Fatalf("reconcile existing provider container: %v", err)
@@ -420,12 +420,12 @@ func TestReconcileExistingContainerRecreatesWhenImageChanges(t *testing.T) {
 		found: true,
 	}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-primary",
-		InstanceID: "codex-primary-a1",
-		Kind:       provider.KindCLIContainer,
-		Image:      "pangaea/provider-codex:new",
-		Service:    provider.ServiceCodex,
-		Shim:       ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		ProviderType: "codex-primary",
+		InstanceID:   "codex-primary-a1",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-codex:new",
+		Service:      provider.ServiceCodex,
+		Shim:         ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 	}, "node-a1", "snowbox")
 	if err != nil {
 		t.Fatalf("reconcile existing provider container: %v", err)
@@ -454,11 +454,11 @@ func TestReconcileExistingContainerDoesNotOverwriteAuthByDefault(t *testing.T) {
 		found: true,
 	}
 	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-primary",
-		InstanceID: "codex-primary-a1",
-		Kind:       provider.KindCLIContainer,
-		Image:      "pangaea/provider-codex:test",
-		Service:    provider.ServiceCodex,
+		ProviderType: "codex-primary",
+		InstanceID:   "codex-primary-a1",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-codex:test",
+		Service:      provider.ServiceCodex,
 		Auth: AuthSpec{
 			Mode:          "file",
 			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",
@@ -484,11 +484,11 @@ func TestReconcileExistingContainerSyncsAuthByPolicy(t *testing.T) {
 		found: true,
 	}
 	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
-		ID:         "codex-primary",
-		InstanceID: "codex-primary-a1",
-		Kind:       provider.KindCLIContainer,
-		Image:      "pangaea/provider-codex:test",
-		Service:    provider.ServiceCodex,
+		ProviderType: "codex-primary",
+		InstanceID:   "codex-primary-a1",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-codex:test",
+		Service:      provider.ServiceCodex,
 		Auth: AuthSpec{
 			Mode:          "file",
 			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",
@@ -513,10 +513,10 @@ func TestReconcileExistingContainerSyncsAuthByPolicy(t *testing.T) {
 
 func TestContainerSpecFromProviderSpecRequiresImage(t *testing.T) {
 	_, err := ContainerSpecFromProviderSpec(ProviderSpec{
-		ID:      "deepseek-api",
-		Kind:    provider.KindAPICompatible,
-		Service: provider.ServiceDeepSeek,
-		Shim:    ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		ProviderType: "deepseek-api",
+		Kind:         provider.KindAPICompatible,
+		Service:      provider.ServiceDeepSeek,
+		Shim:         ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
 	}, "node-a1", "snowbox")
 	if err == nil {
 		t.Fatalf("expected image required error")

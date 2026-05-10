@@ -42,7 +42,7 @@ type RuntimeConfig struct {
 }
 
 type ProviderSpec struct {
-	ID              string            `json:"id" yaml:"id"`
+	ProviderType    string            `json:"provider_type" yaml:"provider_type"`
 	InstanceID      string            `json:"instance_id,omitempty" yaml:"instance_id,omitempty"`
 	Kind            provider.Kind     `json:"kind" yaml:"kind"`
 	ProviderMode    string            `json:"provider_mode,omitempty" yaml:"provider_mode,omitempty"`
@@ -168,7 +168,7 @@ func applyConfigLoadDefaults(cfg *Config, baseDir string) error {
 			if auth.HostPath == "" {
 				resolved, err := DefaultCodexAuthHostPath(baseDir)
 				if err != nil {
-					return fmt.Errorf("%w: provider %q %v", ErrNodeAgentConfig, spec.ID, err)
+					return fmt.Errorf("%w: provider %q %v", ErrNodeAgentConfig, spec.ProviderType, err)
 				}
 				auth.HostPath = resolved
 			}
@@ -246,19 +246,14 @@ func (c Config) Validate() error {
 	if c.Version != ConfigVersion {
 		return fmt.Errorf("%w: unsupported version %q", ErrNodeAgentConfig, c.Version)
 	}
-	seenIDs := make(map[string]struct{}, len(c.Providers))
 	seenInstances := make(map[string]struct{}, len(c.Providers))
 	for _, spec := range c.Providers {
 		if err := spec.Validate(); err != nil {
 			return err
 		}
-		if _, ok := seenIDs[spec.ID]; ok {
-			return fmt.Errorf("%w: duplicate provider id %q", ErrNodeAgentConfig, spec.ID)
-		}
-		seenIDs[spec.ID] = struct{}{}
 		instanceID := spec.InstanceID
 		if instanceID == "" {
-			instanceID = spec.ID + "-local"
+			instanceID = spec.ProviderType + "-local"
 		}
 		if _, ok := seenInstances[instanceID]; ok {
 			return fmt.Errorf("%w: duplicate provider instance_id %q", ErrNodeAgentConfig, instanceID)
@@ -269,37 +264,37 @@ func (c Config) Validate() error {
 }
 
 func (p ProviderSpec) Validate() error {
-	if strings.TrimSpace(p.ID) == "" {
-		return fmt.Errorf("%w: provider id is required", ErrNodeAgentConfig)
+	if strings.TrimSpace(p.ProviderType) == "" {
+		return fmt.Errorf("%w: provider type is required", ErrNodeAgentConfig)
 	}
 	if p.Kind == "" {
-		return fmt.Errorf("%w: provider %q kind is required", ErrNodeAgentConfig, p.ID)
+		return fmt.Errorf("%w: provider %q kind is required", ErrNodeAgentConfig, p.ProviderType)
 	}
 	if !validProviderKind(p.Kind) {
-		return fmt.Errorf("%w: provider %q kind %q is invalid", ErrNodeAgentConfig, p.ID, p.Kind)
+		return fmt.Errorf("%w: provider %q kind %q is invalid", ErrNodeAgentConfig, p.ProviderType, p.Kind)
 	}
 	if p.Service == "" {
-		return fmt.Errorf("%w: provider %q service is required", ErrNodeAgentConfig, p.ID)
+		return fmt.Errorf("%w: provider %q service is required", ErrNodeAgentConfig, p.ProviderType)
 	}
-	if err := validateImagePullPolicy(p.ID, p.ImagePullPolicy); err != nil {
+	if err := validateImagePullPolicy(p.ProviderType, p.ImagePullPolicy); err != nil {
 		return err
 	}
-	if err := validateNetworkMode(p.ID, p.NetworkMode); err != nil {
+	if err := validateNetworkMode(p.ProviderType, p.NetworkMode); err != nil {
 		return err
 	}
 	if len(p.Shim.Capabilities) == 0 {
-		return fmt.Errorf("%w: provider %q shim.capabilities is required", ErrNodeAgentConfig, p.ID)
+		return fmt.Errorf("%w: provider %q shim.capabilities is required", ErrNodeAgentConfig, p.ProviderType)
 	}
-	if err := p.Auth.Validate(p.ID); err != nil {
+	if err := p.Auth.Validate(p.ProviderType); err != nil {
 		return err
 	}
 	if err := p.validateAPIKeyAuth(); err != nil {
 		return err
 	}
-	if err := validateProviderMode(p.ID, p.ProviderMode); err != nil {
+	if err := validateProviderMode(p.ProviderType, p.ProviderMode); err != nil {
 		return err
 	}
-	if err := p.Storage.Validate(p.ID); err != nil {
+	if err := p.Storage.Validate(p.ProviderType); err != nil {
 		return err
 	}
 	for _, raw := range []string{p.Refresh.Threshold, p.Refresh.Cooldown, p.Refresh.Timeout} {
@@ -307,7 +302,7 @@ func (p ProviderSpec) Validate() error {
 			continue
 		}
 		if _, err := time.ParseDuration(raw); err != nil {
-			return fmt.Errorf("%w: provider %q invalid refresh duration %q", ErrNodeAgentConfig, p.ID, raw)
+			return fmt.Errorf("%w: provider %q invalid refresh duration %q", ErrNodeAgentConfig, p.ProviderType, raw)
 		}
 	}
 	return nil
@@ -324,29 +319,29 @@ func (p ProviderSpec) validateAPIKeyAuth() error {
 		return nil
 	}
 	if strings.TrimSpace(p.Auth.HostPath) != "" || strings.TrimSpace(p.Auth.ContainerPath) != "" {
-		return fmt.Errorf("%w: provider %q api_key auth copy requires both auth.host_path and auth.container_path", ErrNodeAgentConfig, p.ID)
+		return fmt.Errorf("%w: provider %q api_key auth copy requires both auth.host_path and auth.container_path", ErrNodeAgentConfig, p.ProviderType)
 	}
-	return fmt.Errorf("%w: provider %q api_key auth requires upstream.api_key, upstream.api_key_file, or auth.host_path copy", ErrNodeAgentConfig, p.ID)
+	return fmt.Errorf("%w: provider %q api_key auth requires upstream.api_key, upstream.api_key_file, or auth.host_path copy", ErrNodeAgentConfig, p.ProviderType)
 }
 
-func (s StorageSpec) Validate(providerID string) error {
+func (s StorageSpec) Validate(providerType string) error {
 	mode := normalizedStorageMode(s.Mode)
 	switch mode {
 	case "", "ephemeral":
 		return nil
 	case "persistent":
 	default:
-		return fmt.Errorf("%w: provider %q unsupported storage.mode %q", ErrNodeAgentConfig, providerID, s.Mode)
+		return fmt.Errorf("%w: provider %q unsupported storage.mode %q", ErrNodeAgentConfig, providerType, s.Mode)
 	}
 	if strings.TrimSpace(s.HostPath) == "" {
-		return fmt.Errorf("%w: provider %q storage.host_path is required for persistent storage", ErrNodeAgentConfig, providerID)
+		return fmt.Errorf("%w: provider %q storage.host_path is required for persistent storage", ErrNodeAgentConfig, providerType)
 	}
 	for _, containerPath := range s.ContainerPaths {
 		if strings.TrimSpace(containerPath) == "" {
-			return fmt.Errorf("%w: provider %q storage.container_paths must not contain blank entries", ErrNodeAgentConfig, providerID)
+			return fmt.Errorf("%w: provider %q storage.container_paths must not contain blank entries", ErrNodeAgentConfig, providerType)
 		}
 		if !strings.HasPrefix(strings.TrimSpace(containerPath), "/") {
-			return fmt.Errorf("%w: provider %q storage.container_paths must be absolute", ErrNodeAgentConfig, providerID)
+			return fmt.Errorf("%w: provider %q storage.container_paths must be absolute", ErrNodeAgentConfig, providerType)
 		}
 	}
 	return nil
@@ -356,12 +351,12 @@ func normalizedStorageMode(mode string) string {
 	return strings.ToLower(strings.TrimSpace(mode))
 }
 
-func validateProviderMode(providerID string, mode string) error {
+func validateProviderMode(providerType string, mode string) error {
 	switch normalizedProviderMode(mode) {
 	case "", "http-direct", "app-server", "cli-adapter", "acp", "ls-core-sidecar":
 		return nil
 	default:
-		return fmt.Errorf("%w: provider %q unsupported provider_mode %q", ErrNodeAgentConfig, providerID, mode)
+		return fmt.Errorf("%w: provider %q unsupported provider_mode %q", ErrNodeAgentConfig, providerType, mode)
 	}
 }
 
@@ -369,12 +364,12 @@ func normalizedProviderMode(mode string) string {
 	return strings.ToLower(strings.TrimSpace(mode))
 }
 
-func validateImagePullPolicy(providerID string, policy string) error {
+func validateImagePullPolicy(providerType string, policy string) error {
 	switch normalizedImagePullPolicy(policy) {
 	case "", "always", "never":
 		return nil
 	default:
-		return fmt.Errorf("%w: provider %q unsupported image_pull_policy %q", ErrNodeAgentConfig, providerID, policy)
+		return fmt.Errorf("%w: provider %q unsupported image_pull_policy %q", ErrNodeAgentConfig, providerType, policy)
 	}
 }
 
@@ -382,12 +377,12 @@ func normalizedImagePullPolicy(policy string) string {
 	return strings.ToLower(strings.TrimSpace(policy))
 }
 
-func validateNetworkMode(providerID string, mode string) error {
+func validateNetworkMode(providerType string, mode string) error {
 	switch normalizedNetworkMode(mode) {
 	case "", "bridge", "host", "none":
 		return nil
 	default:
-		return fmt.Errorf("%w: provider %q unsupported network_mode %q", ErrNodeAgentConfig, providerID, mode)
+		return fmt.Errorf("%w: provider %q unsupported network_mode %q", ErrNodeAgentConfig, providerType, mode)
 	}
 }
 
@@ -395,7 +390,7 @@ func normalizedNetworkMode(mode string) string {
 	return strings.ToLower(strings.TrimSpace(mode))
 }
 
-func (a AuthSpec) Validate(providerID string) error {
+func (a AuthSpec) Validate(providerType string) error {
 	mode := a.Mode
 	if mode == "" {
 		return nil
@@ -404,7 +399,7 @@ func (a AuthSpec) Validate(providerID string) error {
 	case "file":
 	case "api_key":
 	default:
-		return fmt.Errorf("%w: provider %q unsupported auth mode %q", ErrNodeAgentConfig, providerID, mode)
+		return fmt.Errorf("%w: provider %q unsupported auth mode %q", ErrNodeAgentConfig, providerType, mode)
 	}
 	if mode == "api_key" && strings.TrimSpace(a.HostPath) == "" && strings.TrimSpace(a.ContainerPath) == "" {
 		return nil
@@ -414,16 +409,16 @@ func (a AuthSpec) Validate(providerID string) error {
 		bootstrap = "copy"
 	}
 	if bootstrap != "copy" {
-		return fmt.Errorf("%w: provider %q unsupported auth bootstrap %q", ErrNodeAgentConfig, providerID, bootstrap)
+		return fmt.Errorf("%w: provider %q unsupported auth bootstrap %q", ErrNodeAgentConfig, providerType, bootstrap)
 	}
 	if strings.TrimSpace(a.HostPath) == "" {
-		return fmt.Errorf("%w: provider %q auth.host_path is required for %s bootstrap", ErrNodeAgentConfig, providerID, mode)
+		return fmt.Errorf("%w: provider %q auth.host_path is required for %s bootstrap", ErrNodeAgentConfig, providerType, mode)
 	}
 	if strings.TrimSpace(a.ContainerPath) == "" {
-		return fmt.Errorf("%w: provider %q auth.container_path is required for %s bootstrap", ErrNodeAgentConfig, providerID, mode)
+		return fmt.Errorf("%w: provider %q auth.container_path is required for %s bootstrap", ErrNodeAgentConfig, providerType, mode)
 	}
 	if _, err := a.FilePerm(); err != nil {
-		return fmt.Errorf("%w: provider %q invalid auth.file_mode: %v", ErrNodeAgentConfig, providerID, err)
+		return fmt.Errorf("%w: provider %q invalid auth.file_mode: %v", ErrNodeAgentConfig, providerType, err)
 	}
 	return nil
 }
@@ -445,16 +440,16 @@ func (a AuthSpec) FilePerm() (os.FileMode, error) {
 
 func (p ProviderSpec) Registration(nodeID string, hostName string, now time.Time) provider.Registration {
 	if p.InstanceID == "" {
-		p.InstanceID = p.ID + "-local"
+		p.InstanceID = p.ProviderType + "-local"
 	}
 	if p.HostName != "" {
 		hostName = p.HostName
 	}
-	containerName := defaultContainerName(p.ID, p.InstanceID)
+	containerName := defaultContainerName(p.ProviderType, p.InstanceID)
 	account := provider.Account{Display: p.AccountHint}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         p.ID,
+			ProviderType:       p.ProviderType,
 			ProviderInstanceID: p.InstanceID,
 			NodeID:             nodeID,
 			HostName:           hostName,
@@ -479,9 +474,13 @@ func (r RuntimeConfig) ControlRuntimeInfo() control.RuntimeInfo {
 	return control.RuntimeInfo{Kind: r.Kind, Version: r.Version, Rootless: r.Rootless}
 }
 
-func (c Config) ProviderByID(id string) (ProviderSpec, bool) {
+func (c Config) ProviderByInstanceID(instanceID string) (ProviderSpec, bool) {
 	for _, spec := range c.Providers {
-		if spec.ID == id {
+		candidate := spec.InstanceID
+		if candidate == "" {
+			candidate = spec.ProviderType + "-local"
+		}
+		if candidate == instanceID {
 			return spec, true
 		}
 	}

@@ -114,7 +114,7 @@ Dashboard는 외부 font CDN을 사용하지 않는다. `woff2` 파일을 직접
   - 한국어/영문 혼합 운영 콘솔에서 균형이 좋고, 숫자와 짧은 label 가독성이 좋다.
   - variable `woff2` 하나로 400, 500, 600, 700 weight를 사용한다.
 - Monospace: `JetBrains Mono`
-  - provider id, request id, API key prefix, trace code, JSON preview에 사용한다.
+  - provider type, request id, API key prefix, trace code, JSON preview에 사용한다.
   - 필요한 weight만 포함한다: 400, 600.
 
 Inter는 영문 UI만 고려하면 좋은 선택이지만, Pangaea 운영자는 한국어 label과 영문
@@ -241,7 +241,7 @@ provider icon/label/service column으로 구분한다. 색은 주로 상태와 �
 
 ### Operator Convenience
 
-- Global search는 provider id, host, account, model, API key prefix, request id를 찾는다.
+- Global search는 provider type, host, account, model, API key prefix, request id를 찾는다.
 - Command palette는 `drain provider`, `dry run route`, `find request`, `open auth risk`
   같은 작업 중심 command를 제공한다.
 - Saved views는 table column, filters, sort, density를 저장한다.
@@ -448,7 +448,7 @@ Output:
 
 ### Providers
 
-Table is grouped by service and host. `host_name`, account, provider id, and health columns are
+Table is grouped by service and host. `host_name`, account, provider type, and health columns are
 pinned.
 
 Row actions:
@@ -572,7 +572,7 @@ The UI always shows the resulting audit event and updated provider/route state.
 - Raw API keys are displayed once and never stored in UI state after dismissal.
 - `/router/ui` responses include CSP, `X-Content-Type-Options`, `Referrer-Policy`, and no framing.
 - Peer websocket auth moves away from shared query token toward per-peer identity with expiry,
-  audience, node id, provider id, and capability claims.
+  audience, node id, provider type, and capability claims.
 - Audit is durable append-only storage, not only in-memory ring buffer.
 - Audit and trace payloads are redacted and length-capped before storage and response.
 
@@ -588,7 +588,7 @@ The UI always shows the resulting audit event and updated provider/route state.
   requires it.
 - Router aggregation should use copy-on-read snapshots and avoid holding hot registry locks while
   JSON encoding.
-- Registry indexes should support service, model, host, account, health, auth state, and provider id
+- Registry indexes should support service, model, host, account, health, auth state, and provider type
   lookup.
 - Performance tests track payload size, JSON encode time, route evaluation allocations, trace/audit
   retention, and dashboard render time.

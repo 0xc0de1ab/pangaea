@@ -46,7 +46,8 @@ func TestRunNodeAgentBootstrapAuthCopiesConfiguredProviderAuth(t *testing.T) {
 	}
 	config := `version: node-agent/v1
 providers:
-  - id: codex-primary
+  - provider_type: codex-primary
+    instance_id: codex-primary-a1
     kind: cli-container
     service: codex
     auth:
@@ -60,7 +61,7 @@ providers:
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if err := runNodeAgentBootstrapAuth(context.Background(), nodeAgentBootstrapAuthOptions{ConfigPath: configPath, ProviderID: "codex-primary"}); err != nil {
+	if err := runNodeAgentBootstrapAuth(context.Background(), nodeAgentBootstrapAuthOptions{ConfigPath: configPath, ProviderInstanceID: "codex-primary-a1"}); err != nil {
 		t.Fatalf("bootstrap auth: %v", err)
 	}
 	data, err := os.ReadFile(containerPath)
@@ -77,7 +78,7 @@ func TestNodeAgentBootstrapAuthCommandExists(t *testing.T) {
 	if cmd.Use != "bootstrap-auth" {
 		t.Fatalf("expected bootstrap-auth command, got %q", cmd.Use)
 	}
-	for _, name := range []string{"config", "provider"} {
+	for _, name := range []string{"config", "provider-instance"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}
@@ -99,7 +100,8 @@ node:
   id: node-a1
   host_name: snowbox
 providers:
-  - id: codex-primary
+  - provider_type: codex-primary
+    instance_id: codex-primary-a1
     kind: cli-container
     image: pangaea/provider-codex:test
     service: codex
@@ -115,9 +117,9 @@ providers:
 		t.Fatalf("write config: %v", err)
 	}
 	if err := runNodeAgentReconcileProvider(context.Background(), nodeAgentReconcileProviderOptions{
-		ConfigPath: configPath,
-		ProviderID: "codex-primary",
-		DryRun:     true,
+		ConfigPath:         configPath,
+		ProviderInstanceID: "codex-primary-a1",
+		DryRun:             true,
 	}); err != nil {
 		t.Fatalf("reconcile provider dry-run: %v", err)
 	}
@@ -128,7 +130,7 @@ func TestNodeAgentReconcileProviderCommandExists(t *testing.T) {
 	if cmd.Use != "reconcile-provider" {
 		t.Fatalf("expected reconcile-provider command, got %q", cmd.Use)
 	}
-	for _, name := range []string{"config", "provider", "node-id", "host-name", "router-control", "router-data", "stream-token-key", "router-peer-token", "runtime-kind", "docker-bin", "dry-run"} {
+	for _, name := range []string{"config", "provider-instance", "node-id", "host-name", "router-control", "router-data", "stream-token-key", "router-peer-token", "runtime-kind", "docker-bin", "dry-run"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Fatalf("expected %s flag", name)
 		}

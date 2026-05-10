@@ -105,15 +105,15 @@ routes:
       tenants: [team-a, team-b]
       api_dialects: [openai, anthropic]
     candidates:
-      - provider: codex-cli
+      - provider_type: codex-cli
         account: primary@example.test
         host_name: snowbox
         weight: 100
-      - provider: codex-cli
+      - provider_type: codex-cli
         account: secondary@example.test
         host_name: snowbox
         weight: 50
-      - provider: openai-api
+      - provider_type: openai-api
         weight: 10
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -137,11 +137,11 @@ routes:
     match:
       models: [claude-compatible-lowcost]
     candidates:
-      - provider: glm-api
+      - provider_type: glm-api
         weight: 70
-      - provider: minimax-api
+      - provider_type: minimax-api
         weight: 30
-      - provider: deepseek-api
+      - provider_type: deepseek-api
         weight: 20
     constraints:
       required_capabilities:
@@ -159,7 +159,7 @@ routes:
       models: [cline-agent]
       api_dialects: [openai]
     candidates:
-      - provider: cline-sidecar
+      - provider_type: cline-sidecar
         weight: 100
     constraints:
       required_capabilities:

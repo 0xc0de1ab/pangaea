@@ -460,7 +460,7 @@ func claudeCommand(request compat.Request, prompt string) []string {
 func geminiCommand(request compat.Request, prompt string) []string {
 	model := strings.TrimSpace(request.Model)
 	if model == "" || model == "gemini-default" {
-		model = "gemini-2.5-flash"
+		model = "auto-gemini-3"
 	}
 	return []string{"gemini", "-p", prompt, "--skip-trust", "--approval-mode", "plan", "--output-format", "json", "--model", model}
 }

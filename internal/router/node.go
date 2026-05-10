@@ -32,7 +32,7 @@ type ContainerSnapshot struct {
 	ContainerID        string                `json:"container_id"`
 	ContainerKind      string                `json:"container_kind,omitempty"`
 	ContainerName      string                `json:"container_name,omitempty"`
-	ProviderID         string                `json:"provider_id,omitempty"`
+	ProviderType       string                `json:"provider_type,omitempty"`
 	ProviderInstanceID string                `json:"provider_instance_id,omitempty"`
 	Image              string                `json:"image,omitempty"`
 	State              string                `json:"state,omitempty"`
@@ -336,7 +336,7 @@ func (e *Engine) upsertContainer(nodeID string, hostName string, report control.
 		ContainerID:        report.ContainerID,
 		ContainerKind:      report.ContainerKind,
 		ContainerName:      report.ContainerName,
-		ProviderID:         report.ProviderID,
+		ProviderType:       report.ProviderType,
 		ProviderInstanceID: report.ProviderInstanceID,
 		Image:              report.Image,
 		State:              report.State,

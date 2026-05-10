@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +32,7 @@ type setupProviderOptions struct {
 	Type            string
 	Mode            string
 	Service         string
-	ProviderID      string
+	ProviderType    string
 	InstanceID      string
 	AuthPath        string
 	SettingsPath    string
@@ -39,6 +40,7 @@ type setupProviderOptions struct {
 	NodeID          string
 	HostName        string
 	Image           string
+	RuntimeImage    string
 	ImagePullPolicy string
 	Namespace       string
 	StorageMode     string
@@ -77,7 +79,7 @@ type setupProviderRuntimeSettings struct {
 	Mode               string `json:"mode,omitempty"`
 	Type               string `json:"type"`
 	Service            string `json:"service"`
-	ProviderID         string `json:"provider_id"`
+	ProviderType       string `json:"provider_type"`
 	ProviderInstanceID string `json:"provider_instance_id"`
 	NodeID             string `json:"node_id"`
 	HostName           string `json:"host_name"`
@@ -85,21 +87,24 @@ type setupProviderRuntimeSettings struct {
 }
 
 type setupProviderDefaults struct {
-	Service           provider.Service
-	ImageName         string
-	DefaultMode       string
-	ProviderKind      provider.Kind
-	AuthFormat        string
-	AuthContainerPath string
-	AuthSecretKey     string
-	AuthCandidates    []string
-	ProviderMode      string
-	UpstreamBaseURL   string
-	UpstreamDialect   string
-	ShimCommand       []string
-	Models            []provider.Model
-	RefreshCommand    []string
-	ExtraEnv          map[string]string
+	Service             provider.Service
+	ImageName           string
+	RuntimeImageName    string
+	DefaultProviderType string
+	DefaultMode         string
+	ProviderKind        provider.Kind
+	AuthFormat          string
+	AuthContainerPath   string
+	AuthSecretKey       string
+	AuthCandidates      []string
+	ProviderMode        string
+	UpstreamBaseURL     string
+	UpstreamDialect     string
+	ShimCommand         []string
+	Models              []provider.Model
+	ExtraCapabilities   []provider.Capability
+	RefreshCommand      []string
+	ExtraEnv            map[string]string
 }
 
 func newSetupProviderCmd() *cobra.Command {
@@ -115,15 +120,16 @@ func newSetupProviderCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.Type, "type", "", "provider runtime type (native-systemd|docker|podman|kind|k8s|kubernetes)")
 	cmd.Flags().StringVar(&opts.Mode, "mode", "", "provider adapter mode (app-server|http-direct|cli-adapter|acp|ls-core-sidecar)")
-	cmd.Flags().StringVar(&opts.Service, "service", "gemini", "provider service (codex|claude|gemini)")
-	cmd.Flags().StringVar(&opts.ProviderID, "provider-id", "", "logical provider id; defaults to <service>-cli")
-	cmd.Flags().StringVar(&opts.InstanceID, "instance-id", "", "provider instance id; defaults from derived auth account or provider id")
+	cmd.Flags().StringVar(&opts.Service, "service", "gemini", "provider service (codex|claude|gemini|antigravity)")
+	cmd.Flags().StringVar(&opts.ProviderType, "provider-type", "", "logical provider type; defaults to <service>-cli")
+	cmd.Flags().StringVar(&opts.InstanceID, "instance-id", "", "provider instance id; defaults from derived auth account or provider type")
 	cmd.Flags().StringVar(&opts.AuthPath, "auth-path", "", "host auth file path to copy/bootstrap")
 	cmd.Flags().StringVar(&opts.SettingsPath, "settings-path", "", "optional Gemini settings.json path for MCP settings")
 	cmd.Flags().StringVar(&opts.OutDir, "out-dir", defaultSetupProviderOut, "directory for generated setup artifacts")
 	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "node id to report; defaults to host name")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "physical host name to report; defaults to OS host name")
 	cmd.Flags().StringVar(&opts.Image, "image", "", "provider image; defaults from service and type")
+	cmd.Flags().StringVar(&opts.RuntimeImage, "runtime-image", "", "sidecar runtime image for providers that need a companion runtime")
 	cmd.Flags().StringVar(&opts.ImagePullPolicy, "image-pull-policy", "", "image pull policy for docker/podman node-agent config (always|never)")
 	cmd.Flags().StringVar(&opts.Namespace, "namespace", "", "Kubernetes namespace for kind/k8s manifests")
 	cmd.Flags().StringVar(&opts.StorageMode, "storage", "persistent", "provider state storage mode (persistent|ephemeral)")
@@ -204,16 +210,19 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 	if authPath != "" {
 		account = accountDisplayFromAuth(authPath, defaults.AuthFormat)
 	}
-	providerID := strings.TrimSpace(opts.ProviderID)
-	if providerID == "" {
-		providerID = string(service) + "-cli"
+	providerType := strings.TrimSpace(opts.ProviderType)
+	if providerType == "" {
+		providerType = strings.TrimSpace(defaults.DefaultProviderType)
+	}
+	if providerType == "" {
+		providerType = string(service) + "-cli"
 	}
 	instanceID := strings.TrimSpace(opts.InstanceID)
 	if instanceID == "" {
 		if account != "" {
 			instanceID = string(service) + "-" + sanitizeSetupToken(account)
 		} else {
-			instanceID = providerID
+			instanceID = providerType
 		}
 	}
 	runtimeSettingsPath, err := setupProviderRuntimeSettingsPath(setupType, service, instanceID)
@@ -234,11 +243,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 	}
 	image := strings.TrimSpace(opts.Image)
 	if image == "" {
-		tag := "latest"
-		if setupType == "kind" {
-			tag = "kind"
-		}
-		image = defaults.ImageName + ":" + tag
+		image = setupProviderDefaultImage(defaults.ImageName, setupType)
 	}
 	storageMode := strings.ToLower(strings.TrimSpace(opts.StorageMode))
 	if storageMode == "" {
@@ -253,7 +258,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 			storagePath = expanded
 		}
 	}
-	capabilities := defaultSetupCapabilities(authPath != "")
+	capabilities := dedupeSetupCapabilities(append(defaultSetupCapabilities(authPath != ""), defaults.ExtraCapabilities...))
 	refreshSpec := nodeagent.RefreshSpec{}
 	if authPath != "" {
 		refreshSpec = nodeagent.RefreshSpec{
@@ -264,7 +269,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 		}
 	}
 	spec := nodeagent.ProviderSpec{
-		ID:              providerID,
+		ProviderType:    providerType,
 		InstanceID:      instanceID,
 		Kind:            defaults.ProviderKind,
 		ProviderMode:    mode,
@@ -312,7 +317,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 	if authPath == "" {
 		spec.Env["PANGAEA_AUTH_REQUIRED"] = "false"
 	}
-	if settingsJSON := geminiSettingsJSONForEnv(opts.SettingsPath, service); settingsJSON != "" {
+	if settingsJSON := geminiMCPServersJSONForEnv(opts.SettingsPath, service); settingsJSON != "" {
 		spec.Env["PANGAEA_MCP_SERVERS_JSON"] = settingsJSON
 	}
 	if setupType == "native-systemd" {
@@ -404,7 +409,7 @@ func applySetupProvider(ctx context.Context, opts setupProviderOptions, plan set
 		if len(plan.Artifacts) == 0 {
 			return fmt.Errorf("no Kubernetes manifest was generated")
 		}
-		args := []string{"apply", "-f", plan.Artifacts[0].Path}
+		args := []string{"apply", "--server-side=true", "--force-conflicts", "-f", plan.Artifacts[0].Path}
 		cmd := exec.CommandContext(ctx, opts.KubectlBin, args...)
 		cmd.Stdout = out
 		cmd.Stderr = out
@@ -420,7 +425,7 @@ func applySetupProvider(ctx context.Context, opts setupProviderOptions, plan set
 func printSetupProviderNextStep(out io.Writer, plan setupProviderPlan) {
 	switch plan.Type {
 	case "docker", "podman":
-		fmt.Fprintf(out, "next: pangaeactl node-agent reconcile-provider --config %s --provider %s --runtime-kind %s --router-control <ws-url>\n", filepath.Join(plan.OutDir, "node-agent.yaml"), plan.Spec.ID, plan.Type)
+		fmt.Fprintf(out, "next: pangaeactl node-agent reconcile-provider --config %s --provider-instance %s --runtime-kind %s --router-control <ws-url>\n", filepath.Join(plan.OutDir, "node-agent.yaml"), plan.Spec.InstanceID, plan.Type)
 	case "kind", "kubernetes":
 		fmt.Fprintf(out, "next: kubectl apply -f %s\n", filepath.Join(plan.OutDir, "provider.k8s.yaml"))
 	case "native-systemd":
@@ -499,7 +504,18 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 	case "acp":
 		return "", fmt.Errorf("--mode acp is not implemented yet")
 	case "ls-core-sidecar":
-		return "", fmt.Errorf("--mode ls-core-sidecar is not implemented by setup-provider yet")
+		if defaults.Service != provider.ServiceAntigravity {
+			return "", fmt.Errorf("--mode ls-core-sidecar is currently supported only for service antigravity")
+		}
+		defaults.ProviderKind = provider.KindSidecar
+		defaults.ProviderMode = "ls-core-sidecar"
+		if strings.TrimSpace(defaults.UpstreamBaseURL) == "" {
+			defaults.UpstreamBaseURL = "http://127.0.0.1:8080"
+		}
+		if strings.TrimSpace(defaults.UpstreamDialect) == "" {
+			defaults.UpstreamDialect = "openai"
+		}
+		defaults.ShimCommand = nil
 	default:
 		return "", fmt.Errorf("--mode must be one of app-server, http-direct, cli-adapter, acp, ls-core-sidecar")
 	}
@@ -517,6 +533,14 @@ func setupProviderRuntimeKind(setupType string) string {
 	default:
 		return setupType
 	}
+}
+
+func setupProviderDefaultImage(imageName string, setupType string) string {
+	tag := "latest"
+	if setupType == "kind" {
+		tag = "kind"
+	}
+	return imageName + ":" + tag
 }
 
 func setupDefaultsForService(service provider.Service) (setupProviderDefaults, error) {
@@ -595,6 +619,43 @@ func setupDefaultsForService(service provider.Service) (setupProviderDefaults, e
 				"FORCE_COLOR":                "1",
 			},
 		}, nil
+	case provider.ServiceAntigravity:
+		sidecarCaps := []provider.Capability{
+			provider.CapabilityAntigravitySidecar,
+			provider.CapabilityAgentToolUse,
+			provider.CapabilityAgentWorkspaceRead,
+			provider.CapabilityAgentWorkspaceWrite,
+		}
+		caps := dedupeSetupCapabilities(append(modelCaps, sidecarCaps...))
+		return setupProviderDefaults{
+			Service:             service,
+			ImageName:           "pangaea/provider-antigravity-sidecar",
+			RuntimeImageName:    "pangaea/antigravity-runtime",
+			DefaultProviderType: "antigravity-sidecar",
+			DefaultMode:         "ls-core-sidecar",
+			ProviderKind:        provider.KindSidecar,
+			AuthFormat:          "antigravity-state-vscdb-format",
+			AuthContainerPath:   "/var/lib/antigravity/state/User/globalStorage/state.vscdb",
+			AuthSecretKey:       "state.vscdb",
+			AuthCandidates: []string{
+				"assets/.antigravity/state.vscdb",
+				"assets/antigravity/state.vscdb",
+				"~/.antigravity-server/data/User/globalStorage/state.vscdb",
+				"~/.config/Antigravity/User/globalStorage/state.vscdb",
+			},
+			ProviderMode:    "ls-core-sidecar",
+			UpstreamBaseURL: "http://127.0.0.1:8080",
+			UpstreamDialect: "openai",
+			Models: []provider.Model{{
+				ID:           "antigravity-default",
+				Aliases:      []string{"antigravity-default"},
+				Capabilities: caps,
+			}},
+			ExtraCapabilities: sidecarCaps,
+			ExtraEnv: map[string]string{
+				"HOME": "/var/lib/pangaea/home/antigravity",
+			},
+		}, nil
 	default:
 		return setupProviderDefaults{}, fmt.Errorf("unsupported --service %q", service)
 	}
@@ -615,17 +676,25 @@ func defaultSetupCapabilities(hasAuth bool) []provider.Capability {
 	return capabilities
 }
 
+func dedupeSetupCapabilities(in []provider.Capability) []provider.Capability {
+	out := make([]provider.Capability, 0, len(in))
+	seen := map[provider.Capability]struct{}{}
+	for _, capability := range in {
+		if capability == "" {
+			continue
+		}
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		out = append(out, capability)
+	}
+	return out
+}
+
 func defaultSetupGeminiModels(caps []provider.Capability) []provider.Model {
 	return []provider.Model{
-		{ID: "gemini-2.5-flash", Aliases: []string{"gemini-default", "Gemini 2.5 Flash"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-2.5-pro", Aliases: []string{"Gemini 2.5 Pro"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-2.5-flash-lite", Aliases: []string{"Gemini 2.5 Flash Lite"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "auto-gemini-3", Aliases: []string{"Auto Gemini 3", "Auto (Gemini 3)"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576, Kind: "group", GroupMembers: []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview"}},
-		{ID: "auto-gemini-2.5", Aliases: []string{"Auto Gemini 2.5", "Auto (Gemini 2.5)"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576, Kind: "group", GroupMembers: []string{"gemini-2.5-pro", "gemini-2.5-flash"}},
-		{ID: "gemini-3-pro-preview", Aliases: []string{"Gemini 3 Pro Preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-3-flash-preview", Aliases: []string{"Gemini 3 Flash Preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-3.1-pro-preview", Aliases: []string{"Gemini 3.1 Pro Preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
-		{ID: "gemini-3.1-flash-lite-preview", Aliases: []string{"Gemini 3.1 Flash Lite Preview"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576},
+		{ID: "auto-gemini-3", Aliases: []string{"gemini-default", "gemini-auto", "Auto Gemini 3", "Auto (Gemini 3)"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576, MaxOutputTokens: 65_536, Kind: "group", GroupMembers: []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview"}},
 	}
 }
 
@@ -668,7 +737,7 @@ func persistSetupProviderRuntimeSettings(plan setupProviderPlan) error {
 		Mode:               plan.Mode,
 		Type:               plan.Type,
 		Service:            string(plan.Service),
-		ProviderID:         plan.Spec.ID,
+		ProviderType:       plan.Spec.ProviderType,
 		ProviderInstanceID: plan.Spec.InstanceID,
 		NodeID:             plan.NodeID,
 		HostName:           plan.HostName,
@@ -756,7 +825,53 @@ func accountDisplayFromAuth(path string, formatName string) string {
 	return ""
 }
 
-func geminiSettingsJSONForEnv(path string, service provider.Service) string {
+func geminiMCPServersJSONForEnv(path string, service provider.Service) string {
+	if service != provider.ServiceGemini {
+		return ""
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	expanded, err := config.ExpandPath(path)
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(expanded)
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+		return ""
+	}
+	trimmed := bytes.TrimSpace(raw)
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &settings); err != nil {
+		return string(trimmed)
+	}
+	mcpServers, ok := settings["mcpServers"]
+	if !ok || len(bytes.TrimSpace(mcpServers)) == 0 || bytes.Equal(bytes.TrimSpace(mcpServers), []byte("null")) {
+		return ""
+	}
+	var servers map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(mcpServers, &servers); err != nil {
+		return string(trimmed)
+	}
+	filtered := map[string]map[string]json.RawMessage{}
+	for name, server := range servers {
+		if len(bytes.TrimSpace(server["command"])) == 0 {
+			continue
+		}
+		filtered[name] = server
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(map[string]any{"mcpServers": filtered})
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func geminiSettingsJSONForSecret(path string, service provider.Service) string {
 	if service != provider.ServiceGemini {
 		return ""
 	}
@@ -826,6 +941,9 @@ func nativeHomeFromConfigDir(configDir string, marker string) string {
 }
 
 func renderSetupProviderKubernetesManifest(setupType string, opts setupProviderOptions, spec nodeagent.ProviderSpec, nodeID string, defaults setupProviderDefaults) ([]byte, error) {
+	if spec.Service == provider.ServiceAntigravity && spec.ProviderMode == "ls-core-sidecar" {
+		return renderSetupProviderAntigravityKubernetesManifest(setupType, opts, spec, nodeID, defaults)
+	}
 	namespace := strings.TrimSpace(opts.Namespace)
 	if namespace == "" {
 		if setupType == "kind" {
@@ -837,7 +955,7 @@ func renderSetupProviderKubernetesManifest(setupType string, opts setupProviderO
 	labels := map[string]string{
 		"app.kubernetes.io/name":      "pangaea-" + spec.InstanceID,
 		"app.kubernetes.io/component": "provider-runtime",
-		"pangaea/provider-id":         spec.ID,
+		"pangaea/provider-type":       spec.ProviderType,
 		"pangaea/provider-instance":   spec.InstanceID,
 	}
 	secretData := map[string]string{}
@@ -929,11 +1047,188 @@ func renderSetupProviderKubernetesManifest(setupType string, opts setupProviderO
 	return yamlDocuments(objects...)
 }
 
+func renderSetupProviderAntigravityKubernetesManifest(setupType string, opts setupProviderOptions, spec nodeagent.ProviderSpec, nodeID string, defaults setupProviderDefaults) ([]byte, error) {
+	namespace := strings.TrimSpace(opts.Namespace)
+	if namespace == "" {
+		if setupType == "kind" {
+			namespace = "pangaea-e2e"
+		} else {
+			namespace = "pangaea"
+		}
+	}
+	runtimeImage := strings.TrimSpace(opts.RuntimeImage)
+	if runtimeImage == "" {
+		if strings.TrimSpace(defaults.RuntimeImageName) == "" {
+			return nil, fmt.Errorf("runtime image is required for antigravity sidecar setup")
+		}
+		runtimeImage = setupProviderDefaultImage(defaults.RuntimeImageName, setupType)
+	}
+	labels := map[string]string{
+		"app.kubernetes.io/name":      "pangaea-" + spec.InstanceID,
+		"app.kubernetes.io/component": "provider-runtime",
+		"pangaea/provider-type":       spec.ProviderType,
+		"pangaea/provider-instance":   spec.InstanceID,
+	}
+	runtimeSecretName := "pangaea-" + spec.InstanceID + "-runtime-secrets"
+	authSecretName := "pangaea-" + spec.InstanceID + "-auth"
+	objects := []any{
+		map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]any{
+				"name":      runtimeSecretName,
+				"namespace": namespace,
+				"labels":    labels,
+			},
+			"type": "Opaque",
+			"data": map[string]string{
+				"openai-key":    base64.StdEncoding.EncodeToString([]byte("pangaea-antigravity-openai")),
+				"anthropic-key": base64.StdEncoding.EncodeToString([]byte("pangaea-antigravity-anthropic")),
+				"gemini-key":    base64.StdEncoding.EncodeToString([]byte("pangaea-antigravity-gemini")),
+			},
+		},
+	}
+	if strings.TrimSpace(spec.Auth.HostPath) != "" {
+		authRaw, err := os.ReadFile(spec.Auth.HostPath)
+		if err != nil {
+			return nil, err
+		}
+		objects = append(objects, map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]any{
+				"name":      authSecretName,
+				"namespace": namespace,
+				"labels":    labels,
+			},
+			"type": "Opaque",
+			"data": map[string]string{
+				defaults.AuthSecretKey: base64.StdEncoding.EncodeToString(authRaw),
+			},
+		})
+	}
+	stateVolume := map[string]any{"name": "antigravity-state"}
+	if strings.ToLower(strings.TrimSpace(spec.Storage.Mode)) == "persistent" {
+		stateVolume["hostPath"] = map[string]any{"path": spec.Storage.HostPath, "type": "DirectoryOrCreate"}
+	} else {
+		stateVolume["emptyDir"] = map[string]any{}
+	}
+	valueFromRuntimeSecret := func(key string) map[string]any {
+		return map[string]any{"secretKeyRef": map[string]any{"name": runtimeSecretName, "key": key}}
+	}
+	shimEnv := setupProviderKubernetesEnv(spec, nodeID, setupProviderRuntimeKind(setupType), opts)
+	shimEnv = append(shimEnv, map[string]any{"name": "PANGAEA_UPSTREAM_API_KEY", "valueFrom": valueFromRuntimeSecret("openai-key")})
+	deployment := map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata": map[string]any{
+			"name":      "pangaea-" + spec.InstanceID,
+			"namespace": namespace,
+			"labels":    labels,
+		},
+		"spec": map[string]any{
+			"replicas": 1,
+			"selector": map[string]any{"matchLabels": map[string]string{
+				"app.kubernetes.io/name": "pangaea-" + spec.InstanceID,
+			}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": labels},
+				"spec": map[string]any{
+					"initContainers": []any{map[string]any{
+						"name":    "bootstrap-antigravity",
+						"image":   "alpine:3.22",
+						"command": []string{"sh", "-c", setupProviderBootstrapScript(provider.ServiceAntigravity)},
+						"env":     setupProviderKubernetesBootstrapEnv(spec, nodeID, setupProviderRuntimeKind(setupType), opts),
+						"securityContext": map[string]any{
+							"runAsUser": 0,
+						},
+						"volumeMounts": []any{
+							map[string]any{"name": "antigravity-auth-secret", "mountPath": "/auth-src", "readOnly": true},
+							map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/antigravity/state"},
+							map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/pangaea"},
+						},
+					}},
+					"containers": []any{
+						map[string]any{
+							"name":            "runtime",
+							"image":           runtimeImage,
+							"imagePullPolicy": setupProviderKubernetesPullPolicy(opts.ImagePullPolicy, setupType),
+							"command":         []string{"sh", "-c"},
+							"args": []string{strings.TrimSpace(`
+mkdir -p /var/lib/antigravity/state/User/globalStorage
+exec antigravity-compat-proxy serve \
+  --proxy-addr 0.0.0.0:8080 \
+  --db-path /var/lib/antigravity/state/User/globalStorage/state.vscdb
+`)},
+							"env": []any{
+								map[string]any{"name": "OPENAI_API_KEY", "valueFrom": valueFromRuntimeSecret("openai-key")},
+								map[string]any{"name": "ANTHROPIC_API_KEY", "valueFrom": valueFromRuntimeSecret("anthropic-key")},
+								map[string]any{"name": "GOOGLE_API_KEY", "valueFrom": valueFromRuntimeSecret("gemini-key")},
+								map[string]any{"name": "ANTIGRAVITY_GEMINI_DIR", "value": "/root/.antigravity-server"},
+								map[string]any{"name": "ANTIGRAVITY_APP_DATA_DIR", "value": "data"},
+								map[string]any{"name": "ANTIGRAVITY_STREAM_CAPTURE_PATH", "value": "/var/lib/antigravity/state/stream-captures/ag-stream-capture.jsonl"},
+							},
+							"ports": []any{map[string]any{"name": "http", "containerPort": 8080}},
+							"volumeMounts": []any{
+								map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/antigravity/state"},
+								map[string]any{"name": "antigravity-state", "mountPath": "/root/.antigravity-server/data"},
+							},
+							"readinessProbe": map[string]any{
+								"httpGet":          map[string]any{"path": "/v1/health", "port": "http"},
+								"periodSeconds":    2,
+								"failureThreshold": 60,
+							},
+							"livenessProbe": map[string]any{
+								"httpGet":          map[string]any{"path": "/v1/health", "port": "http"},
+								"periodSeconds":    10,
+								"failureThreshold": 6,
+							},
+						},
+						map[string]any{
+							"name":            "shim",
+							"image":           spec.Image,
+							"imagePullPolicy": setupProviderKubernetesPullPolicy(opts.ImagePullPolicy, setupType),
+							"env":             shimEnv,
+							"volumeMounts": []any{
+								map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/antigravity/state"},
+								map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/pangaea"},
+							},
+						},
+					},
+					"volumes": []any{
+						map[string]any{"name": "antigravity-auth-secret", "secret": map[string]any{"secretName": authSecretName, "optional": true, "defaultMode": 0400}},
+						stateVolume,
+					},
+				},
+			},
+		},
+	}
+	objects = append(objects, deployment)
+	objects = append(objects, map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Service",
+		"metadata": map[string]any{
+			"name":      "pangaea-" + spec.InstanceID,
+			"namespace": namespace,
+			"labels":    labels,
+		},
+		"spec": map[string]any{
+			"selector": map[string]string{"app.kubernetes.io/name": "pangaea-" + spec.InstanceID},
+			"ports": []any{map[string]any{
+				"name":       "http",
+				"port":       8080,
+				"targetPort": "http",
+			}},
+		},
+	})
+	return yamlDocuments(objects...)
+}
+
 func setupProviderGeminiSettingsSecret(path string, service provider.Service) (string, string) {
 	if service != provider.ServiceGemini {
 		return "", ""
 	}
-	settings := geminiSettingsJSONForEnv(path, service)
+	settings := geminiSettingsJSONForSecret(path, service)
 	if settings == "" {
 		return "", ""
 	}
@@ -954,7 +1249,7 @@ write_runtime_settings() {
     {
       printf 'PANGAEA_NODE_ID=%s\n' "${PANGAEA_NODE_ID:-}"
       printf 'PANGAEA_HOST_NAME=%s\n' "${PANGAEA_HOST_NAME:-}"
-      printf 'PANGAEA_PROVIDER_ID=%s\n' "${PANGAEA_PROVIDER_ID:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%s\n' "${PANGAEA_PROVIDER_TYPE:-}"
       printf 'PANGAEA_PROVIDER_INSTANCE_ID=%s\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
       printf 'PANGAEA_PROVIDER_MODE=%s\n' "${PANGAEA_PROVIDER_MODE:-}"
       printf 'PANGAEA_SERVICE=%s\n' "${PANGAEA_SERVICE:-}"
@@ -985,7 +1280,7 @@ write_runtime_settings() {
     {
       printf 'PANGAEA_NODE_ID=%s\n' "${PANGAEA_NODE_ID:-}"
       printf 'PANGAEA_HOST_NAME=%s\n' "${PANGAEA_HOST_NAME:-}"
-      printf 'PANGAEA_PROVIDER_ID=%s\n' "${PANGAEA_PROVIDER_ID:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%s\n' "${PANGAEA_PROVIDER_TYPE:-}"
       printf 'PANGAEA_PROVIDER_INSTANCE_ID=%s\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
       printf 'PANGAEA_PROVIDER_MODE=%s\n' "${PANGAEA_PROVIDER_MODE:-}"
       printf 'PANGAEA_SERVICE=%s\n' "${PANGAEA_SERVICE:-}"
@@ -1004,6 +1299,38 @@ fi
 chown -R 10001:10001 /var/lib/pangaea /work
 chmod 0700 /var/lib/pangaea/auth/claude /var/lib/pangaea/home/claude /var/lib/pangaea/tmp
 `)
+	case provider.ServiceAntigravity:
+		return strings.TrimSpace(`
+set -eu
+state_dir=/var/lib/antigravity/state/User/globalStorage
+mkdir -p "${state_dir}" /var/lib/pangaea/home/antigravity /var/lib/pangaea/runtime /work
+write_runtime_settings() {
+  runtime_settings="${PANGAEA_RUNTIME_SETTINGS_PATH:-/var/lib/pangaea/runtime/provider.env}"
+  runtime_dir="$(dirname "$runtime_settings")"
+  mkdir -p "$runtime_dir"
+  if [ ! -s "$runtime_settings" ]; then
+    {
+      printf 'PANGAEA_NODE_ID=%s\n' "${PANGAEA_NODE_ID:-}"
+      printf 'PANGAEA_HOST_NAME=%s\n' "${PANGAEA_HOST_NAME:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%s\n' "${PANGAEA_PROVIDER_TYPE:-}"
+      printf 'PANGAEA_PROVIDER_INSTANCE_ID=%s\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
+      printf 'PANGAEA_PROVIDER_MODE=%s\n' "${PANGAEA_PROVIDER_MODE:-}"
+      printf 'PANGAEA_SERVICE=%s\n' "${PANGAEA_SERVICE:-}"
+      printf 'PANGAEA_CONTAINER_KIND=%s\n' "${PANGAEA_CONTAINER_KIND:-}"
+      printf 'PANGAEA_CONTAINER_NAME=%s\n' "${PANGAEA_CONTAINER_NAME:-}"
+      printf 'PANGAEA_CONTAINER_ID=%s\n' "${PANGAEA_CONTAINER_ID:-}"
+    } > "$runtime_settings"
+    chmod 0600 "$runtime_settings" 2>/dev/null || true
+  fi
+}
+write_runtime_settings
+if [ -s /auth-src/state.vscdb ]; then
+  cp /auth-src/state.vscdb "${state_dir}/state.vscdb"
+  chmod 0600 "${state_dir}/state.vscdb"
+fi
+chown -R 10001:10001 /var/lib/antigravity/state /var/lib/pangaea /work
+chmod 0700 /var/lib/antigravity/state "${state_dir}" /var/lib/pangaea/home/antigravity
+`)
 	default:
 		return strings.TrimSpace(`
 set -eu
@@ -1016,7 +1343,7 @@ write_runtime_settings() {
     {
       printf 'PANGAEA_NODE_ID=%s\n' "${PANGAEA_NODE_ID:-}"
       printf 'PANGAEA_HOST_NAME=%s\n' "${PANGAEA_HOST_NAME:-}"
-      printf 'PANGAEA_PROVIDER_ID=%s\n' "${PANGAEA_PROVIDER_ID:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%s\n' "${PANGAEA_PROVIDER_TYPE:-}"
       printf 'PANGAEA_PROVIDER_INSTANCE_ID=%s\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
       printf 'PANGAEA_PROVIDER_MODE=%s\n' "${PANGAEA_PROVIDER_MODE:-}"
       printf 'PANGAEA_SERVICE=%s\n' "${PANGAEA_SERVICE:-}"
@@ -1050,7 +1377,7 @@ func setupProviderKubernetesEnv(spec nodeagent.ProviderSpec, nodeID string, setu
 		env["PANGAEA_ROUTER_CONTROL_URL"] = opts.RouterControl
 	}
 	if opts.RouterData != "" {
-		env["PANGAEA_ROUTER_DATA_URL"] = opts.RouterData
+		env["PANGAEA_ROUTER_DATA_URL"] = setupProviderRouterDataURL(opts.RouterData, spec.InstanceID)
 	}
 	if opts.RouterPeerToken != "" {
 		env["PANGAEA_ROUTER_PEER_TOKEN"] = opts.RouterPeerToken
@@ -1082,7 +1409,7 @@ func setupProviderKubernetesBootstrapEnv(spec nodeagent.ProviderSpec, nodeID str
 		hostName = "$(PANGAEA_HOST_HOSTNAME)"
 	}
 	env := map[string]string{
-		"PANGAEA_PROVIDER_ID":           spec.ID,
+		"PANGAEA_PROVIDER_TYPE":         spec.ProviderType,
 		"PANGAEA_PROVIDER_INSTANCE_ID":  spec.InstanceID,
 		"PANGAEA_PROVIDER_MODE":         spec.ProviderMode,
 		"PANGAEA_NODE_ID":               nodeID,
@@ -1099,6 +1426,23 @@ func setupProviderKubernetesBootstrapEnv(spec nodeagent.ProviderSpec, nodeID str
 		map[string]any{"name": "PANGAEA_CONTAINER_NAME", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.name"}}},
 	)
 	return out
+}
+
+func setupProviderRouterDataURL(raw string, providerInstanceID string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.TrimSpace(providerInstanceID) == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	if strings.TrimSpace(q.Get("provider_instance_id")) == "" {
+		q.Set("provider_instance_id", providerInstanceID)
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
 }
 
 func setupProviderEnvEntries(env map[string]string) []any {
@@ -1148,10 +1492,10 @@ func renderSetupProviderEnv(spec nodeagent.ProviderSpec, nodeID string, hostName
 func renderSetupProviderEnvMap(spec nodeagent.ProviderSpec, nodeID string, hostName string, containerKind string) map[string]string {
 	instanceID := spec.InstanceID
 	if instanceID == "" {
-		instanceID = spec.ID + "-local"
+		instanceID = spec.ProviderType + "-local"
 	}
 	env := map[string]string{
-		"PANGAEA_PROVIDER_ID":           spec.ID,
+		"PANGAEA_PROVIDER_TYPE":         spec.ProviderType,
 		"PANGAEA_PROVIDER_INSTANCE_ID":  instanceID,
 		"PANGAEA_PROVIDER_MODE":         spec.ProviderMode,
 		"PANGAEA_NODE_ID":               nodeID,
@@ -1179,7 +1523,9 @@ func renderSetupProviderEnvMap(spec nodeagent.ProviderSpec, nodeID string, hostN
 			env["PANGAEA_MODEL_ALIAS"] = spec.Models[0].Aliases[0]
 		}
 		env["PANGAEA_MODEL_CAPABILITIES"] = joinSetupCapabilities(spec.Models[0].Capabilities)
-		env["PANGAEA_MODELS"] = setupProviderModelsEnv(spec.Models)
+		if setupProviderShouldEmitModelsEnv(spec) {
+			env["PANGAEA_MODELS"] = setupProviderModelsEnv(spec.Models)
+		}
 	}
 	for key, value := range spec.Env {
 		env[key] = value
@@ -1190,6 +1536,10 @@ func renderSetupProviderEnvMap(spec nodeagent.ProviderSpec, nodeID string, hostN
 		}
 	}
 	return env
+}
+
+func setupProviderShouldEmitModelsEnv(spec nodeagent.ProviderSpec) bool {
+	return !(spec.Service == provider.ServiceGemini && spec.ProviderMode == "http-direct")
 }
 
 func renderSetupProviderSystemdUnit(spec nodeagent.ProviderSpec, envPath string) string {

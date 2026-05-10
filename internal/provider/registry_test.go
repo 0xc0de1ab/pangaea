@@ -22,7 +22,7 @@ func TestRegistryFindsByCapabilityAndService(t *testing.T) {
 	registry := NewRegistry()
 	codex := validRegistration()
 	claude := validRegistration()
-	claude.Identity.ProviderID = "claude-primary"
+	claude.Identity.ProviderType = "claude-primary"
 	claude.Identity.ProviderInstanceID = "claude-primary-a1-01"
 	claude.Identity.Service = ServiceClaude
 	claude.Capabilities = []Capability{CapabilityAnthropicMessages}
@@ -39,7 +39,7 @@ func TestRegistryFindsByCapabilityAndService(t *testing.T) {
 	}
 
 	claudeProviders := registry.FindByService(ServiceClaude)
-	if len(claudeProviders) != 1 || claudeProviders[0].Identity.ProviderID != "claude-primary" {
+	if len(claudeProviders) != 1 || claudeProviders[0].Identity.ProviderType != "claude-primary" {
 		t.Fatalf("expected one claude provider, got %#v", claudeProviders)
 	}
 }

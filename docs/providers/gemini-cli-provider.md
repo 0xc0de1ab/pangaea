@@ -134,15 +134,17 @@ defaults to 4.
 
 Gemini model aliases should map to route policy:
 
-- `gemini-default`
+- `gemini-default` (defaults to the `auto-gemini-3` group)
 - `flash`
 - `flash-lite`
 - `pro`
 - `auto-gemini-3`
 - `auto-gemini-2.5`
 
-Current CLI model IDs are exposed from `PANGAEA_MODELS` so the router dashboard
-does not only see the default model.
+Current CLI model IDs are discovered from Code Assist `retrieveUserQuota`
+buckets. `PANGAEA_MODEL`/`PANGAEA_MODEL_ALIAS` only seed the initial default
+model before the first discovery pass; `PANGAEA_MODELS` is not required for
+Gemini direct-http providers.
 
 Gemini CLI also exposes grouped auto model choices. Pangaea marks these models
 with `kind: group` and reports the fixed group member list so the dashboard can
@@ -153,9 +155,14 @@ show them differently from concrete model IDs:
 | `auto-gemini-3` | `Auto (Gemini 3)` | `gemini-3.1-pro-preview`, `gemini-3-flash-preview` |
 | `auto-gemini-2.5` | `Auto (Gemini 2.5)` | `gemini-2.5-pro`, `gemini-2.5-flash` |
 
-These values mirror the Gemini CLI model picker. The CLI resolves
-`auto-gemini-3` to a Gemini 3.1 Pro target when the installed CLI enables that
-preview path, otherwise it falls back according to CLI-side feature flags.
+`gemini-default` is attached to `auto-gemini-3`, so dashboards and API clients
+use the grouped auto model by default. Concrete Flash/Pro IDs remain available
+for explicit routing.
+
+These values mirror the Gemini CLI model picker. Pangaea derives the concrete
+members from the quota bucket model IDs returned for the authenticated account,
+then adds grouped auto entries when matching Gemini 3 or Gemini 2.5 members are
+available.
 
 ## Usage
 

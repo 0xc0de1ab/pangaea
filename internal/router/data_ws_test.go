@@ -93,13 +93,17 @@ func TestDataBrokerProviderAvailableTracksDataSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial data ws: %v", err)
 	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !broker.ProviderAvailable("provider-a1") {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if !broker.ProviderAvailable("provider-a1") {
 		t.Fatalf("provider should be available after data session connects")
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close data ws: %v", err)
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if !broker.ProviderAvailable("provider-a1") {
 			return
@@ -212,6 +216,46 @@ func TestDataBrokerCapabilityTokenUsesShortTTL(t *testing.T) {
 	}
 	if claims.Deadline.After(before.Add(defaultCapabilityTokenMaxTTL + time.Second)) {
 		t.Fatalf("capability token deadline too long: %s", claims.Deadline.Sub(before))
+	}
+}
+
+func TestDataBrokerUsesConfiguredRequestTimeout(t *testing.T) {
+	tokenKey := []byte("test-data-configured-timeout-key")
+	broker, err := NewDataBrokerWithOptions(tokenKey, DataBrokerOptions{
+		RequestTimeout:        7 * time.Minute,
+		CapabilityTokenMaxTTL: 45 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new data broker: %v", err)
+	}
+	before := time.Now().UTC()
+	request, deadline, err := broker.newDataRequest(context.Background(), provider.Registration{
+		Identity: provider.ProviderIdentity{ProviderInstanceID: "provider-a1"},
+	}, compat.Request{
+		ID:      "req_configured_timeout_1",
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gpt-5-sim",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}, true)
+	if err != nil {
+		t.Fatalf("new data request: %v", err)
+	}
+	if deadline.Before(before.Add(7*time.Minute-time.Second)) || deadline.After(before.Add(7*time.Minute+time.Second)) {
+		t.Fatalf("deadline = %s, want around 7m from %s", deadline, before)
+	}
+	signer, err := tunnel.NewTokenSigner(tokenKey)
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	claims, err := signer.VerifyForDescriptor(request.CapabilityToken, request.Descriptor, before)
+	if err != nil {
+		t.Fatalf("verify capability token: %v", err)
+	}
+	if claims.Deadline.Before(before.Add(45*time.Second-time.Second)) || claims.Deadline.After(before.Add(45*time.Second+time.Second)) {
+		t.Fatalf("capability token deadline = %s, want around 45s from %s", claims.Deadline, before)
 	}
 }
 

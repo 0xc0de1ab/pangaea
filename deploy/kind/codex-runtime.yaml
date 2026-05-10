@@ -105,8 +105,8 @@ spec:
               value: /var/lib/pangaea/auth/codex
             - name: PANGAEA_SHIM_MODE
               value: app-server
-            - name: PANGAEA_PROVIDER_ID
-              value: codex-provider-id
+            - name: PANGAEA_PROVIDER_TYPE
+              value: codex-provider-type
             - name: PANGAEA_PROVIDER_INSTANCE_ID
               value: codex-provider-instance-id
             - name: PANGAEA_NODE_ID

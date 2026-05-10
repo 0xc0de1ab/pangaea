@@ -171,7 +171,7 @@ Every request carries:
 - `user_id`
 - `api_key_id`
 - `route_id`
-- `provider_id`
+- `provider_type`
 - `provider_instance_id`
 - `node_id`
 - `host_name`

@@ -211,6 +211,59 @@ func TestProviderDiscoversOpenAICompatibleModels(t *testing.T) {
 	}
 }
 
+func TestProviderDiscoversAntigravitySubscription(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/account" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("authorization") != "Bearer sk_antigravity" {
+			t.Fatalf("missing auth header: %q", r.Header.Get("authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name":  "Sam Sung",
+			"email": "samtest4u@gmail.com",
+			"planStatus": map[string]any{
+				"planInfo": map[string]any{"planName": "Pro"},
+			},
+			"userTier": map[string]any{
+				"id":                      "g1-ultra-tier",
+				"name":                    "Google AI Ultra",
+				"upgradeSubscriptionText": "You are subscribed to the best plan.",
+			},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	registration.Auth.Subscription = nil
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_antigravity",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Account.ID != "samtest4u@gmail.com" || auth.Account.Display != "samtest4u@gmail.com" {
+		t.Fatalf("unexpected account: %#v", auth.Account)
+	}
+	if auth.Subscription == nil {
+		t.Fatalf("missing subscription")
+	}
+	if auth.Subscription.Name != "Google AI Ultra" || auth.Subscription.Tier != "Google AI Ultra" {
+		t.Fatalf("unexpected subscription plan: %#v", auth.Subscription)
+	}
+	if auth.Subscription.Status != "You are subscribed to the best plan." {
+		t.Fatalf("unexpected subscription status: %#v", auth.Subscription)
+	}
+}
+
 func TestProviderDiscoversGeminiModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -235,6 +288,7 @@ func TestProviderDiscoversGeminiModels(t *testing.T) {
 					"displayName":                "Gemini 2.5 Flash",
 					"supportedGenerationMethods": []string{"generateContent", "streamGenerateContent"},
 					"inputTokenLimit":            1048576,
+					"outputTokenLimit":           65536,
 				},
 			},
 		})
@@ -246,7 +300,7 @@ func TestProviderDiscoversGeminiModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("models: %v", err)
 	}
-	if len(models) != 1 || models[0].ID != "gemini-2.5-flash" || models[0].ContextTokens != 1048576 {
+	if len(models) != 1 || models[0].ID != "gemini-2.5-flash" || models[0].ContextTokens != 1048576 || models[0].MaxOutputTokens != 65536 {
 		t.Fatalf("unexpected models: %#v", models)
 	}
 	if !hasProviderCapability(models[0].Capabilities, provider.CapabilityGeminiGenerateContent) || !hasProviderCapability(models[0].Capabilities, provider.CapabilityStreamSSE) {
@@ -904,7 +958,7 @@ func testRegistration() provider.Registration {
 	now := time.Now().UTC()
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "api-compatible-test",
+			ProviderType:       "api-compatible-test",
 			ProviderInstanceID: "api-compatible-test-0001",
 			NodeID:             "node-api",
 			HostName:           "api-host",

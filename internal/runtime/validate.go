@@ -16,7 +16,7 @@ var (
 )
 
 func (spec ContainerSpec) Validate() error {
-	if err := validateRequiredToken("provider_id", spec.ProviderID); err != nil {
+	if err := validateRequiredToken("provider_type", spec.ProviderType); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidContainerSpec, err)
 	}
 	if err := spec.Image.Validate(); err != nil {

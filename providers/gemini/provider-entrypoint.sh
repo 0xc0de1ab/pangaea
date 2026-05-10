@@ -17,7 +17,7 @@ if [ "${PANGAEA_AUTH_REQUIRED}" != "false" ]; then
 fi
 export PANGAEA_AUTH_FORMAT="${PANGAEA_AUTH_FORMAT:-gemini-oauth-creds-json-format}"
 export PANGAEA_UPSTREAM_DIALECT="${PANGAEA_UPSTREAM_DIALECT:-gemini}"
-export PANGAEA_MODEL="${PANGAEA_MODEL:-gemini-2.5-flash}"
+export PANGAEA_MODEL="${PANGAEA_MODEL:-auto-gemini-3}"
 export PANGAEA_MODEL_ALIAS="${PANGAEA_MODEL_ALIAS:-gemini-default}"
 export PANGAEA_REFRESH_COMMAND="${PANGAEA_REFRESH_COMMAND:-gemini -p 'Reply with OK only.' --skip-trust --approval-mode plan --output-format json --model gemini-2.5-flash}"
 export PANGAEA_REFRESH_LOGIN_SHELL="${PANGAEA_REFRESH_LOGIN_SHELL:-true}"
@@ -37,7 +37,7 @@ write_runtime_settings() {
     {
       printf 'PANGAEA_NODE_ID=%q\n' "${PANGAEA_NODE_ID:-}"
       printf 'PANGAEA_HOST_NAME=%q\n' "${PANGAEA_HOST_NAME:-}"
-      printf 'PANGAEA_PROVIDER_ID=%q\n' "${PANGAEA_PROVIDER_ID:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%q\n' "${PANGAEA_PROVIDER_TYPE:-}"
       printf 'PANGAEA_PROVIDER_INSTANCE_ID=%q\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
       printf 'PANGAEA_PROVIDER_MODE=%q\n' "${PANGAEA_PROVIDER_MODE:-}"
       printf 'PANGAEA_SERVICE=%q\n' "${PANGAEA_SERVICE:-}"

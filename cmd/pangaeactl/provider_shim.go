@@ -25,13 +25,14 @@ type providerShimRunOptions struct {
 	Sidecar                  bool
 	HeartbeatInterval        time.Duration
 	StreamTokenKey           string
-	ProviderID               string
+	ProviderType             string
 	ProviderInstanceID       string
 	NodeID                   string
 	HostName                 string
 	ContainerID              string
 	ContainerKind            string
 	ContainerName            string
+	TargetVersion            string
 	Service                  string
 	Account                  string
 	ProviderMode             string
@@ -92,13 +93,14 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.Sidecar, "sidecar", false, "run a sidecar provider shim against a local compatible upstream")
 	cmd.Flags().DurationVar(&opts.HeartbeatInterval, "heartbeat-interval", 30*time.Second, "control heartbeat interval")
 	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
-	cmd.Flags().StringVar(&opts.ProviderID, "provider-id", "", "logical provider id for --api-compatible")
+	cmd.Flags().StringVar(&opts.ProviderType, "provider-type", "", "logical provider type for --api-compatible")
 	cmd.Flags().StringVar(&opts.ProviderInstanceID, "provider-instance-id", "", "provider instance id for --api-compatible")
 	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "node id for --api-compatible")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "operator-facing host name for --api-compatible")
 	cmd.Flags().StringVar(&opts.ContainerID, "container-id", "", "container runtime id for containerized shims")
 	cmd.Flags().StringVar(&opts.ContainerKind, "container-kind", "", "container runtime kind for containerized shims")
 	cmd.Flags().StringVar(&opts.ContainerName, "container-name", "", "container name for containerized shims")
+	cmd.Flags().StringVar(&opts.TargetVersion, "target-version", "", "target CLI/server version reported for this provider")
 	cmd.Flags().StringVar(&opts.Service, "service", "", "provider service family for --api-compatible, such as glm, minimax, deepseek")
 	cmd.Flags().StringVar(&opts.Account, "account", "", "operator-facing account label for --api-compatible")
 	cmd.Flags().StringVar(&opts.ProviderMode, "provider-mode", "", "provider adapter mode for --cli-container (http-direct|app-server|cli-adapter|acp|ls-core-sidecar)")
@@ -199,13 +201,14 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 
 func providerFactoryConfigFromOptions(opts providerShimRunOptions) providerfactory.Config {
 	return providerfactory.Config{
-		ProviderID:               opts.ProviderID,
+		ProviderType:             opts.ProviderType,
 		ProviderInstanceID:       opts.ProviderInstanceID,
 		NodeID:                   opts.NodeID,
 		HostName:                 opts.HostName,
 		ContainerID:              opts.ContainerID,
 		ContainerKind:            opts.ContainerKind,
 		ContainerName:            opts.ContainerName,
+		TargetVersion:            opts.TargetVersion,
 		Service:                  opts.Service,
 		Account:                  opts.Account,
 		ProviderMode:             opts.ProviderMode,
@@ -254,7 +257,7 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	opts.RouterDataURL = stringEnvDefault(opts.RouterDataURL, "PANGAEA_ROUTER_DATA_URL")
 	opts.RouterPeerToken = stringEnvDefault(opts.RouterPeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
 	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
-	opts.ProviderID = stringEnvDefault(opts.ProviderID, "PANGAEA_PROVIDER_ID")
+	opts.ProviderType = stringEnvDefault(opts.ProviderType, "PANGAEA_PROVIDER_TYPE")
 	opts.ProviderInstanceID = stringEnvDefault(opts.ProviderInstanceID, "PANGAEA_PROVIDER_INSTANCE_ID")
 	opts.NodeID = stringEnvDefault(opts.NodeID, "PANGAEA_NODE_ID")
 	if strings.TrimSpace(opts.NodeID) == "" {
@@ -266,6 +269,7 @@ func applyProviderShimEnvDefaults(opts providerShimRunOptions) providerShimRunOp
 	opts.ContainerID = stringEnvDefault(opts.ContainerID, "PANGAEA_CONTAINER_ID")
 	opts.ContainerKind = stringEnvDefault(opts.ContainerKind, "PANGAEA_CONTAINER_KIND")
 	opts.ContainerName = stringEnvDefault(opts.ContainerName, "PANGAEA_CONTAINER_NAME")
+	opts.TargetVersion = stringEnvDefault(opts.TargetVersion, "PANGAEA_TARGET_VERSION")
 	if strings.TrimSpace(opts.ContainerID) == "" && strings.TrimSpace(opts.ContainerKind) != "" {
 		opts.ContainerID = firstStringEnv("PANGAEA_CONTAINER_UID", "POD_UID", "HOSTNAME")
 	}

@@ -152,7 +152,7 @@ type RouteView struct {
 }
 
 type RouteCandidateView struct {
-	Provider           string              `json:"provider"`
+	ProviderType       string              `json:"provider_type"`
 	Account            string              `json:"account,omitempty"`
 	HostName           string              `json:"host_name,omitempty"`
 	Weight             int                 `json:"weight,omitempty"`
@@ -165,12 +165,13 @@ type RouteCandidateView struct {
 
 type RouteProviderView struct {
 	ProviderInstanceID string                `json:"provider_instance_id"`
-	ProviderID         string                `json:"provider_id,omitempty"`
+	ProviderType       string                `json:"provider_type,omitempty"`
 	NodeID             string                `json:"node_id,omitempty"`
 	HostName           string                `json:"host_name,omitempty"`
 	ContainerID        string                `json:"container_id,omitempty"`
 	ContainerKind      string                `json:"container_kind,omitempty"`
 	ContainerName      string                `json:"container_name,omitempty"`
+	TargetVersion      string                `json:"target_version,omitempty"`
 	Service            provider.Service      `json:"service,omitempty"`
 	ProviderKind       provider.Kind         `json:"provider_kind,omitempty"`
 	Account            provider.Account      `json:"account,omitempty"`
@@ -186,12 +187,13 @@ type RouteProviderView struct {
 
 type ProviderView struct {
 	ProviderInstanceID      string                `json:"provider_instance_id"`
-	ProviderID              string                `json:"provider_id,omitempty"`
+	ProviderType            string                `json:"provider_type,omitempty"`
 	NodeID                  string                `json:"node_id,omitempty"`
 	HostName                string                `json:"host_name,omitempty"`
 	ContainerID             string                `json:"container_id,omitempty"`
 	ContainerKind           string                `json:"container_kind,omitempty"`
 	ContainerName           string                `json:"container_name,omitempty"`
+	TargetVersion           string                `json:"target_version,omitempty"`
 	Service                 provider.Service      `json:"service,omitempty"`
 	ProviderKind            provider.Kind         `json:"provider_kind,omitempty"`
 	Account                 provider.Account      `json:"account,omitempty"`
@@ -229,7 +231,7 @@ type TraceSummary struct {
 	ErrorStatus        int               `json:"error_status,omitempty"`
 	RetryAfter         string            `json:"retry_after,omitempty"`
 	ProviderInstanceID string            `json:"provider_instance_id,omitempty"`
-	ProviderID         string            `json:"provider_id,omitempty"`
+	ProviderType       string            `json:"provider_type,omitempty"`
 	NodeID             string            `json:"node_id,omitempty"`
 	HostName           string            `json:"host_name,omitempty"`
 	ContainerID        string            `json:"container_id,omitempty"`
@@ -417,10 +419,10 @@ func buildRouteViews(engine *Engine, dataBroker *DataBroker) []RouteView {
 		}
 		for _, candidate := range route.Candidates {
 			candidateView := RouteCandidateView{
-				Provider: candidate.Provider,
-				Account:  candidate.Account,
-				HostName: candidate.HostName,
-				Weight:   candidate.Weight,
+				ProviderType: candidate.ProviderType,
+				Account:      candidate.Account,
+				HostName:     candidate.HostName,
+				Weight:       candidate.Weight,
 			}
 			for _, registration := range registrations {
 				if !candidateMatchesRegistration(candidate, registration) {
@@ -477,12 +479,13 @@ func buildProviderViews(now time.Time, engine *Engine, dataBroker *DataBroker) [
 		identity := registration.Identity
 		view := ProviderView{
 			ProviderInstanceID: identity.ProviderInstanceID,
-			ProviderID:         identity.ProviderID,
+			ProviderType:       identity.ProviderType,
 			NodeID:             identity.NodeID,
 			HostName:           identity.HostName,
 			ContainerID:        identity.ContainerID,
 			ContainerKind:      identity.ContainerKind,
 			ContainerName:      identity.ContainerName,
+			TargetVersion:      identity.TargetVersion,
 			Service:            identity.Service,
 			ProviderKind:       identity.Kind,
 			Account:            accountWithFallback(identity.Account, registration.Auth.Account),
@@ -517,8 +520,8 @@ func buildProviderViews(now time.Time, engine *Engine, dataBroker *DataBroker) [
 			view.DataSessionActive = true
 			view.PendingRequests = session.PendingRequests
 			view.DataSessionFreshness = sessionFreshness(now, "data.connected_at", session.ConnectedAt)
-			if view.ProviderID == "" {
-				view.ProviderID = session.ProviderID
+			if view.ProviderType == "" {
+				view.ProviderType = session.ProviderType
 			}
 			if view.NodeID == "" {
 				view.NodeID = session.NodeID
@@ -545,7 +548,7 @@ func buildProviderViews(now time.Time, engine *Engine, dataBroker *DataBroker) [
 		}
 		views[session.ProviderInstanceID] = ProviderView{
 			ProviderInstanceID:      session.ProviderInstanceID,
-			ProviderID:              session.ProviderID,
+			ProviderType:            session.ProviderType,
 			NodeID:                  session.NodeID,
 			HostName:                session.HostName,
 			Service:                 session.Service,
@@ -557,8 +560,8 @@ func buildProviderViews(now time.Time, engine *Engine, dataBroker *DataBroker) [
 	for _, session := range dataSessions {
 		view := views[session.ProviderInstanceID]
 		view.ProviderInstanceID = session.ProviderInstanceID
-		if view.ProviderID == "" {
-			view.ProviderID = session.ProviderID
+		if view.ProviderType == "" {
+			view.ProviderType = session.ProviderType
 		}
 		if view.NodeID == "" {
 			view.NodeID = session.NodeID
@@ -727,12 +730,13 @@ func routeProviderView(registration provider.Registration, dataSession DataSessi
 	identity := registration.Identity
 	view := RouteProviderView{
 		ProviderInstanceID: identity.ProviderInstanceID,
-		ProviderID:         identity.ProviderID,
+		ProviderType:       identity.ProviderType,
 		NodeID:             identity.NodeID,
 		HostName:           identity.HostName,
 		ContainerID:        identity.ContainerID,
 		ContainerKind:      identity.ContainerKind,
 		ContainerName:      identity.ContainerName,
+		TargetVersion:      identity.TargetVersion,
 		Service:            identity.Service,
 		ProviderKind:       identity.Kind,
 		Account:            accountWithFallback(identity.Account, registration.Auth.Account),
@@ -771,7 +775,7 @@ func traceSummary(trace RequestTrace) TraceSummary {
 	}
 	if trace.Provider != nil {
 		summary.ProviderInstanceID = trace.Provider.ProviderInstanceID
-		summary.ProviderID = trace.Provider.ProviderID
+		summary.ProviderType = trace.Provider.ProviderType
 		summary.NodeID = trace.Provider.NodeID
 		summary.HostName = trace.Provider.HostName
 		summary.ContainerID = trace.Provider.ContainerID
@@ -1107,8 +1111,8 @@ func providerViewLess(a ProviderView, b ProviderView) bool {
 		return a.HostName < b.HostName
 	case a.Service != b.Service:
 		return a.Service < b.Service
-	case a.ProviderID != b.ProviderID:
-		return a.ProviderID < b.ProviderID
+	case a.ProviderType != b.ProviderType:
+		return a.ProviderType < b.ProviderType
 	case a.Account.Display != b.Account.Display:
 		return a.Account.Display < b.Account.Display
 	default:

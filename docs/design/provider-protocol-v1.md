@@ -117,7 +117,7 @@ All control and data messages carry stable identifiers.
 - `host_name`: human-readable service providing host name. This is the
   operator-facing provider location and MUST NOT be replaced by container name.
 - `container_id`: runtime container identity.
-- `provider_id`: logical configured provider.
+- `provider_type`: logical configured provider.
 - `provider_instance_id`: concrete connected shim instance.
 - `account_id`: provider account identity if known.
 - `model_id`: provider native model id.
@@ -219,7 +219,7 @@ provider.heartbeat
 
 ```json
 {
-  "provider_id": "codex-primary",
+  "provider_type": "codex-primary",
   "provider_instance_id": "codex-primary/a1/01",
   "kind": "cli-container",
   "node_id": "a1",
@@ -276,14 +276,14 @@ for example two Codex accounts on one host:
 ```json
 [
   {
-    "provider_id": "codex-primary",
+    "provider_type": "codex-primary",
     "service": "codex",
     "node_id": "snowbox",
     "host_name": "snowbox",
     "account": {"email": "primary@example.test"}
   },
   {
-    "provider_id": "codex-secondary",
+    "provider_type": "codex-secondary",
     "service": "codex",
     "node_id": "snowbox",
     "host_name": "snowbox",
@@ -565,7 +565,7 @@ All request paths MUST carry:
 - `node_id`
 - `host_name`
 - `container_id`
-- `provider_id`
+- `provider_type`
 - `provider_instance_id`
 - `account_id`
 - `model`

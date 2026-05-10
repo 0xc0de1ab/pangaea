@@ -23,7 +23,7 @@ routes:
       models: [gpt-5-codex]
       api_dialects: [openai]
     candidates:
-      - provider: codex-cli
+      - provider_type: codex-cli
         account: primary@example.test
         host_name: snowbox
         weight: 100
@@ -101,19 +101,19 @@ func TestRoutingPolicyEvaluateRoutesSameProviderAcrossDialects(t *testing.T) {
 			{
 				ID:          "codex-openai",
 				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
-				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Candidates:  []Candidate{{ProviderType: "codex-cli", Weight: 100}},
 				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
 			},
 			{
 				ID:          "codex-anthropic",
 				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectAnthropic}},
-				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Candidates:  []Candidate{{ProviderType: "codex-cli", Weight: 100}},
 				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityAnthropicMessages}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
 			},
 			{
 				ID:          "codex-gemini",
 				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectGemini}},
-				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Candidates:  []Candidate{{ProviderType: "codex-cli", Weight: 100}},
 				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
 			},
 		},
@@ -168,7 +168,7 @@ func TestRoutingPolicyEvaluateRejectsUnsupportedReportedModel(t *testing.T) {
 			{
 				ID:          "antigravity-openai",
 				Match:       RouteMatch{APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
-				Candidates:  []Candidate{{Provider: "antigravity-sidecar", Weight: 100}},
+				Candidates:  []Candidate{{ProviderType: "antigravity-sidecar", Weight: 100}},
 				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
 			},
 		},
@@ -204,7 +204,7 @@ func TestRoutingPolicyEvaluateAcceptsReportedModelAlias(t *testing.T) {
 			{
 				ID:          "codex-openai",
 				Match:       RouteMatch{Models: []string{"codex-default", "gpt-5.5"}, APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
-				Candidates:  []Candidate{{Provider: "codex-cli", Weight: 100}},
+				Candidates:  []Candidate{{ProviderType: "codex-cli", Weight: 100}},
 				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
 			},
 		},
@@ -233,7 +233,7 @@ func TestRoutingPolicyEvaluateUsesCanonicalModelPriorityList(t *testing.T) {
 			{
 				ID:          "gemini-openai",
 				Match:       RouteMatch{Models: []string{"gemini-auto"}, APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
-				Candidates:  []Candidate{{Provider: "gemini-cli", Weight: 10}},
+				Candidates:  []Candidate{{ProviderType: "gemini-cli", Weight: 10}},
 				Constraints: Constraints{RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat}, AuthStatus: []provider.AuthStatus{provider.AuthHealthy}, HealthState: []provider.HealthStatus{provider.HealthReady}},
 			},
 		},
@@ -288,8 +288,8 @@ func validPolicy() RoutingPolicy {
 					APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
 				},
 				Candidates: []Candidate{
-					{Provider: "codex-cli", Account: "primary@example.test", Weight: 10},
-					{Provider: "codex-cli", Account: "secondary@example.test", Weight: 50},
+					{ProviderType: "codex-cli", Account: "primary@example.test", Weight: 10},
+					{ProviderType: "codex-cli", Account: "secondary@example.test", Weight: 50},
 				},
 				Constraints: Constraints{
 					AuthStatus:    []provider.AuthStatus{provider.AuthHealthy, provider.AuthRefreshSoon},
@@ -301,10 +301,10 @@ func validPolicy() RoutingPolicy {
 	}
 }
 
-func registration(instanceID, providerID, account string, weight, queueDepth int) provider.Registration {
+func registration(instanceID, providerType, account string, weight, queueDepth int) provider.Registration {
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         providerID,
+			ProviderType:       providerType,
 			ProviderInstanceID: instanceID,
 			NodeID:             "node-a1",
 			HostName:           "snowbox",

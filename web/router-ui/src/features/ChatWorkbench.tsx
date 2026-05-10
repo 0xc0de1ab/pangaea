@@ -3,7 +3,7 @@ import { ArrowDown, AtSign, Check, Copy, FileText, Image as ImageIcon, RefreshCw
 import { MarkdownContent } from "../components/MarkdownContent";
 import { ServiceIcon } from "../components/ServiceIcon";
 import { api, type DashboardChatContent, type DashboardChatContentPart, type DashboardChatMessage } from "../lib/api";
-import { providerAccountLabel, providerID } from "../lib/derive";
+import { providerAccountLabel, providerInstanceID } from "../lib/derive";
 import { copyText, cx, middleEllipsis } from "../lib/format";
 import type { ServiceEndpoint } from "../lib/service-endpoints";
 import type { ProviderModel, ProviderRegistration } from "../lib/types";
@@ -45,6 +45,7 @@ const transcriptBottomSlack = 96;
 const maxImageAttachmentBytes = 10 * 1024 * 1024;
 const maxTextAttachmentBytes = 256 * 1024;
 const maxAttachments = 8;
+const streamRenderFlushMs = 80;
 
 export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
   const [renderTarget, setRenderTarget] = useState<ChatWorkbenchTarget | null>(target);
@@ -62,7 +63,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
   const [stickToBottom, setStickToBottom] = useState(true);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const targetKey = target ? `${providerID(target.provider)}:${target.endpoint.id}` : "";
+  const targetKey = target ? `${providerInstanceID(target.provider)}:${target.endpoint.id}` : "";
   const transcript = useMemo(() => messages.filter((message) => !message.pending && !message.error).map(({ role, content, requestContent }) => ({ role, content: requestContent ?? content })), [messages]);
   const activeTarget = target ?? renderTarget;
   const modelOptions = useMemo(() => activeTarget ? chatModelOptions(activeTarget.endpoint) : [], [activeTarget]);
@@ -89,8 +90,9 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
     setInput("");
     setMode(target.endpoint.supportsStream ? "stream" : "buffered");
     const options = chatModelOptions(target.endpoint);
-    setSelectedModel(options[0]?.value || target.endpoint.model);
-    setReasoningEffort("");
+    const initialModel = options[0]?.value || target.endpoint.model;
+    setSelectedModel(initialModel);
+    setReasoningEffort(defaultReasoningEffort(initialModel, target.provider));
     setAttachments([]);
     setAttachmentError("");
     setDragActive(false);
@@ -116,6 +118,9 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
   const { provider, endpoint } = activeTarget;
   const activeMode = endpoint.supportsStream ? mode : "buffered";
   const activeModel = selectedModel || endpoint.model;
+  const activeModelInfo = endpoint.models?.find((model) => model.id === activeModel || (model.aliases ?? []).includes(activeModel));
+  const activeMaxOutputTokens = activeModelInfo?.max_output_tokens;
+  const activeReasoningEffort = thinkingLevels.includes(reasoningEffort) ? reasoningEffort : "";
   const activePath = endpoint.protocol === "gemini" ? `/v1beta/models/${activeModel}:${activeMode === "stream" ? "streamGenerateContent" : "generateContent"}` : activeMode === "stream" ? endpoint.streamPath : endpoint.chatPath;
 
   async function sendMessage() {
@@ -134,17 +139,42 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
     setAttachments([]);
     setAttachmentError("");
     setBusy(true);
+    let pendingStreamDelta = "";
+    let streamFlushTimer: number | null = null;
+    const flushStreamDelta = () => {
+      if (!pendingStreamDelta) {
+        streamFlushTimer = null;
+        return;
+      }
+      const delta = pendingStreamDelta;
+      pendingStreamDelta = "";
+      streamFlushTimer = null;
+      setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: message.content + delta } : message));
+    };
+    const enqueueStreamDelta = (delta: string) => {
+      if (!delta) return;
+      pendingStreamDelta += delta;
+      if (streamFlushTimer !== null) return;
+      streamFlushTimer = window.setTimeout(flushStreamDelta, streamRenderFlushMs);
+    };
     try {
       if (activeMode === "stream") {
-        const result = await api.streamingChat(endpoint.protocol, activeModel, outbound, token, (delta) => {
-          setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: message.content + delta } : message));
-        }, reasoningEffort || undefined);
-        setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: message.content || result.content, pending: false } : message));
+        const result = await api.streamingChat(endpoint.protocol, activeModel, outbound, token, enqueueStreamDelta, activeReasoningEffort || undefined, activeMaxOutputTokens);
+        if (streamFlushTimer !== null) {
+          window.clearTimeout(streamFlushTimer);
+          streamFlushTimer = null;
+        }
+        flushStreamDelta();
+        setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: result.content || message.content, pending: false } : message));
       } else {
-        const result = await api.bufferedChat(endpoint.protocol, activeModel, outbound, token, reasoningEffort || undefined);
+        const result = await api.bufferedChat(endpoint.protocol, activeModel, outbound, token, activeReasoningEffort || undefined, activeMaxOutputTokens);
         setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: result.content || "(empty response)", pending: false } : message));
       }
     } catch (err) {
+      if (streamFlushTimer !== null) {
+        window.clearTimeout(streamFlushTimer);
+        streamFlushTimer = null;
+      }
       const error = err instanceof Error ? err.message : "Chat request failed";
       setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: "", pending: false, error } : message));
     } finally {
@@ -234,7 +264,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
             <div>
               <h2>{endpoint.label} Chat</h2>
               <p>
-                <span className="mono">{middleEllipsis(providerID(provider), 18, 12)}</span>
+                <span className="mono">{middleEllipsis(providerInstanceID(provider), 18, 12)}</span>
                 <span>{providerAccountLabel(provider)}</span>
               </p>
             </div>
@@ -297,7 +327,11 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
               </div>
               <div className="chat-bubble">
                 {message.pending && !message.content ? <TypingSpinner /> : null}
-                {message.error ? <div className="inline-error endpoint-error">{message.error}</div> : message.content ? <MarkdownContent content={message.content} /> : null}
+                {message.error ? (
+                  <div className="inline-error endpoint-error">{message.error}</div>
+                ) : message.content ? (
+                  message.pending ? <div className="streaming-plain-text">{message.content}</div> : <MarkdownContent content={message.content} />
+                ) : null}
               </div>
             </article>
           ))}
@@ -396,6 +430,10 @@ function thinkingLevelsForModel(model: string, provider?: ProviderRegistration):
     return [];
   }
   return ["low", "medium", "high", "xhigh"];
+}
+
+function defaultReasoningEffort(model: string, provider?: ProviderRegistration): ReasoningEffort {
+  return thinkingLevelsForModel(model, provider).includes("medium") ? "medium" : "";
 }
 
 function thinkingLabel(level: ReasoningEffort) {

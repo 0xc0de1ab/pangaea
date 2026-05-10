@@ -720,7 +720,7 @@ routes:
       models: [providersim-default]
       api_dialects: [openai]
     candidates:
-      - provider: providersim-openai
+      - provider_type: providersim-openai
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]

@@ -31,6 +31,7 @@ type routerServeOptions struct {
 	StateDir       string
 	StateMode      string
 	StateFlush     time.Duration
+	DataRequestTO  time.Duration
 }
 
 func newRouterCmd() *cobra.Command {
@@ -69,6 +70,7 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.StateDir, "state-dir", "", "optional directory for router state snapshots")
 	cmd.Flags().StringVar(&opts.StateMode, "state-mode", "persistent", "router state mode (persistent|ephemeral)")
 	cmd.Flags().DurationVar(&opts.StateFlush, "state-flush-interval", 10*time.Second, "interval for writing router state snapshots")
+	cmd.Flags().DurationVar(&opts.DataRequestTO, "data-request-timeout", 10*time.Minute, "maximum duration for one router-to-provider data request")
 	return cmd
 }
 
@@ -78,6 +80,13 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
 	opts.StateDir = stringEnvDefault(opts.StateDir, "PANGAEA_ROUTER_STATE_DIR")
 	opts.StateMode = stringEnvDefaultWhenDefault(opts.StateMode, "persistent", "PANGAEA_ROUTER_STATE_MODE")
+	if value := strings.TrimSpace(os.Getenv("PANGAEA_ROUTER_DATA_REQUEST_TIMEOUT")); value != "" && (opts.DataRequestTO <= 0 || opts.DataRequestTO == 10*time.Minute) {
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("parse PANGAEA_ROUTER_DATA_REQUEST_TIMEOUT: %w", err)
+		}
+		opts.DataRequestTO = parsed
+	}
 	engine, err := buildRouterEngine(opts)
 	if err != nil {
 		return err
@@ -87,7 +96,9 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	}
 	stateStop := startRouterStateWriter(ctx, opts, engine)
 	defer stateStop()
-	dataBroker, err := v2router.NewDataBroker([]byte(opts.StreamTokenKey))
+	dataBroker, err := v2router.NewDataBrokerWithOptions([]byte(opts.StreamTokenKey), v2router.DataBrokerOptions{
+		RequestTimeout: opts.DataRequestTO,
+	})
 	if err != nil {
 		return err
 	}
@@ -282,7 +293,7 @@ routes:
       models: [providersim-default]
       api_dialects: [openai]
     candidates:
-      - provider: providersim-openai
+      - provider_type: providersim-openai
         account: providersim@example.test
         host_name: providersim-host
         weight: 100

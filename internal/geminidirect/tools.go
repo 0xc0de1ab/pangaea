@@ -31,6 +31,9 @@ func maxToolRounds(value int) int {
 
 func (p *Provider) toolDefinitions(ctx context.Context, requested []compat.ToolDefinition) ([]compat.ToolDefinition, error) {
 	out := cloneToolDefinitions(requested)
+	if len(out) == 0 {
+		return out, nil
+	}
 	catalog, ok := p.toolDispatcher.(ToolCatalog)
 	if !ok || catalog == nil {
 		return out, nil

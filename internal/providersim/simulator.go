@@ -623,7 +623,7 @@ func defaultRegistration(mode Mode, now time.Time) provider.Registration {
 	account := provider.Account{ID: "acct-providersim", Display: "providersim@example.test"}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
-			ProviderID:         "providersim-openai",
+			ProviderType:       "providersim-openai",
 			ProviderInstanceID: "providersim-openai-0001",
 			NodeID:             "providersim-node",
 			HostName:           "providersim-host",

@@ -4,7 +4,7 @@ model_aliases:
   codex-default:
     canonical_model: gpt-5.5
   gemini-default:
-    canonical_model: gemini-2.5-flash
+    canonical_models: [auto-gemini-3, auto-gemini-2.5, gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash]
     required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
   gemini-2.5-flash:
     canonical_model: gemini-2.5-flash
@@ -51,7 +51,7 @@ routes:
       models: [codex-default, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.2]
       api_dialects: [openai]
     candidates:
-      - provider: codex-cli
+      - provider_type: codex-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -64,7 +64,7 @@ routes:
       models: [codex-default, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.2]
       api_dialects: [anthropic]
     candidates:
-      - provider: codex-cli
+      - provider_type: codex-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -77,7 +77,7 @@ routes:
       models: [codex-default, gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.2]
       api_dialects: [gemini]
     candidates:
-      - provider: codex-cli
+      - provider_type: codex-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -90,7 +90,7 @@ routes:
       models: [gemini-default, gemini-auto, gemini-auto-3, gemini-auto-2.5, gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-lite, auto-gemini-3, auto-gemini-2.5, gemini-3-pro-preview, gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.1-flash-lite-preview]
       api_dialects: [openai]
     candidates:
-      - provider: gemini-cli
+      - provider_type: gemini-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -103,7 +103,7 @@ routes:
       models: [gemini-default, gemini-auto, gemini-auto-3, gemini-auto-2.5, gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-lite, auto-gemini-3, auto-gemini-2.5, gemini-3-pro-preview, gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.1-flash-lite-preview]
       api_dialects: [anthropic]
     candidates:
-      - provider: gemini-cli
+      - provider_type: gemini-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -116,7 +116,7 @@ routes:
       models: [gemini-default, gemini-auto, gemini-auto-3, gemini-auto-2.5, gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-lite, auto-gemini-3, auto-gemini-2.5, gemini-3-pro-preview, gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.1-flash-lite-preview]
       api_dialects: [gemini]
     candidates:
-      - provider: gemini-cli
+      - provider_type: gemini-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -128,7 +128,7 @@ routes:
     match:
       api_dialects: [openai]
     candidates:
-      - provider: antigravity-sidecar
+      - provider_type: antigravity-sidecar
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -140,7 +140,7 @@ routes:
     match:
       api_dialects: [anthropic]
     candidates:
-      - provider: antigravity-sidecar
+      - provider_type: antigravity-sidecar
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
@@ -152,7 +152,7 @@ routes:
     match:
       api_dialects: [gemini]
     candidates:
-      - provider: antigravity-sidecar
+      - provider_type: antigravity-sidecar
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]

@@ -47,10 +47,10 @@ type RouteMatch struct {
 }
 
 type Candidate struct {
-	Provider string `json:"provider" yaml:"provider"`
-	Account  string `json:"account,omitempty" yaml:"account,omitempty"`
-	HostName string `json:"host_name,omitempty" yaml:"host_name,omitempty"`
-	Weight   int    `json:"weight,omitempty" yaml:"weight,omitempty"`
+	ProviderType string `json:"provider_type" yaml:"provider_type"`
+	Account      string `json:"account,omitempty" yaml:"account,omitempty"`
+	HostName     string `json:"host_name,omitempty" yaml:"host_name,omitempty"`
+	Weight       int    `json:"weight,omitempty" yaml:"weight,omitempty"`
 }
 
 type Constraints struct {
@@ -90,7 +90,7 @@ type RouteDecision struct {
 
 type RouteCandidateScore struct {
 	ProviderInstanceID string `json:"provider_instance_id,omitempty"`
-	ProviderID         string `json:"provider_id,omitempty"`
+	ProviderType       string `json:"provider_type,omitempty"`
 	Score              int    `json:"score"`
 	Weight             int    `json:"weight,omitempty"`
 	Reason             string `json:"reason,omitempty"`
@@ -98,7 +98,7 @@ type RouteCandidateScore struct {
 
 type RouteRejection struct {
 	ProviderInstanceID string `json:"provider_instance_id,omitempty"`
-	ProviderID         string `json:"provider_id,omitempty"`
+	ProviderType       string `json:"provider_type,omitempty"`
 	Reason             string `json:"reason"`
 }
 
@@ -155,8 +155,8 @@ func (r Route) Validate() error {
 		return fmt.Errorf("%w: route %q has no candidates", ErrInvalidPolicy, r.ID)
 	}
 	for _, candidate := range r.Candidates {
-		if strings.TrimSpace(candidate.Provider) == "" {
-			return fmt.Errorf("%w: route %q has candidate without provider", ErrInvalidPolicy, r.ID)
+		if strings.TrimSpace(candidate.ProviderType) == "" {
+			return fmt.Errorf("%w: route %q has candidate without provider_type", ErrInvalidPolicy, r.ID)
 		}
 		if candidate.Weight < 0 {
 			return fmt.Errorf("%w: route %q has negative candidate weight", ErrInvalidPolicy, r.ID)
@@ -219,7 +219,7 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 				if rejection != "" {
 					modelRejections = append(modelRejections, RouteRejection{
 						ProviderInstanceID: registration.Identity.ProviderInstanceID,
-						ProviderID:         registration.Identity.ProviderID,
+						ProviderType:       registration.Identity.ProviderType,
 						Reason:             rejection,
 					})
 					continue
@@ -228,8 +228,8 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 			}
 			if !candidateMatches {
 				modelRejections = append(modelRejections, RouteRejection{
-					ProviderID: candidate.Provider,
-					Reason:     "candidate provider not connected",
+					ProviderType: candidate.ProviderType,
+					Reason:       "candidate provider not connected",
 				})
 			}
 		}
@@ -255,7 +255,7 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 		decision.FallbackChain = append(decision.FallbackChain, candidate.registration.Identity.ProviderInstanceID)
 		decision.Scores = append(decision.Scores, RouteCandidateScore{
 			ProviderInstanceID: candidate.registration.Identity.ProviderInstanceID,
-			ProviderID:         candidate.registration.Identity.ProviderID,
+			ProviderType:       candidate.registration.Identity.ProviderType,
 			Score:              candidate.score,
 			Weight:             candidate.weight,
 			Reason:             candidate.reason,
@@ -378,7 +378,7 @@ func modelMatchesAny(model provider.Model, names []string) bool {
 }
 
 func candidateMatchesRegistration(candidate Candidate, registration provider.Registration) bool {
-	if candidate.Provider != registration.Identity.ProviderID {
+	if candidate.ProviderType != registration.Identity.ProviderType {
 		return false
 	}
 	if candidate.HostName != "" && candidate.HostName != registration.Identity.HostName {

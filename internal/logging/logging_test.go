@@ -58,8 +58,8 @@ func TestRedact_ValuePatternNested(t *testing.T) {
 
 	// Nested map via slog.Any — value carries a Bearer token in free text.
 	nested := map[string]any{
-		"note":    "Authorization: Bearer abcdefghijklmno",
-		"inner":   map[string]any{"tok": "Bearer XYZ123456"},
+		"note":     "Authorization: Bearer abcdefghijklmno",
+		"inner":    map[string]any{"tok": "Bearer XYZ123456"},
 		"harmless": []any{"ok", "also ok"},
 	}
 	l.Info("req", slog.Any("payload", nested))

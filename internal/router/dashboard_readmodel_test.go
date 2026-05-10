@@ -64,7 +64,7 @@ func TestDashboardReadModelsIncludeIdentityFreshnessAndCounts(t *testing.T) {
 		HostName: "snowbox",
 		Containers: []control.ContainerReport{{
 			ContainerID:        "container-a1",
-			ProviderID:         "codex-cli",
+			ProviderType:       "codex-cli",
 			ProviderInstanceID: "codex-primary-a1",
 			State:              "running",
 			Health:             control.HealthReport{Status: "ready"},

@@ -132,8 +132,8 @@ func runNodeAgentControl(ctx context.Context, opts nodeAgentRunOptions, provider
 }
 
 type nodeAgentBootstrapAuthOptions struct {
-	ConfigPath string
-	ProviderID string
+	ConfigPath         string
+	ProviderInstanceID string
 }
 
 func newNodeAgentBootstrapAuthCmd() *cobra.Command {
@@ -148,7 +148,7 @@ func newNodeAgentBootstrapAuthCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.ConfigPath, "config", "", "node-agent provider spec YAML path")
-	cmd.Flags().StringVar(&opts.ProviderID, "provider", "", "provider id to bootstrap")
+	cmd.Flags().StringVar(&opts.ProviderInstanceID, "provider-instance", "", "provider instance id to bootstrap")
 	return cmd
 }
 
@@ -156,33 +156,33 @@ func runNodeAgentBootstrapAuth(ctx context.Context, opts nodeAgentBootstrapAuthO
 	if opts.ConfigPath == "" {
 		return fmt.Errorf("--config is required")
 	}
-	if opts.ProviderID == "" {
-		return fmt.Errorf("--provider is required")
+	if opts.ProviderInstanceID == "" {
+		return fmt.Errorf("--provider-instance is required")
 	}
 	cfg, err := nodeagent.LoadConfigFile(opts.ConfigPath)
 	if err != nil {
 		return err
 	}
-	spec, ok := cfg.ProviderByID(opts.ProviderID)
+	spec, ok := cfg.ProviderByInstanceID(opts.ProviderInstanceID)
 	if !ok {
-		return fmt.Errorf("provider %q not found", opts.ProviderID)
+		return fmt.Errorf("provider instance %q not found", opts.ProviderInstanceID)
 	}
 	_, err = nodeagent.BootstrapAuthCopy(ctx, spec.Auth)
 	return err
 }
 
 type nodeAgentReconcileProviderOptions struct {
-	ConfigPath       string
-	ProviderID       string
-	NodeID           string
-	HostName         string
-	RouterControlURL string
-	RouterDataURL    string
-	StreamTokenKey   string
-	RouterPeerToken  string
-	RuntimeKind      string
-	DockerBin        string
-	DryRun           bool
+	ConfigPath         string
+	ProviderInstanceID string
+	NodeID             string
+	HostName           string
+	RouterControlURL   string
+	RouterDataURL      string
+	StreamTokenKey     string
+	RouterPeerToken    string
+	RuntimeKind        string
+	DockerBin          string
+	DryRun             bool
 }
 
 func newNodeAgentReconcileProviderCmd() *cobra.Command {
@@ -197,7 +197,7 @@ func newNodeAgentReconcileProviderCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.ConfigPath, "config", "", "node-agent provider spec YAML path")
-	cmd.Flags().StringVar(&opts.ProviderID, "provider", "", "provider id to reconcile")
+	cmd.Flags().StringVar(&opts.ProviderInstanceID, "provider-instance", "", "provider instance id to reconcile")
 	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "override node id")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "override host name")
 	cmd.Flags().StringVar(&opts.RouterControlURL, "router-control", "", "router control WebSocket URL to inject into the provider container")
@@ -215,16 +215,16 @@ func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileP
 	if opts.ConfigPath == "" {
 		return fmt.Errorf("--config is required")
 	}
-	if opts.ProviderID == "" {
-		return fmt.Errorf("--provider is required")
+	if opts.ProviderInstanceID == "" {
+		return fmt.Errorf("--provider-instance is required")
 	}
 	cfg, err := nodeagent.LoadConfigFile(opts.ConfigPath)
 	if err != nil {
 		return err
 	}
-	spec, ok := cfg.ProviderByID(opts.ProviderID)
+	spec, ok := cfg.ProviderByInstanceID(opts.ProviderInstanceID)
 	if !ok {
-		return fmt.Errorf("provider %q not found", opts.ProviderID)
+		return fmt.Errorf("provider instance %q not found", opts.ProviderInstanceID)
 	}
 	nodeID := opts.NodeID
 	if nodeID == "" {

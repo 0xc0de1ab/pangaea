@@ -45,14 +45,14 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
   ];
 
   const scoreColumns: DashboardColumn<NonNullable<RouteDecision["scores"]>[number]>[] = [
-    { id: "provider", header: "Provider", sortValue: (row) => row.provider_instance_id || row.provider_id, cell: (row) => <span className="mono">{middleEllipsis(row.provider_instance_id || row.provider_id || "")}</span> },
+    { id: "provider", header: "Provider", sortValue: (row) => row.provider_instance_id || row.provider_type, cell: (row) => <span className="mono">{middleEllipsis(row.provider_instance_id || row.provider_type || "")}</span> },
     { id: "score", header: "Score", sortValue: (row) => row.score, cell: (row) => n(row.score), align: "right", width: "76px" },
     { id: "weight", header: "Weight", sortValue: (row) => row.weight ?? 0, cell: (row) => n(row.weight ?? 0), align: "right", width: "82px" },
     { id: "reason", header: "Reason", sortValue: (row) => row.reason, cell: (row) => row.reason || "" },
   ];
 
   const rejectionColumns: DashboardColumn<NonNullable<RouteDecision["rejections"]>[number]>[] = [
-    { id: "provider", header: "Provider", sortValue: (row) => row.provider_instance_id || row.provider_id, cell: (row) => <span className="mono">{middleEllipsis(row.provider_instance_id || row.provider_id || "")}</span> },
+    { id: "provider", header: "Provider", sortValue: (row) => row.provider_instance_id || row.provider_type, cell: (row) => <span className="mono">{middleEllipsis(row.provider_instance_id || row.provider_type || "")}</span> },
     { id: "reason", header: "Reason", sortValue: (row) => row.reason, cell: (row) => row.reason },
   ];
 

@@ -16,14 +16,24 @@ export type Account = {
   display?: string;
 };
 
+export type SubscriptionInfo = {
+  tier?: string;
+  name?: string;
+  status?: string;
+  paid_tier?: string;
+  rate_limit_tier?: string;
+  source?: string;
+};
+
 export type ProviderIdentity = {
-  provider_id: string;
+  provider_type: string;
   provider_instance_id: string;
   node_id: string;
   host_name: string;
   container_id?: string;
   container_kind?: string;
   container_name?: string;
+  target_version?: string;
   service: string;
   kind: string;
   account?: Account;
@@ -35,6 +45,7 @@ export type ProviderModel = {
   capabilities?: string[];
   context_tokens?: number;
   max_context_tokens?: number;
+  max_output_tokens?: number;
   kind?: string;
   group_members?: string[];
   quota?: {
@@ -56,6 +67,7 @@ export type ProviderRegistration = {
   auth?: {
     status?: AuthStatus;
     account?: Account;
+    subscription?: SubscriptionInfo;
     expires_at?: string;
     refreshable?: boolean;
     last_refresh_at?: string;
@@ -98,7 +110,7 @@ export type ContainerSnapshot = {
   container_id: string;
   container_kind?: string;
   container_name?: string;
-  provider_id?: string;
+  provider_type?: string;
   provider_instance_id?: string;
   image?: string;
   state?: string;
@@ -115,7 +127,7 @@ export type ContainerSnapshot = {
 
 export type SessionSnapshot = {
   provider_instance_id: string;
-  provider_id?: string;
+  provider_type?: string;
   node_id?: string;
   host_name?: string;
   service?: string;
@@ -126,7 +138,7 @@ export type SessionSnapshot = {
 
 export type ProviderUsageSnapshot = {
   provider_instance_id: string;
-  provider_id: string;
+  provider_type: string;
   node_id: string;
   host_name: string;
   container_id?: string;
@@ -138,6 +150,8 @@ export type ProviderUsageSnapshot = {
   usage?: {
     observed_at?: string;
     source?: string;
+    plan_tier?: string;
+    subscription?: SubscriptionInfo;
     requests?: number;
     input_tokens?: number;
     output_tokens?: number;
@@ -149,7 +163,7 @@ export type ProviderUsageSnapshot = {
 };
 
 export type AuthReplica = {
-  provider_id?: string;
+  provider_type?: string;
   provider_instance_id: string;
   node_id?: string;
   host_name?: string;
@@ -178,7 +192,7 @@ export type AuthRecord = {
   source?: string;
   filename: string;
   format?: string;
-  latest_provider_id?: string;
+  latest_provider_type?: string;
   provider_instance_id?: string;
   node_id?: string;
   host_name?: string;
@@ -196,7 +210,7 @@ export type AuthEvent = {
   type: string;
   service?: string;
   account?: Account;
-  provider_id?: string;
+  provider_type?: string;
   provider_instance_id?: string;
   node_id?: string;
   host_name?: string;
@@ -252,14 +266,14 @@ export type RouteDecision = {
   fallback_chain?: string[];
   scores?: Array<{
     provider_instance_id?: string;
-    provider_id?: string;
+    provider_type?: string;
     score: number;
     weight?: number;
     reason?: string;
   }>;
   rejections?: Array<{
     provider_instance_id?: string;
-    provider_id?: string;
+    provider_type?: string;
     reason: string;
   }>;
   reason?: string;
@@ -336,7 +350,7 @@ export type AuditEvent = {
   };
   target?: {
     provider_instance_id?: string;
-    provider_id?: string;
+    provider_type?: string;
     node_id?: string;
     host_name?: string;
     container_id?: string;

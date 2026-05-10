@@ -28,7 +28,7 @@ func newControlSession(conn *websocket.Conn) *controlSession {
 
 type ControlSessionSnapshot struct {
 	ProviderInstanceID string           `json:"provider_instance_id"`
-	ProviderID         string           `json:"provider_id,omitempty"`
+	ProviderType       string           `json:"provider_type,omitempty"`
 	NodeID             string           `json:"node_id,omitempty"`
 	HostName           string           `json:"host_name,omitempty"`
 	Service            provider.Service `json:"service,omitempty"`
@@ -212,7 +212,7 @@ func (e *Engine) ControlSessions() []ControlSessionSnapshot {
 		}
 		if e.registry != nil {
 			if registration, ok := e.registry.Get(providerInstanceID); ok {
-				snapshot.ProviderID = registration.Identity.ProviderID
+				snapshot.ProviderType = registration.Identity.ProviderType
 				snapshot.NodeID = registration.Identity.NodeID
 				snapshot.HostName = registration.Identity.HostName
 				snapshot.Service = registration.Identity.Service

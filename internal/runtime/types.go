@@ -49,7 +49,7 @@ func (ref ImageRef) String() string {
 }
 
 type ContainerSpec struct {
-	ProviderID         string            `json:"provider_id"`
+	ProviderType       string            `json:"provider_type"`
 	ProviderInstanceID string            `json:"provider_instance_id,omitempty"`
 	NodeID             string            `json:"node_id,omitempty"`
 	HostName           string            `json:"host_name,omitempty"`

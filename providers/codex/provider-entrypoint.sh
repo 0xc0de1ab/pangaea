@@ -24,7 +24,7 @@ write_runtime_settings() {
     {
       printf 'PANGAEA_NODE_ID=%q\n' "${PANGAEA_NODE_ID:-}"
       printf 'PANGAEA_HOST_NAME=%q\n' "${PANGAEA_HOST_NAME:-}"
-      printf 'PANGAEA_PROVIDER_ID=%q\n' "${PANGAEA_PROVIDER_ID:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%q\n' "${PANGAEA_PROVIDER_TYPE:-}"
       printf 'PANGAEA_PROVIDER_INSTANCE_ID=%q\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
       printf 'PANGAEA_PROVIDER_MODE=%q\n' "${PANGAEA_PROVIDER_MODE:-}"
       printf 'PANGAEA_SERVICE=%q\n' "${PANGAEA_SERVICE:-}"

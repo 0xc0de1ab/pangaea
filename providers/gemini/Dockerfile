@@ -33,7 +33,7 @@ ENV HOME=/var/lib/pangaea/home/gemini \
     FORCE_COLOR=1 \
     PANGAEA_PROVIDER_MODE=http-direct \
     PANGAEA_UPSTREAM_DIALECT=gemini \
-    PANGAEA_MODEL=gemini-2.5-flash \
+    PANGAEA_MODEL=auto-gemini-3 \
     PANGAEA_MODEL_ALIAS=gemini-default
 
 USER 10001:10001

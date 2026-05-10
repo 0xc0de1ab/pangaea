@@ -79,6 +79,9 @@ func TestHTTPGeminiModels(t *testing.T) {
 	if len(out.Models) != 1 || out.Models[0].Name != "models/gemini-default" || out.Models[0].Version != "gemini-native" {
 		t.Fatalf("unexpected Gemini model list: %#v", out)
 	}
+	if out.Models[0].InputTokenLimit != 1_048_576 || out.Models[0].OutputTokenLimit != 65_536 {
+		t.Fatalf("unexpected Gemini token limits: %#v", out.Models[0])
+	}
 	if len(out.Models[0].SupportedGenerationMethods) != 2 || out.Models[0].SupportedGenerationMethods[1] != "streamGenerateContent" {
 		t.Fatalf("unexpected Gemini generation methods: %#v", out.Models[0].SupportedGenerationMethods)
 	}
@@ -95,6 +98,9 @@ func TestHTTPGeminiModels(t *testing.T) {
 	}
 	if model.Name != "models/gemini-default" || model.Version != "gemini-native" {
 		t.Fatalf("unexpected Gemini model: %#v", model)
+	}
+	if model.InputTokenLimit != 1_048_576 || model.OutputTokenLimit != 65_536 {
+		t.Fatalf("unexpected Gemini model token limits: %#v", model)
 	}
 }
 
@@ -273,7 +279,7 @@ func TestHTTPNodesAndContainers(t *testing.T) {
 		HostName: "snowbox",
 		Containers: []control.ContainerReport{{
 			ContainerID:        "container-1",
-			ProviderID:         "codex-cli",
+			ProviderType:       "codex-cli",
 			ProviderInstanceID: "codex-primary-a1",
 			State:              "running",
 		}},
@@ -319,8 +325,15 @@ func TestHTTPProviderUsage(t *testing.T) {
 	engine, _ := testEngine(t)
 	observedAt := time.Now().UTC()
 	if err := engine.UpdateProviderUsage("codex-primary-a1", provider.UsageReport{
-		ObservedAt:   observedAt,
-		Source:       "test",
+		ObservedAt: observedAt,
+		Source:     "test",
+		PlanTier:   "enterprise",
+		Subscription: &provider.SubscriptionInfo{
+			Tier:          "enterprise",
+			Name:          "Enterprise",
+			RateLimitTier: "premium",
+			Source:        "test",
+		},
 		Requests:     2,
 		InputTokens:  20,
 		OutputTokens: 10,
@@ -352,6 +365,9 @@ func TestHTTPProviderUsage(t *testing.T) {
 	}
 	if got.Usage.TotalTokens != 30 {
 		t.Fatalf("unexpected usage: %#v", got.Usage)
+	}
+	if got.Usage.Subscription == nil || got.Usage.Subscription.Name != "Enterprise" {
+		t.Fatalf("usage response lost subscription: %#v", got.Usage)
 	}
 }
 
@@ -588,6 +604,36 @@ func TestHTTPOpenAIChatCompletionsStreamsSSEWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPOpenAIChatCompletionsCoalescesTinyStreamDeltas(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.SetInvoker(tinyDeltaStreamInvoker{})
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model":"gpt-5-codex",
+		"stream":true,
+		"messages":[{"role":"user","content":"tiny deltas"}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_http_tiny_delta_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if got := strings.Count(body, `"object":"chat.completion.chunk"`); got != 4 {
+		t.Fatalf("expected role/first-content/batched-content/done chunks only, got %d body=%s", got, body)
+	}
+	if !strings.Contains(body, strings.Repeat("a", 127)) {
+		t.Fatalf("expected tiny deltas to be coalesced, got %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected DONE marker, got %s", body)
+	}
+}
+
 func TestHTTPAnthropicMessagesWithSimulator(t *testing.T) {
 	engine, sim := testDialectEngine(t, compat.APIDialectAnthropic, provider.CapabilityAnthropicMessages, provider.ServiceAnthropic, "claude-sim", "claude-native")
 	engine.SetInvoker(sim)
@@ -735,6 +781,34 @@ func TestHTTPGeminiStreamGenerateContentWithSimulator(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "data:") || !strings.Contains(body, "providersim: hello gemini stream") || !strings.Contains(body, `"modelVersion":"gemini-native"`) {
 		t.Fatalf("unexpected Gemini stream body: %s", body)
+	}
+}
+
+func TestHTTPGeminiStreamGenerateContentCoalescesTinyStreamDeltas(t *testing.T) {
+	engine, _ := testDialectEngine(t, compat.APIDialectGemini, provider.CapabilityGeminiGenerateContent, provider.ServiceGemini, "gemini-sim", "gemini-native")
+	engine.SetInvoker(tinyDeltaStreamInvoker{})
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-sim:streamGenerateContent?alt=sse", bytes.NewReader([]byte(`{
+		"contents":[{"role":"user","parts":[{"text":"tiny deltas"}]}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_gemini_tiny_delta_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if got := strings.Count(body, `"modelVersion"`); got != 3 {
+		t.Fatalf("expected first-content/batched-content/done Gemini chunks only, got %d body=%s", got, body)
+	}
+	if !strings.Contains(body, strings.Repeat("a", 127)) {
+		t.Fatalf("expected tiny Gemini deltas to be coalesced, got %s", body)
+	}
+	if !strings.Contains(body, `"finishReason":"STOP"`) {
+		t.Fatalf("expected Gemini stop chunk, got %s", body)
 	}
 }
 
@@ -999,6 +1073,48 @@ func (upstreamRateLimitInvoker) Invoke(context.Context, provider.Registration, c
 	}
 }
 
+type tinyDeltaStreamInvoker struct{}
+
+func (tinyDeltaStreamInvoker) Invoke(_ context.Context, _ provider.Registration, request compat.Request) (compat.Response, error) {
+	return compat.Response{
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role:    compat.MessageRoleAssistant,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: strings.Repeat("a", 128)}},
+		},
+		Usage: compat.Usage{InputTokens: 1, OutputTokens: 128, TotalTokens: 129},
+	}, nil
+}
+
+func (tinyDeltaStreamInvoker) InvokeStream(_ context.Context, _ provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	response := compat.Response{
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role:    compat.MessageRoleAssistant,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: strings.Repeat("a", 128)}},
+		},
+		StopReason: "stop",
+		Usage:      compat.Usage{InputTokens: 1, OutputTokens: 128, TotalTokens: 129},
+	}
+	if err := emit(compat.Event{Type: compat.EventMessageStart, Model: request.Model, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
+		return compat.Response{}, err
+	}
+	for i := 0; i < 128; i++ {
+		if err := emit(compat.Event{Type: compat.EventContentDelta, Model: request.Model, ContentDelta: &compat.ContentPart{Type: compat.ContentPartText, Text: "a"}}); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	if err := emit(compat.Event{Type: compat.EventUsageDelta, Model: request.Model, UsageDelta: &response.Usage}); err != nil {
+		return compat.Response{}, err
+	}
+	if err := emit(compat.Event{Type: compat.EventDone, Model: request.Model, DoneReason: "stop"}); err != nil {
+		return compat.Response{}, err
+	}
+	return response, nil
+}
+
 func testDialectEngine(t *testing.T, dialect compat.APIDialect, capability provider.Capability, service provider.Service, publicModel string, canonicalModel string) (*Engine, *providersim.Simulator) {
 	t.Helper()
 	reg := registration("providersim-"+string(dialect)+"-0001", "providersim-"+string(dialect), string(dialect)+"@example.test", 10, 0)
@@ -1022,13 +1138,13 @@ routes:
       models: [%s]
       api_dialects: [%s]
     candidates:
-      - provider: %s
+      - provider_type: %s
         account: %s@example.test
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]
       health_state: [ready]
-`, publicModel, canonicalModel, capability, dialect, publicModel, dialect, reg.Identity.ProviderID, dialect)))
+`, publicModel, canonicalModel, capability, dialect, publicModel, dialect, reg.Identity.ProviderType, dialect)))
 	if err != nil {
 		t.Fatalf("parse policy: %v", err)
 	}
@@ -1054,9 +1170,11 @@ func testGeminiModelsEngine(t *testing.T) (*Engine, *providersim.Simulator) {
 	reg.Identity.Kind = provider.KindAPICompatible
 	reg.Capabilities = []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE, provider.CapabilityUsageRead}
 	reg.Models = []provider.Model{{
-		ID:           "gemini-native",
-		Aliases:      []string{"gemini-default"},
-		Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE},
+		ID:              "gemini-native",
+		Aliases:         []string{"gemini-default"},
+		Capabilities:    []provider.Capability{provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE},
+		ContextTokens:   1_048_576,
+		MaxOutputTokens: 65_536,
 	}}
 	policy, err := ParseRoutingPolicyYAML([]byte(`
 version: routing-policy/v1
@@ -1070,7 +1188,7 @@ routes:
       models: [gemini-default]
       api_dialects: [gemini]
     candidates:
-      - provider: providersim-gemini
+      - provider_type: providersim-gemini
         account: gemini@example.test
         weight: 100
     constraints:

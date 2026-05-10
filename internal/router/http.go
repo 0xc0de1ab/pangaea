@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -1008,8 +1009,19 @@ func geminiModelFromModelInfo(model ModelInfo) geminiModel {
 		Name:                       "models/" + model.ID,
 		Version:                    model.CanonicalModel,
 		DisplayName:                model.ID,
+		InputTokenLimit:            firstPositive(model.ContextTokens, model.MaxContextTokens),
+		OutputTokenLimit:           model.MaxOutputTokens,
 		SupportedGenerationMethods: methods,
 	}
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 type openAIChatStreamChunk struct {
@@ -1069,13 +1081,20 @@ type openAIChatStreamDelta struct {
 	Content string `json:"content,omitempty"`
 }
 
+const (
+	streamDeltaFlushInterval = 120 * time.Millisecond
+	streamDeltaFlushBytes    = 512
+)
+
 type openAIChatEventStreamWriter struct {
-	id      string
-	model   string
-	created int64
-	wrote   bool
-	done    bool
-	usage   compat.Usage
+	id               string
+	model            string
+	created          int64
+	wrote            bool
+	done             bool
+	usage            compat.Usage
+	pendingContent   strings.Builder
+	lastContentFlush time.Time
 }
 
 func writeOpenAIChatEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
@@ -1113,12 +1132,13 @@ func (w *openAIChatEventStreamWriter) ensure(c *gin.Context) {
 
 func (w *openAIChatEventStreamWriter) write(c *gin.Context, event compat.Event) error {
 	if err := event.Validate(); err != nil {
-		return err
+		return fmt.Errorf("validate upstream stream event %s: %w", event.Type, err)
 	}
 	w.applyEventMeta(event)
 	w.ensure(c)
 	switch event.Type {
 	case compat.EventMessageStart:
+		w.flushContent(c)
 		writeSSEData(c, openAIChatStreamChunk{
 			ID:      w.id,
 			Object:  "chat.completion.chunk",
@@ -1130,17 +1150,9 @@ func (w *openAIChatEventStreamWriter) write(c *gin.Context, event compat.Event) 
 			}},
 		})
 	case compat.EventContentDelta:
-		writeSSEData(c, openAIChatStreamChunk{
-			ID:      w.id,
-			Object:  "chat.completion.chunk",
-			Created: w.created,
-			Model:   w.model,
-			Choices: []openAIChatStreamChoice{{
-				Index: 0,
-				Delta: openAIChatStreamDelta{Content: event.ContentDelta.Text},
-			}},
-		})
+		w.writeContentDelta(c, event.ContentDelta.Text)
 	case compat.EventUsageDelta:
+		w.flushContent(c)
 		w.usage.InputTokens += event.UsageDelta.InputTokens
 		w.usage.OutputTokens += event.UsageDelta.OutputTokens
 		w.usage.TotalTokens += event.UsageDelta.TotalTokens
@@ -1150,6 +1162,36 @@ func (w *openAIChatEventStreamWriter) write(c *gin.Context, event compat.Event) 
 		w.writeErrorMessage(c, event.Error.Message)
 	}
 	return nil
+}
+
+func (w *openAIChatEventStreamWriter) writeContentDelta(c *gin.Context, text string) {
+	if text == "" {
+		return
+	}
+	w.pendingContent.WriteString(text)
+	now := time.Now()
+	if w.lastContentFlush.IsZero() || w.pendingContent.Len() >= streamDeltaFlushBytes || now.Sub(w.lastContentFlush) >= streamDeltaFlushInterval {
+		w.flushContent(c)
+	}
+}
+
+func (w *openAIChatEventStreamWriter) flushContent(c *gin.Context) {
+	if w.pendingContent.Len() == 0 {
+		return
+	}
+	text := w.pendingContent.String()
+	w.pendingContent.Reset()
+	w.lastContentFlush = time.Now()
+	writeSSEData(c, openAIChatStreamChunk{
+		ID:      w.id,
+		Object:  "chat.completion.chunk",
+		Created: w.created,
+		Model:   w.model,
+		Choices: []openAIChatStreamChoice{{
+			Index: 0,
+			Delta: openAIChatStreamDelta{Content: text},
+		}},
+	})
 }
 
 func (w *openAIChatEventStreamWriter) applyEventMeta(event compat.Event) {
@@ -1166,6 +1208,7 @@ func (w *openAIChatEventStreamWriter) writeDone(c *gin.Context, finishReason str
 		return
 	}
 	w.ensure(c)
+	w.flushContent(c)
 	usage := (*compat.OpenAIUsage)(nil)
 	if w.usage != (compat.Usage{}) {
 		total := w.usage.TotalTokens
@@ -1205,6 +1248,7 @@ func (w *openAIChatEventStreamWriter) writeError(c *gin.Context, err error) {
 
 func (w *openAIChatEventStreamWriter) writeErrorMessage(c *gin.Context, message string) {
 	w.ensure(c)
+	w.flushContent(c)
 	writeSSEData(c, gin.H{"error": gin.H{"message": message}})
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	flushSSE(c)
@@ -1360,7 +1404,7 @@ func (w *anthropicMessagesEventStreamWriter) ensure(c *gin.Context) {
 
 func (w *anthropicMessagesEventStreamWriter) write(c *gin.Context, event compat.Event) error {
 	if err := event.Validate(); err != nil {
-		return err
+		return fmt.Errorf("validate upstream stream event %s: %w", event.Type, err)
 	}
 	w.applyEventMeta(event)
 	w.ensure(c)
@@ -1479,10 +1523,12 @@ func writeGeminiGenerateContentStream(c *gin.Context, response compat.Response) 
 }
 
 type geminiGenerateContentEventStreamWriter struct {
-	model string
-	wrote bool
-	done  bool
-	usage compat.Usage
+	model            string
+	wrote            bool
+	done             bool
+	usage            compat.Usage
+	pendingContent   strings.Builder
+	lastContentFlush time.Time
 }
 
 func writeGeminiGenerateContentEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
@@ -1516,7 +1562,7 @@ func (w *geminiGenerateContentEventStreamWriter) ensure(c *gin.Context) {
 
 func (w *geminiGenerateContentEventStreamWriter) write(c *gin.Context, event compat.Event) error {
 	if err := event.Validate(); err != nil {
-		return err
+		return fmt.Errorf("validate upstream stream event %s: %w", event.Type, err)
 	}
 	if event.Model != "" {
 		w.model = event.Model
@@ -1524,15 +1570,9 @@ func (w *geminiGenerateContentEventStreamWriter) write(c *gin.Context, event com
 	w.ensure(c)
 	switch event.Type {
 	case compat.EventContentDelta:
-		writeSSEData(c, compat.GeminiGenerateContentResponse{
-			ModelVersion: w.model,
-			Candidates: []compat.GeminiCandidate{{
-				Index:        0,
-				Content:      compat.GeminiContent{Role: "model", Parts: []compat.GeminiPart{{Text: event.ContentDelta.Text}}},
-				FinishReason: "",
-			}},
-		})
+		w.writeContentDelta(c, event.ContentDelta.Text)
 	case compat.EventUsageDelta:
+		w.flushContent(c)
 		w.usage.InputTokens += event.UsageDelta.InputTokens
 		w.usage.OutputTokens += event.UsageDelta.OutputTokens
 		w.usage.TotalTokens += event.UsageDelta.TotalTokens
@@ -1544,11 +1584,40 @@ func (w *geminiGenerateContentEventStreamWriter) write(c *gin.Context, event com
 	return nil
 }
 
+func (w *geminiGenerateContentEventStreamWriter) writeContentDelta(c *gin.Context, text string) {
+	if text == "" {
+		return
+	}
+	w.pendingContent.WriteString(text)
+	now := time.Now()
+	if w.lastContentFlush.IsZero() || w.pendingContent.Len() >= streamDeltaFlushBytes || now.Sub(w.lastContentFlush) >= streamDeltaFlushInterval {
+		w.flushContent(c)
+	}
+}
+
+func (w *geminiGenerateContentEventStreamWriter) flushContent(c *gin.Context) {
+	if w.pendingContent.Len() == 0 {
+		return
+	}
+	text := w.pendingContent.String()
+	w.pendingContent.Reset()
+	w.lastContentFlush = time.Now()
+	writeSSEData(c, compat.GeminiGenerateContentResponse{
+		ModelVersion: w.model,
+		Candidates: []compat.GeminiCandidate{{
+			Index:        0,
+			Content:      compat.GeminiContent{Role: "model", Parts: []compat.GeminiPart{{Text: text}}},
+			FinishReason: "",
+		}},
+	})
+}
+
 func (w *geminiGenerateContentEventStreamWriter) writeDone(c *gin.Context) {
 	if w.done {
 		return
 	}
 	w.ensure(c)
+	w.flushContent(c)
 	if w.usage != (compat.Usage{}) {
 		total := w.usage.TotalTokens
 		if total == 0 {
@@ -1581,6 +1650,7 @@ func (w *geminiGenerateContentEventStreamWriter) writeError(c *gin.Context, err 
 
 func (w *geminiGenerateContentEventStreamWriter) writeErrorMessage(c *gin.Context, message string) {
 	w.ensure(c)
+	w.flushContent(c)
 	writeSSEData(c, gin.H{"error": gin.H{"message": message}})
 	w.done = true
 }

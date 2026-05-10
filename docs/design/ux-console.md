@@ -111,7 +111,7 @@ Outputs:
 
 Provider row:
 
-- Provider ID
+- Provider Type
 - Service
 - Kind
 - Host name
@@ -154,7 +154,7 @@ Node row:
 
 Container row:
 
-- Provider ID
+- Provider Type
 - Service
 - Account
 - Host name
@@ -343,7 +343,7 @@ Common fields:
 - request id
 - route id
 - host name
-- provider id
+- provider type
 - timestamp
 
 ## Safe Controls

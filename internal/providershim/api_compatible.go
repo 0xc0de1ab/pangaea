@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,7 +15,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const defaultModelDiscoveryTimeout = 5 * time.Second
+const (
+	defaultModelDiscoveryTimeout = 5 * time.Second
+	defaultTargetVersionTimeout  = 2 * time.Second
+)
 
 type APICompatibleShimOptions struct {
 	ControlURL           string
@@ -60,10 +64,14 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 	if reporter, ok := any(opts.Provider).(authReporter); ok {
 		dynamicAuth = reporter
 	}
+	var dynamicTargetVersion targetVersionReporter
+	if reporter, ok := any(opts.Provider).(targetVersionReporter); ok {
+		dynamicTargetVersion = reporter
+	}
 
 	backoff := time.Second
 	for {
-		err := runAPICompatibleShimSession(ctx, opts, registration, dataURL, dynamicHealth, dynamicAuth)
+		err := runAPICompatibleShimSession(ctx, opts, registration, dataURL, dynamicHealth, dynamicAuth, dynamicTargetVersion)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -87,25 +95,26 @@ func RunAPICompatibleShim(ctx context.Context, opts APICompatibleShimOptions) er
 	}
 }
 
-func runAPICompatibleShimSession(ctx context.Context, opts APICompatibleShimOptions, registration provider.Registration, dataURL string, dynamicHealth healthReporter, dynamicAuth authReporter) error {
+func runAPICompatibleShimSession(ctx context.Context, opts APICompatibleShimOptions, registration provider.Registration, dataURL string, dynamicHealth healthReporter, dynamicAuth authReporter, dynamicTargetVersion targetVersionReporter) error {
 	eg, ctx := errgroup.WithContext(ctx)
 	eg.Go(func() error {
 		authSnapshotReporter, _ := opts.Provider.(authSnapshotReporter)
 		authPushApplier, _ := opts.Provider.(authPushApplier)
 		return RunStaticControlClient(ctx, StaticControlClientOptions{
-			ControlURL:           opts.ControlURL,
-			PeerToken:            opts.PeerToken,
-			HeartbeatInterval:    opts.HeartbeatInterval,
-			Registration:         registration,
-			UsageReporter:        opts.Provider,
-			HealthReporter:       dynamicHealth,
-			AuthReporter:         dynamicAuth,
-			ModelReporter:        opts.Provider,
-			AuthSnapshotReporter: authSnapshotReporter,
-			AuthPushApplier:      authPushApplier,
-			AuthRefresher:        opts.AuthRefresher,
-			AutoRefreshThreshold: opts.AutoRefreshThreshold,
-			AutoRefreshCooldown:  opts.AutoRefreshCooldown,
+			ControlURL:            opts.ControlURL,
+			PeerToken:             opts.PeerToken,
+			HeartbeatInterval:     opts.HeartbeatInterval,
+			Registration:          registration,
+			UsageReporter:         opts.Provider,
+			HealthReporter:        dynamicHealth,
+			AuthReporter:          dynamicAuth,
+			ModelReporter:         opts.Provider,
+			TargetVersionReporter: dynamicTargetVersion,
+			AuthSnapshotReporter:  authSnapshotReporter,
+			AuthPushApplier:       authPushApplier,
+			AuthRefresher:         opts.AuthRefresher,
+			AutoRefreshThreshold:  opts.AutoRefreshThreshold,
+			AutoRefreshCooldown:   opts.AutoRefreshCooldown,
 		})
 	})
 	eg.Go(func() error {
@@ -120,19 +129,20 @@ func runAPICompatibleShimSession(ctx context.Context, opts APICompatibleShimOpti
 }
 
 type StaticControlClientOptions struct {
-	ControlURL           string
-	PeerToken            string
-	HeartbeatInterval    time.Duration
-	Registration         provider.Registration
-	UsageReporter        usageReporter
-	HealthReporter       healthReporter
-	AuthReporter         authReporter
-	ModelReporter        modelReporter
-	AuthSnapshotReporter authSnapshotReporter
-	AuthPushApplier      authPushApplier
-	AuthRefresher        AuthRefresher
-	AutoRefreshThreshold time.Duration
-	AutoRefreshCooldown  time.Duration
+	ControlURL            string
+	PeerToken             string
+	HeartbeatInterval     time.Duration
+	Registration          provider.Registration
+	UsageReporter         usageReporter
+	HealthReporter        healthReporter
+	AuthReporter          authReporter
+	ModelReporter         modelReporter
+	TargetVersionReporter targetVersionReporter
+	AuthSnapshotReporter  authSnapshotReporter
+	AuthPushApplier       authPushApplier
+	AuthRefresher         AuthRefresher
+	AutoRefreshThreshold  time.Duration
+	AutoRefreshCooldown   time.Duration
 }
 
 type usageReporter interface {
@@ -149,6 +159,10 @@ type authReporter interface {
 
 type modelReporter interface {
 	Models(context.Context) ([]provider.Model, error)
+}
+
+type targetVersionReporter interface {
+	TargetVersion(context.Context) (string, error)
 }
 
 type forcedModelDiscoveryReporter interface {
@@ -182,7 +196,10 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 		heartbeatInterval = 30 * time.Second
 	}
 	state := newStaticControlState(opts.Registration)
+	refreshStaticTargetVersion(ctx, state, opts.TargetVersionReporter)
 	refreshStaticModels(ctx, state, opts.ModelReporter)
+	refreshStaticHealth(ctx, state, opts.HealthReporter)
+	refreshStaticAuth(ctx, state, opts.AuthReporter)
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		return err
@@ -223,6 +240,14 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 				return err
 			}
 		case <-ticker.C:
+			if refreshStaticTargetVersion(ctx, state, opts.TargetVersionReporter) {
+				if err := writeStaticInventoryReport(ctx, client, state, "provider_inventory_version_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					return err
+				}
+			}
 			if refreshStaticModels(ctx, state, opts.ModelReporter) {
 				if err := writeStaticInventoryReport(ctx, client, state, "provider_inventory_"+time.Now().UTC().Format("20060102150405.000000000")); err != nil {
 					if ctx.Err() != nil {
@@ -318,10 +343,45 @@ func (s *staticControlState) setAuthFromReporter(auth provider.AuthState) provid
 	return s.registration
 }
 
+func refreshStaticHealth(ctx context.Context, state *staticControlState, reporter healthReporter) bool {
+	if reporter == nil {
+		return false
+	}
+	health, err := reporter.Health()
+	if err != nil || health.Status == "" {
+		return false
+	}
+	before := state.registrationSnapshot().Health
+	state.setHealthFromReporter(health)
+	after := state.registrationSnapshot().Health
+	return before != after
+}
+
+func refreshStaticAuth(ctx context.Context, state *staticControlState, reporter authReporter) bool {
+	if reporter == nil {
+		return false
+	}
+	auth, err := reporter.Auth()
+	if err != nil || auth.Status == "" {
+		return false
+	}
+	before := state.registrationSnapshot().Auth
+	state.setAuthFromReporter(auth)
+	after := state.registrationSnapshot().Auth
+	return before != after
+}
+
 func (s *staticControlState) setModels(models []provider.Model) provider.Registration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registration.Models = cloneProviderModels(models)
+	return s.registration
+}
+
+func (s *staticControlState) setTargetVersion(version string) provider.Registration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registration.Identity.TargetVersion = strings.TrimSpace(version)
 	return s.registration
 }
 
@@ -361,6 +421,28 @@ func refreshStaticModels(ctx context.Context, state *staticControlState, reporte
 		return false
 	}
 	state.setModels(merged)
+	return true
+}
+
+func refreshStaticTargetVersion(ctx context.Context, state *staticControlState, reporter targetVersionReporter) bool {
+	if state == nil || reporter == nil {
+		return false
+	}
+	registration := state.registrationSnapshot()
+	if _, ok := ctx.Deadline(); !ok && defaultTargetVersionTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultTargetVersionTimeout)
+		defer cancel()
+	}
+	version, err := reporter.TargetVersion(ctx)
+	if err != nil {
+		return false
+	}
+	version = strings.TrimSpace(version)
+	if version == "" || version == registration.Identity.TargetVersion {
+		return false
+	}
+	state.setTargetVersion(version)
 	return true
 }
 

@@ -305,7 +305,7 @@ func TestControlWSNodeHelloHeartbeatAndInventory(t *testing.T) {
 		},
 		Containers: []control.ContainerReport{{
 			ContainerID:        "container-1",
-			ProviderID:         "codex-cli",
+			ProviderType:       "codex-cli",
 			ProviderInstanceID: "codex-control-a1",
 			Image:              "pangaea/codex:latest",
 			State:              "running",
