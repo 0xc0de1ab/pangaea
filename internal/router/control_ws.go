@@ -68,7 +68,11 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		if heartbeat.ProviderInstanceID == "" {
 			return control.ErrInvalidPayload
 		}
-		return engine.UpdateProviderHeartbeat(heartbeat.ProviderInstanceID, heartbeat.Health, heartbeat.Auth, heartbeat.Limits)
+		if err := engine.UpdateProviderHeartbeat(heartbeat.ProviderInstanceID, heartbeat.Health, heartbeat.Auth, heartbeat.Limits); err != nil {
+			return err
+		}
+		engine.RecordProviderAuthHeartbeat(heartbeat.ProviderInstanceID, heartbeat.Auth, heartbeat.ReportedAt)
+		return nil
 	case control.MessageTypeProviderInventoryReport:
 		report, err := control.Decode[control.ProviderInventoryReport](env, control.MessageTypeProviderInventoryReport)
 		if err != nil {

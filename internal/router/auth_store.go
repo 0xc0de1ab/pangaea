@@ -16,6 +16,8 @@ import (
 
 const maxAuthEvents = 512
 
+const authEventProviderHeartbeat = "provider.heartbeat.auth"
+
 type AuthRecord struct {
 	ID                 string              `json:"id"`
 	Service            provider.Service    `json:"service"`
@@ -77,6 +79,13 @@ type AuthEvent struct {
 
 func (e *Engine) RecordProviderAuthReport(providerInstanceID string, auth provider.AuthState, reportedAt time.Time) {
 	e.recordAuth(providerInstanceID, auth, "", "", "", nil, "", reportedAt, "provider.auth.report", "")
+}
+
+func (e *Engine) RecordProviderAuthHeartbeat(providerInstanceID string, auth provider.AuthState, reportedAt time.Time) {
+	if auth.Status == "" {
+		return
+	}
+	e.recordAuth(providerInstanceID, auth, "", "", "", nil, "", reportedAt, authEventProviderHeartbeat, "")
 }
 
 func (e *Engine) RecordAuthSnapshot(snapshot control.AuthSnapshot) {
@@ -177,6 +186,7 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 		e.authRaw = make(map[string][]byte)
 	}
 	record := e.authRecords[authID]
+	previous := record
 	if record.ID == "" {
 		record.ID = authID
 		record.Service = identity.Service
@@ -209,21 +219,23 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 	record.Replicas = upsertAuthReplica(record.Replicas, replica)
 	e.authRecords[authID] = record
 
-	e.appendAuthEventLocked(AuthEvent{
-		AuthID:             authID,
-		Type:               eventType,
-		Service:            identity.Service,
-		Account:            account,
-		ProviderType:       identity.ProviderType,
-		ProviderInstanceID: providerInstanceID,
-		NodeID:             identity.NodeID,
-		HostName:           identity.HostName,
-		Status:             auth.Status,
-		Fingerprint:        fingerprint,
-		Source:             firstNonEmpty(source, auth.SelectedSource),
-		Message:            message,
-		At:                 observedAt,
-	})
+	if shouldAppendAuthEvent(previous, record, eventType, message) {
+		e.appendAuthEventLocked(AuthEvent{
+			AuthID:             authID,
+			Type:               eventType,
+			Service:            identity.Service,
+			Account:            account,
+			ProviderType:       identity.ProviderType,
+			ProviderInstanceID: providerInstanceID,
+			NodeID:             identity.NodeID,
+			HostName:           identity.HostName,
+			Status:             auth.Status,
+			Fingerprint:        fingerprint,
+			Source:             firstNonEmpty(source, auth.SelectedSource),
+			Message:            message,
+			At:                 observedAt,
+		})
+	}
 }
 
 func (e *Engine) AuthRecords() []AuthRecord {
@@ -301,6 +313,18 @@ func (e *Engine) appendAuthEventLocked(event AuthEvent) {
 func upsertAuthReplica(replicas []AuthReplica, replica AuthReplica) []AuthReplica {
 	for i := range replicas {
 		if replicas[i].ProviderInstanceID == replica.ProviderInstanceID {
+			previous := replicas[i]
+			if replica.Account == (provider.Account{}) {
+				replica.Account = previous.Account
+			}
+			replica.Fingerprint = firstNonEmpty(replica.Fingerprint, previous.Fingerprint)
+			replica.Source = firstNonEmpty(replica.Source, previous.Source)
+			if replica.ObservedAt.IsZero() {
+				replica.ObservedAt = previous.ObservedAt
+			}
+			if !replica.HasDownload {
+				replica.HasDownload = previous.HasDownload
+			}
 			replicas[i] = replica
 			return replicas
 		}
@@ -313,6 +337,28 @@ func upsertAuthReplica(replicas []AuthReplica, replica AuthReplica) []AuthReplic
 		return replicas[i].ProviderInstanceID < replicas[j].ProviderInstanceID
 	})
 	return replicas
+}
+
+func shouldAppendAuthEvent(previous AuthRecord, next AuthRecord, eventType string, message string) bool {
+	if eventType == "" {
+		return false
+	}
+	if eventType != authEventProviderHeartbeat {
+		return true
+	}
+	if previous.ID == "" || message != "" {
+		return true
+	}
+	return previous.Status != next.Status ||
+		!previous.ExpiresAt.Equal(next.ExpiresAt) ||
+		previous.Refreshable != next.Refreshable ||
+		!previous.LastRefreshAt.Equal(next.LastRefreshAt) ||
+		previous.LastRefreshErr != next.LastRefreshErr ||
+		previous.SelectedSource != next.SelectedSource ||
+		previous.BootstrapSource != next.BootstrapSource ||
+		previous.Fingerprint != next.Fingerprint ||
+		previous.Source != next.Source ||
+		previous.Account != next.Account
 }
 
 func authRecordID(service provider.Service, account provider.Account, fallback string) string {

@@ -1380,7 +1380,7 @@ func authStateFromValidation(format formats.Format, result formats.ValidationRes
 		result.Status == formats.StatusOK &&
 		!expiresAt.IsZero() &&
 		!checkedAt.Add(authExpiryRefreshThreshold).Before(expiresAt) {
-		return provider.AuthHealthy, time.Time{}, ""
+		return provider.AuthHealthy, expiresAt, ""
 	}
 	status := authStatusFromValidation(result.Status, expiresAt, checkedAt)
 	lastRefreshErr := ""
@@ -1394,7 +1394,7 @@ func shouldPreferValidationAuthStatus(format formats.Format, current provider.Au
 	if format == nil || format.Name() != antigravityStateFormatName {
 		return false
 	}
-	return current == provider.AuthRefreshSoon && validationStatus == provider.AuthHealthy && validationExpiresAt.IsZero()
+	return current == provider.AuthRefreshSoon && validationStatus == provider.AuthHealthy
 }
 
 func RefreshCommandArgs(command string, loginShell bool) []string {

@@ -164,6 +164,76 @@ func TestControlWSAuthSnapshotUpdatesAuth(t *testing.T) {
 	t.Fatalf("registered provider missing")
 }
 
+func TestControlWSProviderHeartbeatUpdatesAuthInventory(t *testing.T) {
+	engine, _ := testEngine(t)
+	conn := dialControlWS(t, engine)
+	defer conn.Close()
+
+	reg := registration("codex-control-a1", "codex-cli", "control@example.test", 10, 0)
+	writeControlEnvelope(t, conn, control.MessageTypeProviderRegister, "msg_register", reg)
+	readControlAck(t, conn, "msg_register")
+
+	expiredAt := time.Now().Add(-time.Hour).UTC()
+	writeControlEnvelope(t, conn, control.MessageTypeAuthSnapshot, "msg_auth_snapshot", control.AuthSnapshot{
+		ProviderInstanceID: "codex-control-a1",
+		AccountID:          "acct-1",
+		Auth: provider.AuthState{
+			Status:         provider.AuthExpired,
+			Account:        provider.Account{ID: "acct-1", Display: "control@example.test"},
+			ExpiresAt:      expiredAt,
+			Refreshable:    true,
+			LastRefreshErr: "expiry_date within 5-minute eager-refresh window",
+			SelectedSource: "container",
+		},
+		Source:     "container",
+		Filename:   "auth.json",
+		Format:     "codex-auth-json-format",
+		Raw:        []byte(`{"access_token":"redacted"}`),
+		ObservedAt: time.Now().Add(-time.Minute).UTC(),
+	})
+	readControlAck(t, conn, "msg_auth_snapshot")
+
+	records := engine.AuthRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected one auth record after snapshot, got %#v", records)
+	}
+	if records[0].Status != provider.AuthExpired || !records[0].HasDownload || records[0].Fingerprint == "" {
+		t.Fatalf("expected expired downloadable auth record, got %#v", records[0])
+	}
+
+	healthyAt := time.Now().Add(time.Hour).UTC()
+	writeControlEnvelope(t, conn, control.MessageTypeProviderHeartbeat, "msg_heartbeat", control.ProviderHeartbeat{
+		ProviderInstanceID: "codex-control-a1",
+		Auth: provider.AuthState{
+			Status:         provider.AuthHealthy,
+			Account:        provider.Account{ID: "acct-1", Display: "control@example.test"},
+			ExpiresAt:      healthyAt,
+			Refreshable:    true,
+			SelectedSource: "container",
+		},
+		ReportedAt: time.Now().UTC(),
+	})
+	readControlAck(t, conn, "msg_heartbeat")
+
+	records = engine.AuthRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected one auth record after heartbeat, got %#v", records)
+	}
+	got := records[0]
+	if got.Status != provider.AuthHealthy || !got.ExpiresAt.Equal(healthyAt) {
+		t.Fatalf("expected heartbeat auth inventory refresh, got %#v", got)
+	}
+	if got.LastRefreshErr != "" {
+		t.Fatalf("expected heartbeat to clear stale refresh error, got %#v", got)
+	}
+	if !got.HasDownload || got.DownloadURL == "" || got.Fingerprint == "" {
+		t.Fatalf("expected heartbeat to preserve downloadable auth metadata, got %#v", got)
+	}
+	if len(got.Replicas) != 1 || got.Replicas[0].Status != provider.AuthHealthy || !got.Replicas[0].HasDownload || got.Replicas[0].Fingerprint == "" {
+		t.Fatalf("expected heartbeat to update replica while preserving download metadata, got %#v", got.Replicas)
+	}
+}
+
 func TestControlWSProviderUsageReportUpdatesUsage(t *testing.T) {
 	engine, _ := testEngine(t)
 	conn := dialControlWS(t, engine)

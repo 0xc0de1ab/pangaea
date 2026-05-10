@@ -52,20 +52,21 @@ func TestAuthStatusFromValidationMarksStaleOKExpiryRefreshSoon(t *testing.T) {
 
 func TestAuthStateFromValidationTreatsAntigravityStaleExpiryAsAdvisory(t *testing.T) {
 	now := time.Now().UTC()
+	staleExpiry := now.Add(-time.Minute)
 	status, expiresAt, detail := authStateFromValidation(
 		antigravitystate.Format{},
 		formats.ValidationResult{
 			Status: formats.StatusOK,
 			Detail: "antigravity oauth expiry is stale in state.vscdb but may be refreshed in ls-core memory",
 		},
-		now.Add(-time.Minute),
+		staleExpiry,
 		now,
 	)
 	if status != provider.AuthHealthy {
 		t.Fatalf("auth status = %q, want %q", status, provider.AuthHealthy)
 	}
-	if !expiresAt.IsZero() {
-		t.Fatalf("expiresAt = %s, want zero advisory expiry", expiresAt)
+	if !expiresAt.Equal(staleExpiry) {
+		t.Fatalf("expiresAt = %s, want stale advisory expiry %s", expiresAt, staleExpiry)
 	}
 	if detail != "" {
 		t.Fatalf("detail = %q, want empty", detail)
