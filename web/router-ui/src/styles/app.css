@@ -144,6 +144,33 @@ code {
   gap: 6px;
 }
 
+.oauth-user {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 260px;
+  min-height: 34px;
+  padding: 0 4px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.oauth-user img {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+
+.oauth-user span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .env-badge {
   padding: 3px 7px;
   border: 1px solid var(--border);
@@ -2408,7 +2435,8 @@ tr:last-child td {
   }
 
   .global-search,
-  .token-field {
+  .token-field,
+  .oauth-user {
     width: 100%;
   }
 

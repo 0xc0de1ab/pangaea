@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	v2router "github.com/0xc0de1ab/pangaea/internal/router"
 )
@@ -68,5 +69,37 @@ func TestRouterServeCommandExposesStreamTokenKeyFlag(t *testing.T) {
 	}
 	if cmd.Flags().Lookup("peer-token") == nil {
 		t.Fatalf("expected peer-token flag")
+	}
+}
+
+func TestLoadGoogleOAuthEnvDefaultsAcceptsUnprefixedNames(t *testing.T) {
+	t.Setenv("GOOGLE_OAUTH_ENABLED", "true")
+	t.Setenv("GOOGLE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+	t.Setenv("GOOGLE_REDIRECT_URL", "http://127.0.0.1:18080/router/v1/auth/google/callback")
+	t.Setenv("SESSION_SECRET", "session-secret")
+	t.Setenv("GOOGLE_ALLOWED_EMAILS", "a@example.test,b@example.test")
+	t.Setenv("GOOGLE_ALLOWED_DOMAIN", "example.org")
+	t.Setenv("GOOGLE_COOKIE_SECURE", "true")
+	t.Setenv("GOOGLE_SESSION_TTL", "30m")
+
+	opts := loadGoogleOAuthEnvDefaults(v2router.GoogleOAuthOptions{})
+	if !opts.Enabled || !opts.CookieSecure {
+		t.Fatalf("expected enabled secure oauth opts: %#v", opts)
+	}
+	if opts.ClientID != "client-id" || opts.ClientSecret != "client-secret" || opts.SessionSecret != "session-secret" {
+		t.Fatalf("expected unprefixed credentials to load: %#v", opts)
+	}
+	if opts.RedirectURL != "http://127.0.0.1:18080/router/v1/auth/google/callback" {
+		t.Fatalf("unexpected redirect url: %q", opts.RedirectURL)
+	}
+	if len(opts.AllowedEmails) != 2 || opts.AllowedEmails[0] != "a@example.test" || opts.AllowedEmails[1] != "b@example.test" {
+		t.Fatalf("unexpected allowed emails: %#v", opts.AllowedEmails)
+	}
+	if len(opts.AllowedDomains) != 1 || opts.AllowedDomains[0] != "example.org" {
+		t.Fatalf("unexpected allowed domains: %#v", opts.AllowedDomains)
+	}
+	if opts.SessionTTL != 30*time.Minute {
+		t.Fatalf("unexpected session ttl: %s", opts.SessionTTL)
 	}
 }

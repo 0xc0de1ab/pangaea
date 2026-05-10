@@ -16,6 +16,7 @@ import type {
   RequestTracePage,
   RouteDecision,
   RouteRequest,
+  RouterSession,
   SessionSnapshot,
 } from "./types";
 
@@ -67,6 +68,7 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
   const response = await fetch(endpoint, {
     method: options.method ?? "GET",
     cache: "no-store",
+    credentials: "same-origin",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
@@ -105,7 +107,7 @@ function isFetchFailure(err: unknown) {
 }
 
 async function requestText(endpoint: string): Promise<string> {
-  const response = await fetch(endpoint, { cache: "no-store" });
+  const response = await fetch(endpoint, { cache: "no-store", credentials: "same-origin" });
   if (!response.ok) {
     throw new APIError(response.statusText || `HTTP ${response.status}`, response.status, endpoint);
   }
@@ -116,6 +118,7 @@ async function requestBlob(endpoint: string, options: RequestOptions = {}): Prom
   const response = await fetch(endpoint, {
     method: options.method ?? "GET",
     cache: "no-store",
+    credentials: "same-origin",
     headers: requestHeaders(options),
   });
   const okStatuses = options.okStatuses ?? [200];
@@ -144,6 +147,7 @@ async function requestStream(endpoint: string, options: RequestOptions, onPayloa
   const response = await fetch(endpoint, {
     method: options.method ?? "POST",
     cache: "no-store",
+    credentials: "same-origin",
     headers: requestHeaders(options),
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
@@ -419,6 +423,8 @@ function compactBody<T extends Record<string, unknown>>(body: T) {
 
 export const api = {
   health: () => requestText("/healthz"),
+  session: () => request<RouterSession>("/router/v1/session"),
+  logout: () => request<void>("/router/v1/session", { method: "DELETE", okStatuses: [204] }),
   providers: async (token?: string) => {
     const payload = await request<{ providers?: ProviderRegistration[] }>("/router/v1/providers", { token });
     return payload.providers ?? [];

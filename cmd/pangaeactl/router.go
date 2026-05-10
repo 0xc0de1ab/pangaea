@@ -26,12 +26,14 @@ type routerServeOptions struct {
 	APIKey         string
 	TenantID       string
 	UserID         string
+	AdminAuthMode  string
 	StreamTokenKey string
 	PeerToken      string
 	StateDir       string
 	StateMode      string
 	StateFlush     time.Duration
 	DataRequestTO  time.Duration
+	GoogleOAuth    v2router.GoogleOAuthOptions
 }
 
 func newRouterCmd() *cobra.Command {
@@ -65,21 +67,33 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "optional public API bearer key")
 	cmd.Flags().StringVar(&opts.TenantID, "tenant-id", "dev", "tenant id assigned to --api-key")
 	cmd.Flags().StringVar(&opts.UserID, "user-id", "dev", "user id assigned to --api-key")
+	cmd.Flags().StringVar(&opts.AdminAuthMode, "admin-auth-mode", "auto", "admin auth mode (auto|open|bearer|google|both)")
 	cmd.Flags().StringVar(&opts.StreamTokenKey, "stream-token-key", defaultStreamTokenKey, "shared HMAC key for router-to-shim stream capability tokens")
 	cmd.Flags().StringVar(&opts.PeerToken, "peer-token", "", "optional bearer token required for node-agent and provider-shim websocket connections")
 	cmd.Flags().StringVar(&opts.StateDir, "state-dir", "", "optional directory for router state snapshots")
 	cmd.Flags().StringVar(&opts.StateMode, "state-mode", "persistent", "router state mode (persistent|ephemeral)")
 	cmd.Flags().DurationVar(&opts.StateFlush, "state-flush-interval", 10*time.Second, "interval for writing router state snapshots")
 	cmd.Flags().DurationVar(&opts.DataRequestTO, "data-request-timeout", 10*time.Minute, "maximum duration for one router-to-provider data request")
+	cmd.Flags().BoolVar(&opts.GoogleOAuth.Enabled, "google-oauth", false, "enable Google OAuth login for router admin APIs")
+	cmd.Flags().StringVar(&opts.GoogleOAuth.ClientID, "google-oauth-client-id", "", "Google OAuth client id")
+	cmd.Flags().StringVar(&opts.GoogleOAuth.ClientSecret, "google-oauth-client-secret", "", "Google OAuth client secret")
+	cmd.Flags().StringVar(&opts.GoogleOAuth.RedirectURL, "google-oauth-redirect-url", "", "Google OAuth redirect URL (defaults to request host /router/v1/auth/google/callback)")
+	cmd.Flags().StringSliceVar(&opts.GoogleOAuth.AllowedEmails, "google-oauth-allowed-email", nil, "allowed Google account email; repeat or comma-separate")
+	cmd.Flags().StringSliceVar(&opts.GoogleOAuth.AllowedDomains, "google-oauth-allowed-domain", nil, "allowed Google account domain; repeat or comma-separate")
+	cmd.Flags().StringVar(&opts.GoogleOAuth.SessionSecret, "google-oauth-session-secret", "", "secret used to sign router OAuth session cookies")
+	cmd.Flags().BoolVar(&opts.GoogleOAuth.CookieSecure, "google-oauth-cookie-secure", false, "mark Google OAuth session cookies as Secure")
+	cmd.Flags().DurationVar(&opts.GoogleOAuth.SessionTTL, "google-oauth-session-ttl", 12*time.Hour, "Google OAuth router session TTL")
 	return cmd
 }
 
 func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	opts.APIKey = stringEnvDefault(opts.APIKey, "PANGAEA_ROUTER_API_KEY")
+	opts.AdminAuthMode = stringEnvDefaultWhenDefaultAny(opts.AdminAuthMode, "auto", "PANGAEA_ROUTER_ADMIN_AUTH_MODE", "ROUTER_ADMIN_AUTH_MODE", "ADMIN_AUTH_MODE")
 	opts.PeerToken = stringEnvDefault(opts.PeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
 	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
 	opts.StateDir = stringEnvDefault(opts.StateDir, "PANGAEA_ROUTER_STATE_DIR")
 	opts.StateMode = stringEnvDefaultWhenDefault(opts.StateMode, "persistent", "PANGAEA_ROUTER_STATE_MODE")
+	opts.GoogleOAuth = loadGoogleOAuthEnvDefaults(opts.GoogleOAuth)
 	if value := strings.TrimSpace(os.Getenv("PANGAEA_ROUTER_DATA_REQUEST_TIMEOUT")); value != "" && (opts.DataRequestTO <= 0 || opts.DataRequestTO == 10*time.Minute) {
 		parsed, err := time.ParseDuration(value)
 		if err != nil {
@@ -89,6 +103,10 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	}
 	engine, err := buildRouterEngine(opts)
 	if err != nil {
+		return err
+	}
+	adminAuth := v2router.AdminAuthOptions{Mode: opts.AdminAuthMode, GoogleOAuth: opts.GoogleOAuth}
+	if err := v2router.ValidateAdminAuthOptions(adminAuth); err != nil {
 		return err
 	}
 	if err := restoreRouterState(opts, engine); err != nil {
@@ -107,7 +125,7 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	}
 	srv := &http.Server{
 		Addr:              opts.Listen,
-		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts), DataBroker: dataBroker, PeerToken: opts.PeerToken}),
+		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts), DataBroker: dataBroker, PeerToken: opts.PeerToken, AdminAuth: adminAuth}),
 		ReadHeaderTimeout: common.ReadTimeout,
 	}
 	errCh := make(chan error, 1)
@@ -249,6 +267,125 @@ func buildRouterAPIKeyStore(opts routerServeOptions) *security.APIKeyStore {
 	store := security.NewAPIKeyStore(nil)
 	_, _ = store.AddRawKey("dev-key", opts.APIKey, opts.TenantID, opts.UserID)
 	return store
+}
+
+func loadGoogleOAuthEnvDefaults(opts v2router.GoogleOAuthOptions) v2router.GoogleOAuthOptions {
+	opts.Enabled = boolEnvDefault(opts.Enabled,
+		"PANGAEA_GOOGLE_OAUTH_ENABLED",
+		"PANGAEA_ROUTER_GOOGLE_OAUTH_ENABLED",
+		"GOOGLE_OAUTH_ENABLED",
+		"GOOGLE_ENABLED",
+	)
+	opts.ClientID = stringEnvDefaultAny(opts.ClientID,
+		"PANGAEA_GOOGLE_OAUTH_CLIENT_ID",
+		"GOOGLE_OAUTH_CLIENT_ID",
+		"GOOGLE_CLIENT_ID",
+	)
+	opts.ClientSecret = stringEnvDefaultAny(opts.ClientSecret,
+		"PANGAEA_GOOGLE_OAUTH_CLIENT_SECRET",
+		"GOOGLE_OAUTH_CLIENT_SECRET",
+		"GOOGLE_CLIENT_SECRET",
+	)
+	opts.RedirectURL = stringEnvDefaultAny(opts.RedirectURL,
+		"PANGAEA_GOOGLE_OAUTH_REDIRECT_URL",
+		"GOOGLE_OAUTH_REDIRECT_URL",
+		"GOOGLE_REDIRECT_URL",
+	)
+	opts.SessionSecret = stringEnvDefaultAny(opts.SessionSecret,
+		"PANGAEA_GOOGLE_OAUTH_SESSION_SECRET",
+		"GOOGLE_OAUTH_SESSION_SECRET",
+		"GOOGLE_SESSION_SECRET",
+		"SESSION_SECRET",
+	)
+	opts.CookieSecure = boolEnvDefault(opts.CookieSecure,
+		"PANGAEA_GOOGLE_OAUTH_COOKIE_SECURE",
+		"GOOGLE_OAUTH_COOKIE_SECURE",
+		"GOOGLE_COOKIE_SECURE",
+	)
+	opts.AllowedEmails = stringSliceEnvDefault(opts.AllowedEmails,
+		"PANGAEA_GOOGLE_OAUTH_ALLOWED_EMAILS",
+		"PANGAEA_GOOGLE_OAUTH_ALLOWED_EMAIL",
+		"GOOGLE_OAUTH_ALLOWED_EMAILS",
+		"GOOGLE_OAUTH_ALLOWED_EMAIL",
+		"GOOGLE_ALLOWED_EMAILS",
+		"GOOGLE_ALLOWED_EMAIL",
+	)
+	opts.AllowedDomains = stringSliceEnvDefault(opts.AllowedDomains,
+		"PANGAEA_GOOGLE_OAUTH_ALLOWED_DOMAINS",
+		"PANGAEA_GOOGLE_OAUTH_ALLOWED_DOMAIN",
+		"GOOGLE_OAUTH_ALLOWED_DOMAINS",
+		"GOOGLE_OAUTH_ALLOWED_DOMAIN",
+		"GOOGLE_ALLOWED_DOMAINS",
+		"GOOGLE_ALLOWED_DOMAIN",
+	)
+	if value := stringEnvDefaultAny("", "PANGAEA_GOOGLE_OAUTH_SESSION_TTL", "GOOGLE_OAUTH_SESSION_TTL", "GOOGLE_SESSION_TTL", "SESSION_TTL"); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			opts.SessionTTL = parsed
+		}
+	}
+	return opts
+}
+
+func stringEnvDefaultAny(current string, names ...string) string {
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return current
+}
+
+func stringEnvDefaultWhenDefaultAny(current string, defaultValue string, names ...string) string {
+	if current != defaultValue {
+		return current
+	}
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return current
+}
+
+func boolEnvDefault(current bool, names ...string) bool {
+	for _, name := range names {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			continue
+		}
+		switch strings.ToLower(value) {
+		case "1", "true", "yes", "y", "on":
+			return true
+		case "0", "false", "no", "n", "off":
+			return false
+		}
+	}
+	return current
+}
+
+func stringSliceEnvDefault(current []string, names ...string) []string {
+	if len(current) > 0 {
+		return current
+	}
+	for _, name := range names {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			continue
+		}
+		parts := strings.Split(value, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out
+	}
+	return current
 }
 
 func loadRouterPolicy(path string, simulator bool) (v2router.RoutingPolicy, error) {

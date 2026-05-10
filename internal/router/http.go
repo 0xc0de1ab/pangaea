@@ -25,6 +25,7 @@ type HTTPOptions struct {
 	APIKeys    *security.APIKeyStore
 	DataBroker *DataBroker
 	PeerToken  string
+	AdminAuth  AdminAuthOptions
 }
 
 const (
@@ -77,15 +78,19 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	if opts.APIKeys == nil {
 		opts.APIKeys = security.NewAPIKeyStore(nil)
 	}
+	opts.AdminAuth = normalizeAdminAuthOptions(opts.AdminAuth, opts.APIKeys.Len() > 0)
 	r := gin.New()
 	r.Use(gin.Recovery())
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
+	r.GET("/router", redirectToEmbeddedRouterDashboard)
+	r.GET("/router/", redirectToEmbeddedRouterDashboard)
 	r.GET("/router/ui", serveEmbeddedRouterDashboard)
 	r.GET("/router/ui/*path", serveEmbeddedRouterDashboard)
-	r.Use(routerAdminAuthMiddleware(opts.APIKeys))
+	registerGoogleOAuthRoutes(r, opts.AdminAuth)
+	r.Use(routerAdminAuthMiddleware(opts.APIKeys, opts.AdminAuth))
 	r.Use(traceHTTPExchangeMiddleware(opts.Engine))
 	r.GET("/v1/models", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
@@ -760,20 +765,23 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	return r
 }
 
-func routerAdminAuthMiddleware(store *security.APIKeyStore) gin.HandlerFunc {
+func routerAdminAuthMiddleware(store *security.APIKeyStore, auth AdminAuthOptions) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if !strings.HasPrefix(path, "/router/v1/") || path == "/router/v1/control/ws" || path == "/router/v1/data/ws" {
 			c.Next()
 			return
 		}
-		principal, ok := authenticatePublicRequest(c, store)
+		principal, session, ok := authenticateRouterAdminRequest(c, store, auth)
 		if !ok {
 			c.Abort()
 			return
 		}
 		if principal.ID != "" {
 			c.Set("router_admin_principal", principal)
+		}
+		if session.Email != "" {
+			c.Set(routerAdminSessionContextKey, session)
 		}
 		c.Next()
 	}
@@ -1849,6 +1857,17 @@ func httpAuditActor(c *gin.Context) AuditActor {
 			}
 		}
 	}
+	if value, ok := c.Get(routerAdminSessionContextKey); ok {
+		if session, ok := value.(GoogleOAuthSession); ok && session.Email != "" {
+			return AuditActor{
+				TenantID:   "google",
+				UserID:     session.Email,
+				Source:     "google-oauth",
+				RemoteAddr: c.ClientIP(),
+				RequestID:  c.GetHeader("x-request-id"),
+			}
+		}
+	}
 	actor := AuditActor{
 		TenantID:   c.GetHeader("x-pangaea-tenant-id"),
 		UserID:     c.GetHeader("x-pangaea-user-id"),
@@ -1925,6 +1944,61 @@ func authenticatePublicRequest(c *gin.Context, store *security.APIKeyStore) (sec
 		return security.APIKeyPrincipal{}, false
 	}
 	return principal, true
+}
+
+func authenticateRouterAdminRequest(c *gin.Context, store *security.APIKeyStore, auth AdminAuthOptions) (security.APIKeyPrincipal, GoogleOAuthSession, bool) {
+	switch auth.Mode {
+	case routerAdminAuthModeOpen:
+		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, true
+	case routerAdminAuthModeGoogle:
+		principal, session, ok := authenticateRouterAdminGoogle(c, auth.GoogleOAuth)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid google oauth session"})
+		}
+		return principal, session, ok
+	case routerAdminAuthModeBoth:
+		if principal, session, ok := authenticateRouterAdminGoogle(c, auth.GoogleOAuth); ok {
+			return principal, session, true
+		}
+		return authenticateRouterAdminBearer(c, store, false)
+	case routerAdminAuthModeBearer:
+		fallthrough
+	default:
+		return authenticateRouterAdminBearer(c, store, true)
+	}
+}
+
+func authenticateRouterAdminGoogle(c *gin.Context, oauth GoogleOAuthOptions) (security.APIKeyPrincipal, GoogleOAuthSession, bool) {
+	session, ok := authenticateGoogleOAuthSession(c, oauth)
+	if !ok {
+		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+	}
+	return security.APIKeyPrincipal{}, session, true
+}
+
+func authenticateRouterAdminBearer(c *gin.Context, store *security.APIKeyStore, allowOpen bool) (security.APIKeyPrincipal, GoogleOAuthSession, bool) {
+	if store == nil || store.Len() == 0 {
+		if allowOpen {
+			return security.APIKeyPrincipal{}, GoogleOAuthSession{}, true
+		}
+		if bearerToken(c.GetHeader("authorization")) == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing admin session or bearer token"})
+			return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "admin bearer auth is not configured"})
+		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+	}
+	raw := bearerToken(c.GetHeader("authorization"))
+	if raw == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+	}
+	principal, ok := store.Authenticate(raw)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
+		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+	}
+	return principal, GoogleOAuthSession{}, true
 }
 
 func downloadFilename(filename string) string {

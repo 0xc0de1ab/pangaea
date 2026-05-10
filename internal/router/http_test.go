@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -886,6 +887,178 @@ func TestHTTPRouterAdminRequiresAPIKeyWhenConfigured(t *testing.T) {
 	if len(events) != 1 || events[0].Actor.APIKeyID != "admin_key" || events[0].Actor.UserID != "admin_1" || events[0].Actor.TenantID != "ops" {
 		t.Fatalf("audit actor did not use authenticated admin principal: %#v", events)
 	}
+}
+
+func TestHTTPRouterAdminAcceptsAllowedGoogleOAuthSession(t *testing.T) {
+	engine, _ := testEngine(t)
+	oauth := GoogleOAuthOptions{
+		Enabled:       true,
+		ClientID:      "client-test",
+		ClientSecret:  "secret-test",
+		SessionSecret: "session-secret-test",
+		AllowedEmails: []string{"operator@example.test"},
+		SessionTTL:    time.Hour,
+	}
+	handler := NewHTTPHandler(HTTPOptions{
+		Engine: engine,
+		AdminAuth: AdminAuthOptions{
+			Mode:        routerAdminAuthModeGoogle,
+			GoogleOAuth: oauth,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+	req.AddCookie(testGoogleOAuthSessionCookie(t, oauth, "operator@example.test"))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with allowed google session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPRouterAdminRejectsDisallowedGoogleOAuthSession(t *testing.T) {
+	engine, _ := testEngine(t)
+	oauth := GoogleOAuthOptions{
+		Enabled:        true,
+		ClientID:       "client-test",
+		ClientSecret:   "secret-test",
+		SessionSecret:  "session-secret-test",
+		AllowedDomains: []string{"example.test"},
+		SessionTTL:     time.Hour,
+	}
+	handler := NewHTTPHandler(HTTPOptions{
+		Engine: engine,
+		AdminAuth: AdminAuthOptions{
+			Mode:        routerAdminAuthModeGoogle,
+			GoogleOAuth: oauth,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+	req.AddCookie(testGoogleOAuthSessionCookie(t, oauth, "blocked@example.invalid"))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with disallowed google session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGoogleOAuthCallbackIssuesRouterSession(t *testing.T) {
+	engine, _ := testEngine(t)
+	var tokenForm url.Values
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form: %v", err)
+			}
+			tokenForm = r.PostForm
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access-test","id_token":"id-token-test","token_type":"Bearer","expires_in":3600}`))
+		case "/tokeninfo":
+			if got := r.URL.Query().Get("id_token"); got != "id-token-test" {
+				t.Fatalf("unexpected id_token query: %q", got)
+			}
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"aud":"client-test","sub":"sub-1","email":"operator@example.test","email_verified":"true","name":"Operator"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer google.Close()
+
+	oauth := GoogleOAuthOptions{
+		Enabled:       true,
+		ClientID:      "client-test",
+		ClientSecret:  "secret-test",
+		SessionSecret: "session-secret-test",
+		AllowedEmails: []string{"operator@example.test"},
+		SessionTTL:    time.Hour,
+		AuthURL:       "https://accounts.example.test/o/oauth2/v2/auth",
+		TokenURL:      google.URL + "/token",
+		TokenInfoURL:  google.URL + "/tokeninfo",
+	}
+	handler := NewHTTPHandler(HTTPOptions{
+		Engine: engine,
+		AdminAuth: AdminAuthOptions{
+			Mode:        routerAdminAuthModeGoogle,
+			GoogleOAuth: oauth,
+		},
+	})
+
+	loginReq := httptest.NewRequest(http.MethodGet, "/router/v1/auth/google/login?next=/router/ui#/providers", nil)
+	loginReq.Host = "router.example.test"
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusFound {
+		t.Fatalf("expected login redirect, got %d body=%s", loginRec.Code, loginRec.Body.String())
+	}
+	location, err := url.Parse(loginRec.Header().Get("location"))
+	if err != nil {
+		t.Fatalf("parse login redirect: %v", err)
+	}
+	state := location.Query().Get("state")
+	if state == "" {
+		t.Fatalf("login redirect missing state: %s", loginRec.Header().Get("location"))
+	}
+	stateCookie := testCookieByName(t, loginRec.Result().Cookies(), defaultGoogleOAuthStateCookie)
+
+	callbackReq := httptest.NewRequest(http.MethodGet, "/router/v1/auth/google/callback?code=code-test&state="+url.QueryEscape(state), nil)
+	callbackReq.AddCookie(stateCookie)
+	callbackRec := httptest.NewRecorder()
+	handler.ServeHTTP(callbackRec, callbackReq)
+	if callbackRec.Code != http.StatusFound {
+		t.Fatalf("expected callback redirect, got %d body=%s", callbackRec.Code, callbackRec.Body.String())
+	}
+	if got := tokenForm.Get("grant_type"); got != "authorization_code" {
+		t.Fatalf("unexpected token grant_type: %q", got)
+	}
+	if got := tokenForm.Get("redirect_uri"); got != "http://router.example.test/router/v1/auth/google/callback" {
+		t.Fatalf("unexpected redirect_uri: %q", got)
+	}
+	sessionCookie := testCookieByName(t, callbackRec.Result().Cookies(), defaultGoogleOAuthCookieName)
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+	req.AddCookie(sessionCookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with callback session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func testGoogleOAuthSessionCookie(t *testing.T, oauth GoogleOAuthOptions, email string) *http.Cookie {
+	t.Helper()
+	session := GoogleOAuthSession{
+		Provider:      "google",
+		Subject:       "sub-test",
+		Email:         email,
+		EmailVerified: true,
+		IssuedAt:      time.Now().Add(-time.Minute).Unix(),
+		ExpiresAt:     time.Now().Add(time.Hour).Unix(),
+	}
+	signed, err := signJSONPayload([]byte(oauth.SessionSecret), session)
+	if err != nil {
+		t.Fatalf("sign session: %v", err)
+	}
+	return &http.Cookie{Name: defaultGoogleOAuthCookieName, Value: signed}
+}
+
+func testCookieByName(t *testing.T, cookies []*http.Cookie, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("cookie %q not found in %#v", name, cookies)
+	return nil
 }
 
 func TestHTTPAPIKeyAdminCreatesListsAndDeletesKey(t *testing.T) {

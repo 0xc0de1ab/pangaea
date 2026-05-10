@@ -279,6 +279,29 @@ export type RouteDecision = {
   reason?: string;
 };
 
+export type RouterOAuthUser = {
+  provider?: string;
+  sub?: string;
+  email?: string;
+  email_verified?: boolean;
+  name?: string;
+  picture?: string;
+  iat?: number;
+  exp?: number;
+};
+
+export type RouterSession = {
+  authenticated: boolean;
+  mode?: string;
+  user?: RouterOAuthUser;
+  google_oauth?: {
+    enabled?: boolean;
+    client_id?: string;
+    allowed_emails?: string[];
+    allowed_domains?: string[];
+  };
+};
+
 export type RequestTrace = {
   request_id: string;
   route_request?: RouteRequest;

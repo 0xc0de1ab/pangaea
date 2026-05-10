@@ -19,6 +19,10 @@ const (
 
 var embeddedRouterDashboardFS = routerui.Dist()
 
+func redirectToEmbeddedRouterDashboard(c *gin.Context) {
+	c.Redirect(http.StatusMovedPermanently, embeddedRouterDashboardRoot)
+}
+
 func serveEmbeddedRouterDashboard(c *gin.Context) {
 	setEmbeddedRouterDashboardHeaders(c)
 

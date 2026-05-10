@@ -6,6 +6,8 @@ import {
   Boxes,
   Command,
   KeyRound,
+  LogIn,
+  LogOut,
   Loader2,
   RefreshCw,
   RouteIcon,
@@ -47,9 +49,10 @@ function localDevBearerDefault() {
   return "";
 }
 
-function useDashboardQueries(token: string | undefined, authVersion: number): DashboardQueries {
+function useDashboardQueries(token: string | undefined, authVersion: number, enabled: boolean): DashboardQueries {
   const authedKey = authVersion;
   const common = {
+    enabled,
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
   };
@@ -118,6 +121,7 @@ function useDashboardQueries(token: string | undefined, authVersion: number): Da
     models: useQuery({
       queryKey: ["models", authedKey],
       queryFn: () => api.models(token),
+      enabled,
       retry: false,
       refetchInterval: 60_000,
     }),
@@ -166,7 +170,17 @@ export default function App() {
   const [action, setAction] = useState<ConfirmAction | null>(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const queries = useDashboardQueries(adminToken || undefined, authVersion);
+  const session = useQuery({
+    queryKey: ["router-session", authVersion],
+    queryFn: api.session,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const oauthEnabled = session.data?.google_oauth?.enabled ?? false;
+  const oauthUser = session.data?.authenticated ? session.data.user : undefined;
+  const sessionKnown = session.data !== undefined || session.isError;
+  const adminQueriesEnabled = Boolean(adminToken) || (sessionKnown && (!oauthEnabled || Boolean(oauthUser)));
+  const queries = useDashboardQueries(adminToken || undefined, authVersion, adminQueriesEnabled);
   const data = useMemo(() => dataFromQueries(queries), [queries]);
   const errorCount = queryErrorCount(queries);
   const isFetching = Object.values(queries).some((query) => query.isFetching);
@@ -186,6 +200,17 @@ export default function App() {
 
   function refresh() {
     void queryClient.invalidateQueries();
+  }
+
+  function startGoogleLogin() {
+    const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.location.assign(`/router/v1/auth/google/login?next=${encodeURIComponent(next)}`);
+  }
+
+  async function logoutGoogle() {
+    await api.logout();
+    setAuthVersion((value) => value + 1);
+    queryClient.clear();
   }
 
   const viewProps = {
@@ -227,7 +252,7 @@ export default function App() {
           <div className="topbar-left">
             <span className="env-badge">v2</span>
             <StatusBadge value={queries.health.isError ? "healthz failed" : data.healthText || "checking"} tone={queries.health.isError ? "danger" : data.healthText ? "ok" : "unknown"} />
-            <span className="topbar-meta">role {adminToken ? "bearer" : "dev/anonymous"}</span>
+            <span className="topbar-meta">role {adminToken ? "bearer" : oauthUser?.email ? "google" : oauthEnabled ? "signed-out" : "dev/anonymous"}</span>
           </div>
           <label className="global-search">
             <Search aria-hidden="true" size={16} />
@@ -261,6 +286,22 @@ export default function App() {
             <button className="button ghost" type="button" onClick={clearToken}>
               Clear
             </button>
+            {oauthEnabled ? (
+              oauthUser?.email ? (
+                <div className="oauth-user" title={oauthUser.name || oauthUser.email}>
+                  {oauthUser.picture ? <img src={oauthUser.picture} alt="" referrerPolicy="no-referrer" /> : null}
+                  <span>{oauthUser.email}</span>
+                  <button className="icon-button small" type="button" aria-label="Logout Google session" onClick={() => void logoutGoogle()}>
+                    <LogOut aria-hidden="true" size={15} />
+                  </button>
+                </div>
+              ) : (
+                <button className="button secondary" type="button" onClick={startGoogleLogin}>
+                  <LogIn aria-hidden="true" size={15} />
+                  Google
+                </button>
+              )
+            ) : null}
             <div className="command-wrap">
               <button className="icon-button" type="button" aria-label="Open command menu" onClick={() => setCommandOpen((value) => !value)}>
                 <Command aria-hidden="true" size={17} />
