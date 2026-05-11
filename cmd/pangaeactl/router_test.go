@@ -103,3 +103,25 @@ func TestLoadGoogleOAuthEnvDefaultsAcceptsUnprefixedNames(t *testing.T) {
 		t.Fatalf("unexpected session ttl: %s", opts.SessionTTL)
 	}
 }
+
+func TestLoadRouterNotifierEnvDefaultsAcceptsTelegramAliases(t *testing.T) {
+	t.Setenv("TELEGRAM_API_TOKEN", "telegram-token")
+	t.Setenv("TELEGRAM_CHAT_ID", "-100123")
+	t.Setenv("TELEGRAM_ENDPOINT", "http://telegram.example.test")
+	t.Setenv("TELEGRAM_DISABLE_NOTIFICATION", "true")
+	t.Setenv("NOTIFIER_INTERVAL", "5m")
+
+	opts := loadRouterNotifierEnvDefaults(v2router.RouterNotifierOptions{})
+	if !opts.Telegram.Enabled {
+		t.Fatalf("expected telegram notifier to auto-enable when token and chat are present: %#v", opts)
+	}
+	if opts.Telegram.BotToken != "telegram-token" || opts.Telegram.ChatID != "-100123" {
+		t.Fatalf("unexpected telegram credentials: %#v", opts.Telegram)
+	}
+	if opts.Telegram.Endpoint != "http://telegram.example.test" || !opts.Telegram.DisableNotification {
+		t.Fatalf("unexpected telegram options: %#v", opts.Telegram)
+	}
+	if opts.Interval != 5*time.Minute {
+		t.Fatalf("unexpected notifier interval: %s", opts.Interval)
+	}
+}

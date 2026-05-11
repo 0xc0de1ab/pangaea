@@ -620,8 +620,8 @@ Telegram is configured on the server side only.
 Example:
 
 ```bash
-export PANGAEA_TELEGRAM_BOT_TOKEN='123456:abc...'
-curl "https://api.telegram.org/bot${PANGAEA_TELEGRAM_BOT_TOKEN}/getUpdates"
+export TELEGRAM_API_TOKEN='123456:abc...'
+curl "https://api.telegram.org/bot${TELEGRAM_API_TOKEN}/getUpdates"
 ```
 
 Look for the target `chat.id` in the JSON response.
@@ -632,7 +632,7 @@ Look for the target `chat.id` in the JSON response.
 notifier:
   telegram:
     enabled: true
-    bot_token_env: "PANGAEA_TELEGRAM_BOT_TOKEN"
+    bot_token_env: "TELEGRAM_API_TOKEN"
     default_chat_id: "-1001234567890"
     interval: "1h"
     probe_timeout: "8s"
@@ -645,7 +645,7 @@ Per-profile or per-account routing is also supported:
 notifier:
   telegram:
     enabled: true
-    bot_token_env: "PANGAEA_TELEGRAM_BOT_TOKEN"
+    bot_token_env: "TELEGRAM_API_TOKEN"
     routes:
       - profile: "claude-prod"
         account: "user@example.com"

@@ -7,6 +7,8 @@ import type {
   ContainerSnapshot,
   DashboardData,
   NodeSnapshot,
+  NotifierDelivery,
+  NotifierStatus,
   ProviderRegistration,
   ProviderUsageSnapshot,
   PublicModel,
@@ -26,6 +28,8 @@ export type DashboardQueries = {
   dataSessions: UseQueryResult<SessionSnapshot[], Error>;
   traces: UseQueryResult<RequestTrace[], Error>;
   audit: UseQueryResult<AuditEvent[], Error>;
+  notifiers: UseQueryResult<NotifierStatus[], Error>;
+  notificationHistory: UseQueryResult<NotifierDelivery[], Error>;
   quotas: UseQueryResult<QuotaSnapshot[], Error>;
   apiKeys: UseQueryResult<APIKeyPrincipal[], Error>;
   models: UseQueryResult<PublicModel[], Error>;

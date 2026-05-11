@@ -166,17 +166,20 @@ func runProviderShim(ctx context.Context, opts providerShimRunOptions) error {
 			Provider:          apiProvider,
 		})
 	case opts.Sidecar:
-		sidecarProvider, err := providerfactory.BuildSidecarProvider(providerFactoryConfigFromOptions(opts))
+		result, err := providerfactory.BuildSidecarProviderWithRefresh(providerFactoryConfigFromOptions(opts))
 		if err != nil {
 			return err
 		}
 		return providershim.RunAPICompatibleShim(ctx, providershim.APICompatibleShimOptions{
-			ControlURL:        opts.RouterControlURL,
-			DataURL:           opts.RouterDataURL,
-			PeerToken:         opts.RouterPeerToken,
-			HeartbeatInterval: opts.HeartbeatInterval,
-			TokenKey:          []byte(opts.StreamTokenKey),
-			Provider:          sidecarProvider,
+			ControlURL:           opts.RouterControlURL,
+			DataURL:              opts.RouterDataURL,
+			PeerToken:            opts.RouterPeerToken,
+			HeartbeatInterval:    opts.HeartbeatInterval,
+			TokenKey:             []byte(opts.StreamTokenKey),
+			Provider:             result.Provider,
+			AuthRefresher:        result.AuthRefresher,
+			AutoRefreshThreshold: result.AutoRefreshThreshold,
+			AutoRefreshCooldown:  result.AutoRefreshCooldown,
 		})
 	case opts.CLIContainer:
 		result, err := providerfactory.BuildCLIContainerProvider(ctx, providerFactoryConfigFromOptions(opts))

@@ -12,6 +12,8 @@ import type {
   QuotaLimit,
   QuotaScope,
   QuotaSnapshot,
+  NotifierDelivery,
+  NotifierStatus,
   RequestTrace,
   RequestTracePage,
   RouteDecision,
@@ -137,10 +139,19 @@ async function requestBlob(endpoint: string, options: RequestOptions = {}): Prom
 
 function requestHeaders(options: RequestOptions = {}) {
   const headers: Record<string, string> = { ...jsonHeaders, ...(options.headers ?? {}) };
-  if (options.token) {
-    headers.Authorization = `Bearer ${options.token}`;
+  const token = options.token || localDevelopmentBearerToken();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
   return headers;
+}
+
+function localDevelopmentBearerToken() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const host = window.location.hostname;
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" ? "1" : "";
 }
 
 async function requestStream(endpoint: string, options: RequestOptions, onPayload: (payload: unknown) => void): Promise<void> {
@@ -461,6 +472,14 @@ export const api = {
   audit: async (token?: string, limit = 40) => {
     const payload = await request<{ events?: AuditEvent[] }>(`/router/v1/audit/events?limit=${limit}`, { token });
     return payload.events ?? [];
+  },
+  notifiers: async (token?: string) => {
+    const payload = await request<{ notifiers?: NotifierStatus[] }>("/router/v1/notifiers", { token });
+    return payload.notifiers ?? [];
+  },
+  notificationHistory: async (token?: string, limit = 80) => {
+    const payload = await request<{ history?: NotifierDelivery[] }>(`/router/v1/notifiers/history?limit=${limit}`, { token });
+    return payload.history ?? [];
   },
   traces: async (token?: string, limit = 100) => {
     const payload = await request<{ traces?: RequestTrace[] }>(`/router/v1/traces?limit=${limit}`, { token });

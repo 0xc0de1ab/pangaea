@@ -87,8 +87,9 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	})
 	r.GET("/router", redirectToEmbeddedRouterDashboard)
 	r.GET("/router/", redirectToEmbeddedRouterDashboard)
-	r.GET("/router/ui", serveEmbeddedRouterDashboard)
-	r.GET("/router/ui/*path", serveEmbeddedRouterDashboard)
+	routerDashboard := serveEmbeddedRouterDashboardWithAuth(opts.AdminAuth)
+	r.GET("/router/ui", routerDashboard)
+	r.GET("/router/ui/*path", routerDashboard)
 	registerGoogleOAuthRoutes(r, opts.AdminAuth)
 	r.Use(routerAdminAuthMiddleware(opts.APIKeys, opts.AdminAuth))
 	r.Use(traceHTTPExchangeMiddleware(opts.Engine))
@@ -489,6 +490,29 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			limit = parsed
 		}
 		c.JSON(http.StatusOK, gin.H{"events": engine.AuditEvents(limit)})
+	})
+	r.GET("/router/v1/notifiers", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"notifiers": engine.NotifierStatuses()})
+	})
+	r.GET("/router/v1/notifiers/history", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		limit := 0
+		if raw := c.Query("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a non-negative integer"})
+				return
+			}
+			limit = parsed
+		}
+		c.JSON(http.StatusOK, gin.H{"history": engine.NotifierHistory(limit)})
 	})
 	r.GET("/router/v1/usage/providers", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)

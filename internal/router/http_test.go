@@ -950,6 +950,47 @@ func TestHTTPRouterAdminRejectsDisallowedGoogleOAuthSession(t *testing.T) {
 	}
 }
 
+func TestHTTPRouterAdminExposesNotifierStatusAndHistory(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.UpsertNotifierStatus(NotifierStatus{
+		ID:          "telegram",
+		Type:        "telegram",
+		Destination: "123...789",
+		Enabled:     true,
+		State:       "ready",
+		UpdatedAt:   time.Now().UTC(),
+	})
+	engine.RecordNotifierDelivery(NotifierDelivery{
+		NotifierID:  "telegram",
+		Type:        "startup",
+		Destination: "123...789",
+		Status:      "sent",
+		Message:     "Pangaea Router",
+		CreatedAt:   time.Now().UTC(),
+	})
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/notifiers", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected notifier status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"telegram"`) || !strings.Contains(rec.Body.String(), `"ready"`) {
+		t.Fatalf("unexpected notifier status body: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/notifiers/history?limit=10", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected notifier history 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"startup"`) || !strings.Contains(rec.Body.String(), `"sent"`) {
+		t.Fatalf("unexpected notifier history body: %s", rec.Body.String())
+	}
+}
+
 func TestGoogleOAuthCallbackIssuesRouterSession(t *testing.T) {
 	engine, _ := testEngine(t)
 	var tokenForm url.Values

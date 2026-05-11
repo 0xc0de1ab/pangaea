@@ -378,16 +378,39 @@ func normalizedImagePullPolicy(policy string) string {
 }
 
 func validateNetworkMode(providerType string, mode string) error {
-	switch normalizedNetworkMode(mode) {
+	normalized := normalizedNetworkMode(mode)
+	switch normalized {
 	case "", "bridge", "host", "none":
 		return nil
 	default:
+		if isSimpleNetworkName(normalized) {
+			return nil
+		}
 		return fmt.Errorf("%w: provider %q unsupported network_mode %q", ErrNodeAgentConfig, providerType, mode)
 	}
 }
 
 func normalizedNetworkMode(mode string) string {
 	return strings.ToLower(strings.TrimSpace(mode))
+}
+
+func isSimpleNetworkName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '.' || r == '-':
+		default:
+			return false
+		}
+		if i == 0 && (r == '_' || r == '.' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func (a AuthSpec) Validate(providerType string) error {

@@ -33,6 +33,53 @@ code {
   color: var(--muted);
 }
 
+.auth-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 249, 252, 0.96)),
+    var(--bg);
+}
+
+.auth-gate-panel {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 18px 60px rgba(16, 24, 40, 0.16);
+}
+
+.auth-gate-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-gate h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.auth-gate p {
+  margin: -8px 0 0;
+  color: var(--muted-strong);
+  line-height: 1.55;
+}
+
+.auth-gate-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted-strong);
+  font-weight: 700;
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;

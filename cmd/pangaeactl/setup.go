@@ -30,7 +30,7 @@ const (
 	defaultLeafYears     = 1
 	defaultJWTIssuer     = "pangaea"
 	defaultJWTAudience   = "pangaea"
-	defaultTelegramEnv   = "PANGAEA_TELEGRAM_BOT_TOKEN"
+	defaultTelegramEnv   = "TELEGRAM_API_TOKEN"
 	defaultJWTTokenEnv   = "PANGAEA_JWT_TOKEN"
 	defaultLogLevel      = "info"
 	defaultLogFormat     = "json"

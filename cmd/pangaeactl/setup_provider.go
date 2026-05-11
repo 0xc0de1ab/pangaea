@@ -29,31 +29,36 @@ import (
 const defaultSetupProviderOut = "./deploy/provider"
 
 type setupProviderOptions struct {
-	Type            string
-	Mode            string
-	Service         string
-	ProviderType    string
-	InstanceID      string
-	AuthPath        string
-	SettingsPath    string
-	OutDir          string
-	NodeID          string
-	HostName        string
-	Image           string
-	RuntimeImage    string
-	ImagePullPolicy string
-	Namespace       string
-	StorageMode     string
-	StoragePath     string
-	RouterControl   string
-	RouterData      string
-	RouterPeerToken string
-	StreamTokenKey  string
-	DockerBin       string
-	PodmanBin       string
-	KubectlBin      string
-	Apply           bool
-	DryRun          bool
+	Type               string
+	Mode               string
+	Service            string
+	ProviderType       string
+	InstanceID         string
+	AuthPath           string
+	SettingsPath       string
+	OutDir             string
+	NodeID             string
+	HostName           string
+	Image              string
+	RuntimeImage       string
+	ImagePullPolicy    string
+	NetworkMode        string
+	Namespace          string
+	StorageMode        string
+	StoragePath        string
+	UpstreamBaseURL    string
+	UpstreamAPIKey     string
+	UpstreamAPIKeyFile string
+	UpstreamAPIKeyMode string
+	RouterControl      string
+	RouterData         string
+	RouterPeerToken    string
+	StreamTokenKey     string
+	DockerBin          string
+	PodmanBin          string
+	KubectlBin         string
+	Apply              bool
+	DryRun             bool
 }
 
 type setupProviderArtifact struct {
@@ -131,9 +136,14 @@ func newSetupProviderCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Image, "image", "", "provider image; defaults from service and type")
 	cmd.Flags().StringVar(&opts.RuntimeImage, "runtime-image", "", "sidecar runtime image for providers that need a companion runtime")
 	cmd.Flags().StringVar(&opts.ImagePullPolicy, "image-pull-policy", "", "image pull policy for docker/podman node-agent config (always|never)")
+	cmd.Flags().StringVar(&opts.NetworkMode, "network-mode", "", "container network mode/name for docker/podman providers")
 	cmd.Flags().StringVar(&opts.Namespace, "namespace", "", "Kubernetes namespace for kind/k8s manifests")
 	cmd.Flags().StringVar(&opts.StorageMode, "storage", "persistent", "provider state storage mode (persistent|ephemeral)")
 	cmd.Flags().StringVar(&opts.StoragePath, "storage-path", "", "host path for persistent provider state")
+	cmd.Flags().StringVar(&opts.UpstreamBaseURL, "upstream-base-url", "", "upstream compatible API base URL for sidecar/app-server modes")
+	cmd.Flags().StringVar(&opts.UpstreamAPIKey, "upstream-api-key", "", "upstream API key for sidecar/app-server modes")
+	cmd.Flags().StringVar(&opts.UpstreamAPIKeyFile, "upstream-api-key-file", "", "path to an upstream API key file for sidecar/app-server modes")
+	cmd.Flags().StringVar(&opts.UpstreamAPIKeyMode, "upstream-api-key-mode", "", "upstream API key placement (bearer|header|query|none)")
 	cmd.Flags().StringVar(&opts.RouterControl, "router-control", "", "router control WebSocket URL for the provider shim")
 	cmd.Flags().StringVar(&opts.RouterData, "router-data", "", "router data WebSocket URL for reverse streams")
 	cmd.Flags().StringVar(&opts.RouterPeerToken, "router-peer-token", "", "router peer bearer token")
@@ -258,7 +268,11 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 			storagePath = expanded
 		}
 	}
-	capabilities := dedupeSetupCapabilities(append(defaultSetupCapabilities(authPath != ""), defaults.ExtraCapabilities...))
+	capabilities := append(defaultSetupCapabilities(authPath != ""), defaults.ExtraCapabilities...)
+	if service == provider.ServiceAntigravity && authPath != "" {
+		capabilities = append(capabilities, provider.CapabilityAuthRefreshProtocol)
+	}
+	capabilities = dedupeSetupCapabilities(capabilities)
 	refreshSpec := nodeagent.RefreshSpec{}
 	if authPath != "" {
 		refreshSpec = nodeagent.RefreshSpec{
@@ -275,6 +289,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 		ProviderMode:    mode,
 		Image:           image,
 		ImagePullPolicy: opts.ImagePullPolicy,
+		NetworkMode:     strings.TrimSpace(opts.NetworkMode),
 		HostName:        hostName,
 		AccountHint:     account,
 		Service:         service,
@@ -290,11 +305,14 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 		Storage: nodeagent.StorageSpec{
 			Mode:           storageMode,
 			HostPath:       storagePath,
-			ContainerPaths: []string{"/var/lib/pangaea", "/work"},
+			ContainerPaths: setupProviderStorageContainerPaths(service),
 		},
 		Upstream: nodeagent.UpstreamSpec{
-			BaseURL: defaults.UpstreamBaseURL,
-			Compat:  defaults.UpstreamDialect,
+			BaseURL:    firstNonBlankString(opts.UpstreamBaseURL, defaults.UpstreamBaseURL),
+			Compat:     defaults.UpstreamDialect,
+			APIKey:     strings.TrimSpace(opts.UpstreamAPIKey),
+			APIKeyFile: strings.TrimSpace(opts.UpstreamAPIKeyFile),
+			APIKeyMode: strings.TrimSpace(opts.UpstreamAPIKeyMode),
 		},
 	}
 	if authPath != "" {
@@ -305,10 +323,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 			HostPath:      authPath,
 			ContainerPath: defaults.AuthContainerPath,
 			FileMode:      "0600",
-			Sync: nodeagent.AuthSyncSpec{
-				ContainerToHost: true,
-				HostToContainer: "reconcile",
-			},
+			Sync:          setupProviderAuthSync(service),
 		}
 	}
 	if spec.Env == nil {
@@ -357,6 +372,22 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 		RuntimeSettingsPath: runtimeSettingsPath,
 		Artifacts:           artifacts,
 	}, nil
+}
+
+func setupProviderStorageContainerPaths(service provider.Service) []string {
+	paths := []string{"/var/lib/pangaea", "/work"}
+	if service == provider.ServiceAntigravity {
+		paths = append(paths, "/var/lib/antigravity")
+	}
+	return paths
+}
+
+func setupProviderAuthSync(service provider.Service) nodeagent.AuthSyncSpec {
+	spec := nodeagent.AuthSyncSpec{ContainerToHost: true, HostToContainer: "reconcile"}
+	if service == provider.ServiceAntigravity {
+		spec.ContainerToHost = false
+	}
+	return spec
 }
 
 func setupProviderArtifacts(setupType string, outDir string, opts setupProviderOptions, cfg nodeagent.Config, spec nodeagent.ProviderSpec, nodeID string, hostName string, defaults setupProviderDefaults) ([]setupProviderArtifact, error) {
@@ -541,6 +572,15 @@ func setupProviderDefaultImage(imageName string, setupType string) string {
 		tag = "kind"
 	}
 	return imageName + ":" + tag
+}
+
+func firstNonBlankString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func setupDefaultsForService(service provider.Service) (setupProviderDefaults, error) {
@@ -1510,6 +1550,9 @@ func renderSetupProviderEnvMap(spec nodeagent.ProviderSpec, nodeID string, hostN
 		"PANGAEA_AUTH_FORMAT":           spec.Auth.Format,
 		"PANGAEA_UPSTREAM_BASE_URL":     spec.Upstream.BaseURL,
 		"PANGAEA_UPSTREAM_DIALECT":      spec.Upstream.Compat,
+		"PANGAEA_UPSTREAM_API_KEY":      spec.Upstream.APIKey,
+		"PANGAEA_UPSTREAM_API_KEY_FILE": spec.Upstream.APIKeyFile,
+		"PANGAEA_UPSTREAM_API_KEY_MODE": spec.Upstream.APIKeyMode,
 		"PANGAEA_SHIM_PROTOCOLS":        strings.Join(spec.Shim.Protocols, ","),
 		"PANGAEA_SHIM_CAPABILITIES":     joinSetupCapabilities(spec.Shim.Capabilities),
 		"PANGAEA_REFRESH_COMMAND":       setupProviderShellJoin(spec.Refresh.Command),
@@ -1618,6 +1661,9 @@ func fileModeForArtifact(path string) os.FileMode {
 	if strings.HasSuffix(path, ".env") {
 		return 0o600
 	}
+	if strings.HasSuffix(path, "node-agent.yaml") || strings.HasSuffix(path, "node-agent.yml") {
+		return 0o600
+	}
 	return 0o644
 }
 
@@ -1649,8 +1695,27 @@ func redactSetupProviderDryRunContent(artifact setupProviderArtifact) []byte {
 				lines[i] = strings.Repeat(" ", indent) + key + ": <redacted>"
 			}
 		}
+		if isSetupProviderSecretYAMLKey(trimmed) {
+			key, _, ok := strings.Cut(trimmed, ":")
+			if ok {
+				lines[i] = strings.Repeat(" ", indent) + key + ": <redacted>"
+			}
+		}
 	}
 	return []byte(strings.Join(lines, "\n"))
+}
+
+func isSetupProviderSecretYAMLKey(trimmed string) bool {
+	key, _, ok := strings.Cut(trimmed, ":")
+	if !ok {
+		return false
+	}
+	switch strings.TrimSpace(key) {
+	case "api_key":
+		return true
+	default:
+		return false
+	}
 }
 
 func sanitizeSetupToken(raw string) string {

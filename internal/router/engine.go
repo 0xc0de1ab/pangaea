@@ -36,6 +36,10 @@ type Engine struct {
 	authRecords        map[string]AuthRecord
 	authRaw            map[string][]byte
 	authEvents         []AuthEvent
+	notifierMu         sync.RWMutex
+	notifierStatuses   map[string]NotifierStatus
+	notifierHistory    []NotifierDelivery
+	notifierSeq        uint64
 	nodeMu             sync.RWMutex
 	nodes              map[string]NodeSnapshot
 	containers         map[string]ContainerSnapshot
@@ -100,6 +104,7 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 		auditEvents:        make(map[string]AuditEvent),
 		authRecords:        make(map[string]AuthRecord),
 		authRaw:            make(map[string][]byte),
+		notifierStatuses:   make(map[string]NotifierStatus),
 		nodes:              make(map[string]NodeSnapshot),
 		containers:         make(map[string]ContainerSnapshot),
 		controlSessions:    make(map[string]*controlSession),

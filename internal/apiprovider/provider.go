@@ -498,6 +498,9 @@ func (p *Provider) refreshAntigravityAccount() {
 	if err := p.doGETJSON(ctx, "/v1/account", &account); err != nil {
 		return
 	}
+	if isAntigravityFallbackAccount(account) {
+		return
+	}
 	p.authMu.Lock()
 	defer p.authMu.Unlock()
 	if account.Email != "" {
@@ -512,6 +515,11 @@ func (p *Provider) refreshAntigravityAccount() {
 	if subscription := subscriptionFromAntigravityAccount(account); subscription != nil {
 		p.auth.Subscription = mergeProviderSubscription(p.auth.Subscription, subscription)
 	}
+}
+
+func isAntigravityFallbackAccount(account antigravityAccountResponse) bool {
+	return strings.EqualFold(strings.TrimSpace(account.Email), "mock@example.com") &&
+		strings.EqualFold(strings.TrimSpace(account.Name), "Mock User")
 }
 
 func subscriptionFromAntigravityAccount(account antigravityAccountResponse) *provider.SubscriptionInfo {

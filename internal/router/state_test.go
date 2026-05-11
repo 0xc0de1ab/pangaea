@@ -25,8 +25,24 @@ func TestEngineSnapshotAndRestoreState(t *testing.T) {
 		CompletedAt:    time.Unix(2, 0),
 		EstimatedUsage: quota.Usage{Tokens: 5, Requests: 1},
 	})
+	engine.UpsertNotifierStatus(NotifierStatus{
+		ID:          "telegram",
+		Type:        "telegram",
+		Destination: "123...789",
+		Enabled:     true,
+		State:       "ready",
+		UpdatedAt:   time.Unix(2, 0),
+	})
+	engine.RecordNotifierDelivery(NotifierDelivery{
+		NotifierID:  "telegram",
+		Type:        "startup",
+		Destination: "123...789",
+		Status:      "sent",
+		CreatedAt:   time.Unix(2, 0),
+		CompletedAt: time.Unix(2, 1),
+	})
 	snapshot := engine.SnapshotState(time.Unix(3, 0))
-	if snapshot.Version != RouterStateSnapshotVersion || len(snapshot.Traces) != 1 || len(snapshot.Quotas) != 1 {
+	if snapshot.Version != RouterStateSnapshotVersion || len(snapshot.Traces) != 1 || len(snapshot.Quotas) != 1 || len(snapshot.Notifiers) != 1 || len(snapshot.NotificationHistory) != 1 {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
 	}
 
@@ -45,5 +61,13 @@ func TestEngineSnapshotAndRestoreState(t *testing.T) {
 	}
 	if limit.MaxTokens != 100 {
 		t.Fatalf("quota limit was not restored: %#v", limit)
+	}
+	notifierStatuses := restored.NotifierStatuses()
+	if len(notifierStatuses) != 1 || notifierStatuses[0].ID != "telegram" {
+		t.Fatalf("notifier status was not restored: %#v", notifierStatuses)
+	}
+	notifierHistory := restored.NotifierHistory(10)
+	if len(notifierHistory) != 1 || notifierHistory[0].NotifierID != "telegram" || notifierHistory[0].Status != "sent" {
+		t.Fatalf("notifier history was not restored: %#v", notifierHistory)
 	}
 }

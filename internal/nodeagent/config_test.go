@@ -298,7 +298,7 @@ providers:
   - provider_type: gemini-cli
     kind: cli-container
     image: pangaea/provider-gemini:opi5
-    network_mode: overlay
+    network_mode: bad/network
     service: gemini
     shim:
       capabilities: [api.openai.chat]
@@ -308,6 +308,26 @@ providers:
 	}
 	if !strings.Contains(err.Error(), "network_mode") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseConfigYAMLAcceptsNamedDockerNetworkMode(t *testing.T) {
+	cfg, err := ParseConfigYAML([]byte(`
+version: node-agent/v1
+providers:
+  - provider_type: antigravity-sidecar
+    kind: sidecar-agent
+    image: pangaea/provider-antigravity-sidecar:kind
+    network_mode: antigravity-cluster
+    service: antigravity
+    shim:
+      capabilities: [api.openai.chat]
+`))
+	if err != nil {
+		t.Fatalf("parse named docker network mode: %v", err)
+	}
+	if got := cfg.Providers[0].NetworkMode; got != "antigravity-cluster" {
+		t.Fatalf("network mode = %q, want antigravity-cluster", got)
 	}
 }
 

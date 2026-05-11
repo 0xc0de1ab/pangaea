@@ -9,10 +9,12 @@ import (
 const RouterStateSnapshotVersion = "router-state/v1"
 
 type StateSnapshot struct {
-	Version string                 `json:"version"`
-	SavedAt time.Time              `json:"saved_at"`
-	Traces  []RequestTrace         `json:"traces,omitempty"`
-	Quotas  []quota.SnapshotRecord `json:"quotas,omitempty"`
+	Version             string                 `json:"version"`
+	SavedAt             time.Time              `json:"saved_at"`
+	Traces              []RequestTrace         `json:"traces,omitempty"`
+	Quotas              []quota.SnapshotRecord `json:"quotas,omitempty"`
+	Notifiers           []NotifierStatus       `json:"notifiers,omitempty"`
+	NotificationHistory []NotifierDelivery     `json:"notification_history,omitempty"`
 }
 
 func (e *Engine) SnapshotState(now time.Time) StateSnapshot {
@@ -20,10 +22,12 @@ func (e *Engine) SnapshotState(now time.Time) StateSnapshot {
 		now = time.Now().UTC()
 	}
 	return StateSnapshot{
-		Version: RouterStateSnapshotVersion,
-		SavedAt: now.UTC(),
-		Traces:  e.requestTracesInRecordOrder(defaultRequestTraceLimit),
-		Quotas:  e.ledgerSnapshots(),
+		Version:             RouterStateSnapshotVersion,
+		SavedAt:             now.UTC(),
+		Traces:              e.requestTracesInRecordOrder(defaultRequestTraceLimit),
+		Quotas:              e.ledgerSnapshots(),
+		Notifiers:           e.NotifierStatuses(),
+		NotificationHistory: e.notifierDeliveriesInRecordOrder(maxNotifierHistory),
 	}
 }
 
@@ -48,6 +52,27 @@ func (e *Engine) RestoreState(snapshot StateSnapshot) {
 			e.traces[trace.RequestID] = trace
 		}
 		e.traceMu.Unlock()
+	}
+	if len(snapshot.Notifiers) > 0 || len(snapshot.NotificationHistory) > 0 {
+		e.notifierMu.Lock()
+		e.notifierStatuses = make(map[string]NotifierStatus, len(snapshot.Notifiers))
+		for _, status := range snapshot.Notifiers {
+			if status.ID == "" {
+				continue
+			}
+			e.notifierStatuses[status.ID] = status
+		}
+		e.notifierHistory = e.notifierHistory[:0]
+		if len(snapshot.NotificationHistory) > maxNotifierHistory {
+			snapshot.NotificationHistory = snapshot.NotificationHistory[len(snapshot.NotificationHistory)-maxNotifierHistory:]
+		}
+		for _, delivery := range snapshot.NotificationHistory {
+			if delivery.NotifierID == "" {
+				continue
+			}
+			e.notifierHistory = append(e.notifierHistory, delivery)
+		}
+		e.notifierMu.Unlock()
 	}
 }
 

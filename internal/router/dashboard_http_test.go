@@ -53,6 +53,54 @@ func TestDashboardUIServesEmbeddedIndexWithSecurityHeaders(t *testing.T) {
 	}
 }
 
+func TestDashboardUIRequiresGoogleSessionWhenOAuthEnabled(t *testing.T) {
+	oauth := GoogleOAuthOptions{
+		Enabled:       true,
+		ClientID:      "client-test",
+		ClientSecret:  "secret-test",
+		SessionSecret: "session-secret-test",
+		AllowedEmails: []string{"operator@example.test"},
+	}
+	handler := NewHTTPHandler(HTTPOptions{
+		AdminAuth: AdminAuthOptions{
+			Mode:        routerAdminAuthModeGoogle,
+			GoogleOAuth: oauth,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/router/ui", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected redirect to Google login, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("location")
+	if !strings.HasPrefix(location, "/router/v1/auth/google/login?") || !strings.Contains(location, "next=%2Frouter%2Fui") {
+		t.Fatalf("unexpected login redirect location: %q", location)
+	}
+	if strings.Contains(rec.Body.String(), "Pangaea Router") {
+		t.Fatalf("dashboard index should not be served before login: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/ui", nil)
+	req.AddCookie(testGoogleOAuthSessionCookie(t, oauth, "operator@example.test"))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected dashboard with valid Google session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Pangaea Router") {
+		t.Fatalf("dashboard index missing title after login: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/ui/assets/missing.js", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusFound {
+		t.Fatalf("dashboard assets should not be redirected to login")
+	}
+}
+
 func dashboardUIBlocksFraming(header http.Header) bool {
 	xfo := strings.ToLower(strings.TrimSpace(header.Get("x-frame-options")))
 	if xfo == "deny" || xfo == "sameorigin" {

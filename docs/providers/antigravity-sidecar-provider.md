@@ -89,7 +89,19 @@ Additional bootstrap may require:
 
 ## Refresh
 
-Provider-specific. If unsupported, report non-refreshable.
+The sidecar provider supports a protocol refresh path when both the copied
+`state.vscdb` and `upstream.base_url` are configured. Pangaea does not run a
+generic shell command for Antigravity refresh. Instead, the shim sends
+low-impact ls-core probes through the local Antigravity-compatible proxy:
+
+- `GET /v1/account`
+- `GET /v1/models/status`
+
+Those calls cause ls-core to exercise the current Google OAuth token. The
+runtime's `ExtensionServerService` receives unified-state-sync updates from
+ls-core and persists refreshed OAuth rows back into `state.vscdb`. After the
+probe, the shim re-parses `state.vscdb` and reports the refreshed auth state to
+the router. API keys and OAuth tokens are never included in refresh errors.
 
 ## Runtime / Local Server
 

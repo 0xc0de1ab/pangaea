@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -201,6 +202,47 @@ func TestBuildSetupProviderAntigravityKindManifestUsesRuntimeAndShimContainers(t
 	}
 }
 
+func TestBuildSetupProviderAntigravityDockerPlanMountsRuntimeState(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "state.vscdb")
+	if err := os.WriteFile(authPath, []byte("sqlite fixture placeholder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:               "docker",
+		Mode:               "ls-core-sidecar",
+		Service:            "antigravity",
+		InstanceID:         "antigravity-sidecar",
+		AuthPath:           authPath,
+		OutDir:             filepath.Join(dir, "out"),
+		NetworkMode:        "antigravity-cluster",
+		UpstreamBaseURL:    "http://antigravity-cli-proxy-1-1:8080",
+		UpstreamAPIKey:     "test-upstream-key",
+		UpstreamAPIKeyMode: "bearer",
+	})
+	if err != nil {
+		t.Fatalf("build antigravity docker plan: %v", err)
+	}
+	if !slices.Contains(plan.Spec.Storage.ContainerPaths, "/var/lib/antigravity") {
+		t.Fatalf("antigravity docker storage should include runtime state path: %#v", plan.Spec.Storage.ContainerPaths)
+	}
+	if plan.Spec.Auth.Sync.ContainerToHost {
+		t.Fatalf("antigravity Windows/Linux state DB should not default to container-to-host sync: %#v", plan.Spec.Auth.Sync)
+	}
+	if plan.Spec.Auth.Sync.HostToContainer != "reconcile" {
+		t.Fatalf("antigravity should still reconcile host auth into container: %#v", plan.Spec.Auth.Sync)
+	}
+	if plan.Spec.NetworkMode != "antigravity-cluster" || plan.Spec.Upstream.BaseURL != "http://antigravity-cli-proxy-1-1:8080" {
+		t.Fatalf("antigravity docker plan should preserve network/upstream override: network=%q upstream=%#v", plan.Spec.NetworkMode, plan.Spec.Upstream)
+	}
+	if plan.Spec.Upstream.APIKey != "test-upstream-key" || plan.Spec.Upstream.APIKeyMode != "bearer" {
+		t.Fatalf("antigravity docker plan should preserve upstream auth config: %#v", plan.Spec.Upstream)
+	}
+	if !slices.Contains(plan.Spec.Shim.Capabilities, provider.CapabilityAuthRefreshProtocol) {
+		t.Fatalf("antigravity docker plan should advertise protocol refresh: %#v", plan.Spec.Shim.Capabilities)
+	}
+}
+
 func TestBuildSetupProviderNativeSystemdUsesHostAuthPath(t *testing.T) {
 	dir := t.TempDir()
 	authDir := filepath.Join(dir, ".gemini")
@@ -366,6 +408,11 @@ func TestRootCommandIncludesSetupProvider(t *testing.T) {
 		if cmd.Name() == "setup-provider" {
 			if cmd.Flags().Lookup("mode") == nil {
 				t.Fatal("setup-provider command missing --mode flag")
+			}
+			for _, name := range []string{"network-mode", "upstream-base-url", "upstream-api-key", "upstream-api-key-file", "upstream-api-key-mode"} {
+				if cmd.Flags().Lookup(name) == nil {
+					t.Fatalf("setup-provider command missing --%s flag", name)
+				}
 			}
 			return
 		}

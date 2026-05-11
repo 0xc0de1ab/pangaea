@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/0xc0de1ab/pangaea/internal/antigravity"
 	"github.com/0xc0de1ab/pangaea/internal/apiprovider"
 	"github.com/0xc0de1ab/pangaea/internal/cliprovider"
 	"github.com/0xc0de1ab/pangaea/internal/codexdirect"
@@ -172,12 +173,25 @@ func BuildSidecarProvider(cfg Config) (providershim.APICompatibleProvider, error
 }
 
 func (r *Registry) BuildSidecarProvider(cfg Config) (providershim.APICompatibleProvider, error) {
+	result, err := r.BuildSidecarProviderWithRefresh(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return result.Provider, nil
+}
+
+func BuildSidecarProviderWithRefresh(cfg Config) (BuildResult, error) {
+	return DefaultRegistry().BuildSidecarProviderWithRefresh(cfg)
+}
+
+func (r *Registry) BuildSidecarProviderWithRefresh(cfg Config) (BuildResult, error) {
 	service := provider.Service(cfg.Service)
 	definition, _ := r.Definition(service)
 	account := provider.Account{Display: cfg.Account}
 	auth := provider.AuthState{Status: provider.AuthHealthy, Account: account, SelectedSource: "sidecar"}
 	extraCaps := append([]provider.Capability(nil), definition.SidecarCapabilities...)
 	var authFormat formats.Format
+	var refresher providershim.AuthRefresher
 	if strings.TrimSpace(cfg.AuthPath) != "" {
 		authFormatName := cfg.AuthFormat
 		if authFormatName == "" {
@@ -186,14 +200,14 @@ func (r *Registry) BuildSidecarProvider(cfg Config) (providershim.APICompatibleP
 		if authFormatName != "" {
 			format, ok := formats.Get(authFormatName)
 			if !ok {
-				return nil, fmt.Errorf("unknown --auth-format %q (known: %s)", authFormatName, strings.Join(formats.List(), ", "))
+				return BuildResult{}, fmt.Errorf("unknown --auth-format %q (known: %s)", authFormatName, strings.Join(formats.List(), ", "))
 			}
 			if err := waitForAuthBootstrap(context.Background(), cfg.AuthPath, DefaultAuthBootstrapTimeout(cfg.AuthBootstrapTimeout)); err != nil {
-				return nil, err
+				return BuildResult{}, err
 			}
 			fileAuth, err := initialAuthStateFromFile(context.Background(), cfg.AuthPath, format, time.Now)
 			if err != nil {
-				return nil, err
+				return BuildResult{}, err
 			}
 			if fileAuth.Account.Display == "" {
 				fileAuth.Account.Display = cfg.Account
@@ -201,16 +215,41 @@ func (r *Registry) BuildSidecarProvider(cfg Config) (providershim.APICompatibleP
 			auth = fileAuth
 			authFormat = format
 			extraCaps = append(extraCaps, provider.CapabilityAuthFile)
+			if service == provider.ServiceAntigravity && strings.TrimSpace(cfg.UpstreamBaseURL) != "" {
+				auth.Refreshable = true
+				extraCaps = append(extraCaps, provider.CapabilityAuthRefreshOneshot, provider.CapabilityAuthRefreshProtocol)
+				var err error
+				refresher, err = antigravity.NewAuthRefresher(antigravity.RefreshOptions{
+					BaseURL:          cfg.UpstreamBaseURL,
+					APIKey:           cfg.UpstreamAPIKey,
+					APIKeyFile:       cfg.UpstreamAPIKeyFile,
+					APIKeyMode:       cfg.UpstreamAPIKeyMode,
+					APIKeyHeader:     cfg.UpstreamAPIKeyHeader,
+					APIKeyQueryParam: cfg.UpstreamAPIKeyQueryParam,
+					AuthPath:         cfg.AuthPath,
+					Format:           authFormat,
+					Timeout:          cfg.RefreshTimeout,
+				})
+				if err != nil {
+					return BuildResult{}, err
+				}
+			}
 		}
 	}
 	apiProvider, err := r.buildCompatibleProvider(cfg, provider.KindSidecar, auth, extraCaps)
 	if err != nil {
-		return nil, err
+		return BuildResult{}, err
 	}
+	apiCompatibleProvider := providershim.APICompatibleProvider(apiProvider)
 	if authFormat != nil {
-		return WrapNativeUsageProbe(apiProvider, cfg.AuthPath, authFormat), nil
+		apiCompatibleProvider = WrapNativeUsageProbe(apiProvider, cfg.AuthPath, authFormat)
 	}
-	return apiProvider, nil
+	return BuildResult{
+		Provider:             apiCompatibleProvider,
+		AuthRefresher:        refresher,
+		AutoRefreshThreshold: DefaultRefreshThreshold(cfg.RefreshThreshold),
+		AutoRefreshCooldown:  DefaultRefreshCooldown(cfg.RefreshCooldown),
+	}, nil
 }
 
 func BuildCLIContainerProvider(ctx context.Context, cfg Config) (BuildResult, error) {

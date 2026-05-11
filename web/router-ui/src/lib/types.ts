@@ -391,6 +391,33 @@ export type AuditEvent = {
   created_at?: string;
 };
 
+export type NotifierStatus = {
+  id: string;
+  type: string;
+  destination?: string;
+  enabled?: boolean;
+  state?: string;
+  reason?: string;
+  last_attempt_at?: string;
+  last_success_at?: string;
+  last_error?: string;
+  sent_count?: number;
+  failed_count?: number;
+  updated_at?: string;
+};
+
+export type NotifierDelivery = {
+  id: string;
+  notifier_id: string;
+  type: string;
+  destination?: string;
+  status: string;
+  message?: string;
+  error?: string;
+  created_at?: string;
+  completed_at?: string;
+};
+
 export type APIKeyPrincipal = {
   id: string;
   prefix: string;
@@ -425,6 +452,8 @@ export type DashboardData = {
   dataSessions: SessionSnapshot[];
   traces: RequestTrace[];
   audit: AuditEvent[];
+  notifiers: NotifierStatus[];
+  notificationHistory: NotifierDelivery[];
   quotas: QuotaSnapshot[];
   apiKeys: APIKeyPrincipal[];
   models: PublicModel[];

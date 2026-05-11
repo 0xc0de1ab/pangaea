@@ -1,5 +1,5 @@
 import { FormEvent, useMemo, useState } from "react";
-import { KeyRound, RefreshCw, Trash2 } from "lucide-react";
+import { Bell, KeyRound, RefreshCw, Trash2 } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Section } from "../components/Section";
@@ -7,7 +7,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
 import { auditTarget, quotaPressure, quotaPressureLabel } from "../lib/derive";
 import { accountLabel, fmtTime, hasText, middleEllipsis, n, scopeLabel } from "../lib/format";
-import type { APIKeyPrincipal, AuditEvent, QuotaSnapshot } from "../lib/types";
+import type { APIKeyPrincipal, AuditEvent, NotifierDelivery, NotifierStatus, QuotaSnapshot } from "../lib/types";
 
 export function AdminView({ data, queries, search, token, onAction, refresh }: DashboardViewProps) {
   const [tenantID, setTenantID] = useState("");
@@ -17,6 +17,8 @@ export function AdminView({ data, queries, search, token, onAction, refresh }: D
   const apiKeys = useMemo(() => data.apiKeys.filter((key) => hasText(key, search)), [data.apiKeys, search]);
   const quotas = useMemo(() => data.quotas.filter((quota) => hasText(quota, search)), [data.quotas, search]);
   const audit = useMemo(() => data.audit.filter((event) => hasText(event, search)), [data.audit, search]);
+  const notifiers = useMemo(() => data.notifiers.filter((notifier) => hasText(notifier, search)), [data.notifiers, search]);
+  const notificationHistory = useMemo(() => data.notificationHistory.filter((event) => hasText(event, search)), [data.notificationHistory, search]);
 
   async function createKey(event: FormEvent) {
     event.preventDefault();
@@ -82,6 +84,35 @@ export function AdminView({ data, queries, search, token, onAction, refresh }: D
     { id: "reason", header: "Reason", sortValue: (row) => row.reason, cell: (row) => row.reason || row.error || "" },
   ];
 
+  const notifierColumns: DashboardColumn<NotifierStatus>[] = [
+    {
+      id: "type",
+      header: "Type",
+      sortValue: (row) => row.type,
+      cell: (row) => (
+        <span className="id-cell">
+          <Bell aria-hidden="true" size={15} />
+          <span>{row.type}</span>
+        </span>
+      ),
+      width: "130px",
+    },
+    { id: "state", header: "State", sortValue: (row) => row.state, cell: (row) => <StatusBadge value={row.state || "unknown"} title={row.reason || row.last_error} />, width: "118px" },
+    { id: "dest", header: "Destination", sortValue: (row) => row.destination, cell: (row) => <span className="mono">{row.destination || ""}</span>, width: "140px" },
+    { id: "last", header: "Last Success", sortValue: (row) => row.last_success_at, cell: (row) => fmtTime(row.last_success_at), width: "140px" },
+    { id: "counts", header: "Sent / Fail", sortValue: (row) => (row.sent_count ?? 0) - (row.failed_count ?? 0), cell: (row) => `${n(row.sent_count ?? 0)} / ${n(row.failed_count ?? 0)}`, align: "right", width: "110px" },
+    { id: "reason", header: "Reason", sortValue: (row) => row.reason || row.last_error, cell: (row) => row.reason || row.last_error || "" },
+  ];
+
+  const notificationColumns: DashboardColumn<NotifierDelivery>[] = [
+    { id: "time", header: "Time", sortValue: (row) => row.created_at, cell: (row) => fmtTime(row.created_at), width: "128px" },
+    { id: "notifier", header: "Notifier", sortValue: (row) => row.notifier_id, cell: (row) => row.notifier_id, width: "110px" },
+    { id: "type", header: "Type", sortValue: (row) => row.type, cell: (row) => row.type, width: "110px" },
+    { id: "status", header: "Status", sortValue: (row) => row.status, cell: (row) => <StatusBadge value={row.status} tone={row.status === "sent" ? "ok" : "danger"} />, width: "104px" },
+    { id: "dest", header: "Destination", sortValue: (row) => row.destination, cell: (row) => <span className="mono">{row.destination || ""}</span>, width: "130px" },
+    { id: "message", header: "Message", sortValue: (row) => row.message || row.error, cell: (row) => row.error || row.message || "" },
+  ];
+
   return (
     <div className="view-stack">
       <Section
@@ -121,6 +152,24 @@ export function AdminView({ data, queries, search, token, onAction, refresh }: D
 
       <Section title="Quotas" subtitle="Router-side committed and reserved usage" error={queries.quotas.error}>
         <DataTable rows={quotas} columns={quotaColumns} empty="No quota snapshots" compact />
+      </Section>
+
+      <Section
+        title="Notifiers"
+        subtitle="Configured router notification sinks and recent delivery state"
+        error={queries.notifiers.error || queries.notificationHistory.error}
+        actions={
+          <button className="button secondary" type="button" onClick={refresh}>
+            <RefreshCw aria-hidden="true" size={15} />
+            Refresh
+          </button>
+        }
+      >
+        <DataTable rows={notifiers} columns={notifierColumns} empty="No notifiers configured" compact />
+      </Section>
+
+      <Section title="Notification History" subtitle="Recent router notifier delivery attempts" error={queries.notificationHistory.error}>
+        <DataTable rows={notificationHistory} columns={notificationColumns} empty="No notification attempts" compact />
       </Section>
 
       <Section title="Audit Events" subtitle="Recent administrative actions and outcomes" error={queries.audit.error}>

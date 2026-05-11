@@ -2,6 +2,7 @@ package providerfactory
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,43 @@ func TestAuthStateFromValidationTreatsAntigravityStaleExpiryAsAdvisory(t *testin
 	}
 	if detail != "" {
 		t.Fatalf("detail = %q, want empty", detail)
+	}
+}
+
+func TestBuildSidecarProviderAddsAntigravityRefreshProtocol(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "state.vscdb")
+	if err := os.WriteFile(authPath, antigravityTestStateBytes(t, "ag@example.test", time.Now().UTC().Add(time.Hour), "test-refresh-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := BuildSidecarProviderWithRefresh(Config{
+		ProviderType:       "antigravity-sidecar",
+		ProviderInstanceID: "antigravity-sidecar",
+		NodeID:             "node-1",
+		HostName:           "host-1",
+		Service:            string(provider.ServiceAntigravity),
+		UpstreamBaseURL:    "http://127.0.0.1:8080",
+		UpstreamDialect:    "openai",
+		UpstreamAPIKey:     "proxy-key",
+		AuthPath:           authPath,
+		AuthFormat:         antigravitystate.FormatName,
+		Models:             "antigravity-default",
+	})
+	if err != nil {
+		t.Fatalf("BuildSidecarProviderWithRefresh: %v", err)
+	}
+	if result.AuthRefresher == nil {
+		t.Fatal("antigravity sidecar should install a protocol auth refresher")
+	}
+	registration, err := result.Provider.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	if !registration.Auth.Refreshable {
+		t.Fatalf("antigravity registration should be refreshable: %#v", registration.Auth)
+	}
+	if !hasCapability(registration.Capabilities, provider.CapabilityAuthRefreshProtocol) {
+		t.Fatalf("antigravity registration missing refresh protocol capability: %v", registration.Capabilities)
 	}
 }
 
@@ -184,6 +222,33 @@ func prependFakeCodexVersion(t *testing.T, version string) {
 		t.Fatalf("write fake codex: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func antigravityTestStateBytes(t *testing.T, email string, exp time.Time, token string) []byte {
+	t.Helper()
+	userOuter := base64.StdEncoding.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(email))))
+	tokenInfo := append([]byte(token+"|"), antigravityTestTimestampMessage(exp.Unix())...)
+	tokenOuter := base64.StdEncoding.EncodeToString([]byte(base64.StdEncoding.EncodeToString(tokenInfo)))
+	return []byte("antigravityUnifiedStateSync.userStatus|" + userOuter + "|antigravityUnifiedStateSync.oauthToken|" + tokenOuter)
+}
+
+func antigravityTestTimestampMessage(seconds int64) []byte {
+	var out []byte
+	out = append(out, 0x22, 0x01, 0x08)
+	for seconds >= 0x80 {
+		out = append(out, byte(seconds)|0x80)
+		seconds >>= 7
+	}
+	return append(out, byte(seconds))
+}
+
+func hasCapability(capabilities []provider.Capability, want provider.Capability) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildCLIContainerProviderWithoutAuthPathReportsNoLogin(t *testing.T) {

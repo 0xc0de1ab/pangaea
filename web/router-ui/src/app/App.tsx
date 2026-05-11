@@ -38,17 +38,6 @@ const navItems = [
   { to: "/admin", label: "Admin", icon: Shield },
 ];
 
-function localDevBearerDefault() {
-  if (typeof window === "undefined") {
-    return "";
-  }
-  const host = window.location.hostname;
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
-    return "1";
-  }
-  return "";
-}
-
 function useDashboardQueries(token: string | undefined, authVersion: number, enabled: boolean): DashboardQueries {
   const authedKey = authVersion;
   const common = {
@@ -108,6 +97,16 @@ function useDashboardQueries(token: string | undefined, authVersion: number, ena
       queryFn: () => api.audit(token, 40),
       ...common,
     }),
+    notifiers: useQuery({
+      queryKey: ["notifiers", authedKey],
+      queryFn: () => api.notifiers(token),
+      ...common,
+    }),
+    notificationHistory: useQuery({
+      queryKey: ["notification-history", authedKey],
+      queryFn: () => api.notificationHistory(token, 80),
+      ...common,
+    }),
     quotas: useQuery({
       queryKey: ["quotas", authedKey],
       queryFn: () => api.quotas(token),
@@ -140,6 +139,8 @@ function dataFromQueries(queries: DashboardQueries): DashboardData {
     dataSessions: queries.dataSessions.data ?? [],
     traces: queries.traces.data ?? [],
     audit: queries.audit.data ?? [],
+    notifiers: queries.notifiers.data ?? [],
+    notificationHistory: queries.notificationHistory.data ?? [],
     quotas: queries.quotas.data ?? [],
     apiKeys: queries.apiKeys.data ?? [],
     models: queries.models.data ?? [],
@@ -161,9 +162,8 @@ function queryErrorCount(queries: DashboardQueries) {
 }
 
 export default function App() {
-  const defaultBearer = useMemo(localDevBearerDefault, []);
-  const [tokenDraft, setTokenDraft] = useState(defaultBearer);
-  const [adminToken, setAdminToken] = useState(defaultBearer);
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [adminToken, setAdminToken] = useState("");
   const [authVersion, setAuthVersion] = useState(0);
   const [search, setSearch] = useState("");
   const [commandOpen, setCommandOpen] = useState(false);
@@ -179,7 +179,9 @@ export default function App() {
   const oauthEnabled = session.data?.google_oauth?.enabled ?? false;
   const oauthUser = session.data?.authenticated ? session.data.user : undefined;
   const sessionKnown = session.data !== undefined || session.isError;
-  const adminQueriesEnabled = Boolean(adminToken) || (sessionKnown && (!oauthEnabled || Boolean(oauthUser)));
+  const oauthLoginRequired = sessionKnown && oauthEnabled && !oauthUser;
+
+  const adminQueriesEnabled = !oauthLoginRequired && (Boolean(adminToken) || (sessionKnown && (!oauthEnabled || Boolean(oauthUser))));
   const queries = useDashboardQueries(adminToken || undefined, authVersion, adminQueriesEnabled);
   const data = useMemo(() => dataFromQueries(queries), [queries]);
   const errorCount = queryErrorCount(queries);
@@ -221,6 +223,16 @@ export default function App() {
     onAction: setAction,
     refresh,
   };
+
+  if (!sessionKnown) {
+    return <DashboardAuthGate state="loading" />;
+  }
+  if (session.isError && session.data === undefined) {
+    return <DashboardAuthGate state="error" message={session.error instanceof Error ? session.error.message : "Unable to check router session"} />;
+  }
+  if (oauthLoginRequired) {
+    return <DashboardAuthGate state="login" onLogin={startGoogleLogin} />;
+  }
 
   return (
     <div className="app-shell">
@@ -351,5 +363,43 @@ export default function App() {
 
       <ActionModal action={action} onClose={() => setAction(null)} />
     </div>
+  );
+}
+
+function DashboardAuthGate({ state, message, onLogin }: { state: "loading" | "login" | "error"; message?: string; onLogin?: () => void }) {
+  return (
+    <main className="auth-gate" aria-live="polite">
+      <section className="auth-gate-panel">
+        <div className="auth-gate-brand">
+          <div className="brand-mark">
+            <img src={pangaeaIcon} alt="" aria-hidden="true" />
+          </div>
+          <div className="brand-text">
+            <strong>Pangaea</strong>
+            <span>Router Console</span>
+          </div>
+        </div>
+        {state === "loading" ? (
+          <div className="auth-gate-status">
+            <Loader2 aria-hidden="true" className="spin" size={18} />
+            <span>Checking session</span>
+          </div>
+        ) : state === "error" ? (
+          <>
+            <h1>Session unavailable</h1>
+            <p>{message || "The router session endpoint did not respond."}</p>
+          </>
+        ) : (
+          <>
+            <h1>Sign in required</h1>
+            <p>Dashboard data is only shown after an allowed Google account is authenticated.</p>
+            <button className="button primary" type="button" onClick={onLogin}>
+              <LogIn aria-hidden="true" size={16} />
+              Continue with Google
+            </button>
+          </>
+        )}
+      </section>
+    </main>
   );
 }

@@ -264,6 +264,44 @@ func TestProviderDiscoversAntigravitySubscription(t *testing.T) {
 	}
 }
 
+func TestProviderIgnoresAntigravityMockAccountFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/account" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name":  "Mock User",
+			"email": "mock@example.com",
+			"planStatus": map[string]any{
+				"planInfo": map[string]any{"planName": "Standard"},
+			},
+			"userTier": map[string]any{"name": "Free"},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	registration.Auth.Account = provider.Account{ID: "real@example.test", Display: "real@example.test"}
+	registration.Auth.Subscription = nil
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_antigravity",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Account.Display != "real@example.test" || auth.Subscription != nil {
+		t.Fatalf("mock fallback should not replace auth account/subscription: %#v", auth)
+	}
+}
+
 func TestProviderDiscoversGeminiModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -620,8 +620,8 @@ Telegram 설정은 서버 쪽에서만 합니다.
 예시:
 
 ```bash
-export PANGAEA_TELEGRAM_BOT_TOKEN='123456:abc...'
-curl "https://api.telegram.org/bot${PANGAEA_TELEGRAM_BOT_TOKEN}/getUpdates"
+export TELEGRAM_API_TOKEN='123456:abc...'
+curl "https://api.telegram.org/bot${TELEGRAM_API_TOKEN}/getUpdates"
 ```
 
 반환 JSON에서 원하는 `chat.id`를 확인하면 됩니다.
@@ -632,7 +632,7 @@ curl "https://api.telegram.org/bot${PANGAEA_TELEGRAM_BOT_TOKEN}/getUpdates"
 notifier:
   telegram:
     enabled: true
-    bot_token_env: "PANGAEA_TELEGRAM_BOT_TOKEN"
+    bot_token_env: "TELEGRAM_API_TOKEN"
     default_chat_id: "-1001234567890"
     interval: "1h"
     probe_timeout: "8s"
@@ -645,7 +645,7 @@ profile/account별 routing도 가능합니다.
 notifier:
   telegram:
     enabled: true
-    bot_token_env: "PANGAEA_TELEGRAM_BOT_TOKEN"
+    bot_token_env: "TELEGRAM_API_TOKEN"
     routes:
       - profile: "claude-prod"
         account: "user@example.com"

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 
@@ -21,6 +22,18 @@ var embeddedRouterDashboardFS = routerui.Dist()
 
 func redirectToEmbeddedRouterDashboard(c *gin.Context) {
 	c.Redirect(http.StatusMovedPermanently, embeddedRouterDashboardRoot)
+}
+
+func serveEmbeddedRouterDashboardWithAuth(auth AdminAuthOptions) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if shouldRedirectEmbeddedRouterDashboardToGoogleLogin(c, auth) {
+			setEmbeddedRouterDashboardHeaders(c)
+			c.Header("Cache-Control", "no-store")
+			c.Redirect(http.StatusFound, embeddedRouterDashboardGoogleLoginURL(c))
+			return
+		}
+		serveEmbeddedRouterDashboard(c)
+	}
 }
 
 func serveEmbeddedRouterDashboard(c *gin.Context) {
@@ -55,6 +68,41 @@ func serveEmbeddedRouterDashboard(c *gin.Context) {
 	}
 
 	serveEmbeddedRouterDashboardFile(c, embeddedRouterDashboardIndex, false)
+}
+
+func shouldRedirectEmbeddedRouterDashboardToGoogleLogin(c *gin.Context, auth AdminAuthOptions) bool {
+	if !embeddedRouterDashboardRequiresGoogleLogin(auth) {
+		return false
+	}
+	assetPath, ok := embeddedRouterDashboardPath(c.Request.URL.Path)
+	if !ok {
+		return false
+	}
+	if assetPath != "" && assetPath != embeddedRouterDashboardIndex && embeddedRouterDashboardLooksLikeAsset(assetPath) {
+		return false
+	}
+	_, ok = authenticateGoogleOAuthSession(c, auth.GoogleOAuth)
+	return !ok
+}
+
+func embeddedRouterDashboardRequiresGoogleLogin(auth AdminAuthOptions) bool {
+	if !auth.GoogleOAuth.Enabled {
+		return false
+	}
+	switch auth.Mode {
+	case routerAdminAuthModeGoogle, routerAdminAuthModeBoth:
+		return true
+	default:
+		return false
+	}
+}
+
+func embeddedRouterDashboardGoogleLoginURL(c *gin.Context) string {
+	next := c.Request.URL.RequestURI()
+	if next == "" || !strings.HasPrefix(next, "/") {
+		next = embeddedRouterDashboardRoot
+	}
+	return "/router/v1/auth/google/login?next=" + url.QueryEscape(next)
 }
 
 func embeddedRouterDashboardPath(requestPath string) (string, bool) {

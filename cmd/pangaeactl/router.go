@@ -34,6 +34,7 @@ type routerServeOptions struct {
 	StateFlush     time.Duration
 	DataRequestTO  time.Duration
 	GoogleOAuth    v2router.GoogleOAuthOptions
+	Notifier       v2router.RouterNotifierOptions
 }
 
 func newRouterCmd() *cobra.Command {
@@ -83,6 +84,11 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.GoogleOAuth.SessionSecret, "google-oauth-session-secret", "", "secret used to sign router OAuth session cookies")
 	cmd.Flags().BoolVar(&opts.GoogleOAuth.CookieSecure, "google-oauth-cookie-secure", false, "mark Google OAuth session cookies as Secure")
 	cmd.Flags().DurationVar(&opts.GoogleOAuth.SessionTTL, "google-oauth-session-ttl", 12*time.Hour, "Google OAuth router session TTL")
+	cmd.Flags().BoolVar(&opts.Notifier.Telegram.Enabled, "telegram-notifier", false, "enable Telegram notifications for router state")
+	cmd.Flags().StringVar(&opts.Notifier.Telegram.ChatID, "telegram-chat-id", "", "Telegram chat id for router notifications")
+	cmd.Flags().StringVar(&opts.Notifier.Telegram.Endpoint, "telegram-endpoint", "", "Telegram Bot API endpoint override")
+	cmd.Flags().BoolVar(&opts.Notifier.Telegram.DisableNotification, "telegram-disable-notification", false, "send Telegram notifications silently")
+	cmd.Flags().DurationVar(&opts.Notifier.Interval, "notifier-interval", time.Hour, "router notifier periodic interval")
 	return cmd
 }
 
@@ -94,6 +100,7 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	opts.StateDir = stringEnvDefault(opts.StateDir, "PANGAEA_ROUTER_STATE_DIR")
 	opts.StateMode = stringEnvDefaultWhenDefault(opts.StateMode, "persistent", "PANGAEA_ROUTER_STATE_MODE")
 	opts.GoogleOAuth = loadGoogleOAuthEnvDefaults(opts.GoogleOAuth)
+	opts.Notifier = loadRouterNotifierEnvDefaults(opts.Notifier)
 	if value := strings.TrimSpace(os.Getenv("PANGAEA_ROUTER_DATA_REQUEST_TIMEOUT")); value != "" && (opts.DataRequestTO <= 0 || opts.DataRequestTO == 10*time.Minute) {
 		parsed, err := time.ParseDuration(value)
 		if err != nil {
@@ -123,6 +130,8 @@ func runRouterServe(ctx context.Context, opts routerServeOptions) error {
 	if !opts.Simulator {
 		engine.SetInvoker(dataBroker)
 	}
+	notifierStop := v2router.StartRouterNotifiers(ctx, engine, opts.Notifier)
+	defer notifierStop()
 	srv := &http.Server{
 		Addr:              opts.Listen,
 		Handler:           v2router.NewHTTPHandler(v2router.HTTPOptions{Engine: engine, APIKeys: buildRouterAPIKeyStore(opts), DataBroker: dataBroker, PeerToken: opts.PeerToken, AdminAuth: adminAuth}),
@@ -321,6 +330,35 @@ func loadGoogleOAuthEnvDefaults(opts v2router.GoogleOAuthOptions) v2router.Googl
 	if value := stringEnvDefaultAny("", "PANGAEA_GOOGLE_OAUTH_SESSION_TTL", "GOOGLE_OAUTH_SESSION_TTL", "GOOGLE_SESSION_TTL", "SESSION_TTL"); value != "" {
 		if parsed, err := time.ParseDuration(value); err == nil {
 			opts.SessionTTL = parsed
+		}
+	}
+	return opts
+}
+
+func loadRouterNotifierEnvDefaults(opts v2router.RouterNotifierOptions) v2router.RouterNotifierOptions {
+	opts.Telegram.BotToken = stringEnvDefaultAny(opts.Telegram.BotToken,
+		"TELEGRAM_API_TOKEN",
+		"TELEGRAM_BOT_TOKEN",
+	)
+	opts.Telegram.ChatID = stringEnvDefaultAny(opts.Telegram.ChatID,
+		"TELEGRAM_CHAT_ID",
+	)
+	opts.Telegram.Endpoint = stringEnvDefaultAny(opts.Telegram.Endpoint,
+		"TELEGRAM_ENDPOINT",
+	)
+	opts.Telegram.Enabled = boolEnvDefault(opts.Telegram.Enabled,
+		"TELEGRAM_NOTIFIER_ENABLED",
+		"TELEGRAM_ENABLED",
+	)
+	opts.Telegram.DisableNotification = boolEnvDefault(opts.Telegram.DisableNotification,
+		"TELEGRAM_DISABLE_NOTIFICATION",
+	)
+	if strings.TrimSpace(opts.Telegram.BotToken) != "" && strings.TrimSpace(opts.Telegram.ChatID) != "" {
+		opts.Telegram.Enabled = true
+	}
+	if value := stringEnvDefaultAny("", "ROUTER_NOTIFIER_INTERVAL", "NOTIFIER_INTERVAL", "TELEGRAM_NOTIFIER_INTERVAL"); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			opts.Interval = parsed
 		}
 	}
 	return opts
