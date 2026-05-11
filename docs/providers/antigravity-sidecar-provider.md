@@ -5,7 +5,7 @@ Antigravity sidecar provider wraps Antigravity local runtime/sidecar.
 ## Purpose
 
 - Expose Antigravity models and agent capabilities through Pangaea.
-- Reuse existing Antigravity bridge/scraper work from `antigravity-compat-proxy`.
+- Build and run Pangaea's integrated Antigravity compat proxy/runtime wrapper.
 
 ## Kind
 
@@ -39,14 +39,21 @@ Shim must report account and auth status without leaking tokens.
 
 ## Bootstrap
 
-Current wrapper image:
+Current images:
 
 - `pangaea/provider-antigravity-sidecar`
+- `pangaea/antigravity-runtime`
 
-Node-agent passes `shim.command` as the Antigravity relay/local server command.
-The container entrypoint starts that command in the background, starts
-`pangaeactl provider-shim run` in `sidecar-agent` mode, and exits if either
-process exits.
+For Docker/Podman setup, node-agent passes `shim.command` as the Antigravity
+relay/local server command. The provider image includes both
+`pangaeactl provider-shim` and `antigravity-compat-proxy`; its entrypoint starts
+the proxy command in the background, starts `pangaeactl provider-shim run` in
+`sidecar-agent` mode, and exits if either process exits.
+
+For Kubernetes/kind setup, `setup-provider` renders one Pod with a separate
+`runtime` container and `shim` container. The runtime image is built from
+`providers/antigravity-runtime/Dockerfile`; the shim image is built from
+`providers/antigravity-sidecar/Dockerfile`.
 
 Example:
 
@@ -105,13 +112,14 @@ the router. API keys and OAuth tokens are never included in refresh errors.
 
 ## Runtime / Local Server
 
-Reference implementation:
+The compat proxy source now lives in Pangaea at:
 
-- `../antigravity-cli/antigravity-compat-proxy`
+- `providers/antigravity-runtime/compat-proxy`
 
-The Pangaea repo provides the wrapper/supervisor image. The actual
-Antigravity-compatible relay binary can be supplied by an image extension or
-through the configured `shim.command` path.
+The Antigravity server bundle is intentionally not committed. Docker builds
+copy `providers/antigravity-runtime/server-bundle/` into
+`/opt/antigravity-server`; operators should populate that ignored directory or
+build an extension image with an architecture-matched bundle before deploying.
 
 The wrapper exports `PANGAEA_SHIM_PROTOCOLS=openai,anthropic,gemini` by
 default. It also makes the local proxy and Pangaea shim share one upstream key:

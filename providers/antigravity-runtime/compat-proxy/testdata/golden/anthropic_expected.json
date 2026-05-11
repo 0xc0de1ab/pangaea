@@ -1,0 +1,8 @@
+{
+  "elements": [
+    {
+      "kind": "TEXT",
+      "content": "<|user|>\nHello, Claude!"
+    }
+  ]
+}

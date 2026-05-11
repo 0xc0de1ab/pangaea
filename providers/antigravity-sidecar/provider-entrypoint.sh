@@ -13,6 +13,25 @@ export OPENAI_API_KEY="${OPENAI_API_KEY:-${PANGAEA_UPSTREAM_API_KEY:-pangaea-ant
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-pangaea-antigravity-anthropic}"
 export GOOGLE_API_KEY="${GOOGLE_API_KEY:-pangaea-antigravity-gemini}"
 export PANGAEA_UPSTREAM_API_KEY="${PANGAEA_UPSTREAM_API_KEY:-${OPENAI_API_KEY}}"
+export ANTIGRAVITY_SERVER_DIR="${ANTIGRAVITY_SERVER_DIR:-/opt/antigravity-server}"
+export SERVER_PATH="${SERVER_PATH:-${ANTIGRAVITY_SERVER_DIR}/out/server-main.js}"
+case "$(uname -m)" in
+  aarch64|arm64) antigravity_arch_suffix="arm64" ;;
+  *) antigravity_arch_suffix="x64" ;;
+esac
+default_core_path="${ANTIGRAVITY_SERVER_DIR}/extensions/antigravity/bin/language_server_linux_${antigravity_arch_suffix}"
+export CORE_PATH="${CORE_PATH:-${default_core_path}}"
+if [ ! -x "${CORE_PATH}" ] && [ -x "${default_core_path}" ]; then
+  export CORE_PATH="${default_core_path}"
+fi
+export INSTALL_DIR="${INSTALL_DIR:-${ANTIGRAVITY_SERVER_DIR}}"
+export ANTIGRAVITY_GEMINI_DIR="${ANTIGRAVITY_GEMINI_DIR:-/var/lib/antigravity/state}"
+export ANTIGRAVITY_APP_DATA_DIR="${ANTIGRAVITY_APP_DATA_DIR:-.}"
+export STATE_VSCDB_PATH="${STATE_VSCDB_PATH:-/var/lib/antigravity/state/User/globalStorage/state.vscdb}"
+export VSCDB_PATH="${VSCDB_PATH:-${STATE_VSCDB_PATH}}"
+export PATH="${ANTIGRAVITY_SERVER_DIR}:${PATH}"
+
+mkdir -p "$(dirname "${STATE_VSCDB_PATH}")" "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/globalStorage" 2>/dev/null || true
 
 if [ -n "${PANGAEA_HOST_HOSTNAME:-${PANGAEA_NODE_HOST_NAME:-}}" ] && { [ -z "${PANGAEA_HOST_NAME:-}" ] || [ "${PANGAEA_HOST_NAME:-}" = "${HOSTNAME:-}" ]; }; then
   export PANGAEA_HOST_NAME="${PANGAEA_HOST_HOSTNAME:-${PANGAEA_NODE_HOST_NAME:-}}"

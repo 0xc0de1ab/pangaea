@@ -7,7 +7,7 @@ namespace="${PANGAEA_KIND_NAMESPACE:-pangaea-e2e}"
 router_image="${PANGAEA_ROUTER_IMAGE:-pangaea/router:kind}"
 runtime_image="${PANGAEA_ANTIGRAVITY_RUNTIME_IMAGE:-pangaea/antigravity-runtime:kind}"
 shim_image="${PANGAEA_ANTIGRAVITY_SHIM_IMAGE:-pangaea/provider-antigravity-sidecar:kind}"
-antigravity_proxy_dir="${PANGAEA_ANTIGRAVITY_PROXY_DIR:-${repo_root}/../antigravity-cli/antigravity-compat-proxy}"
+antigravity_server_bundle_dir="${PANGAEA_ANTIGRAVITY_SERVER_BUNDLE_DIR:-}"
 router_port="${PANGAEA_ROUTER_PORT:-18080}"
 router_api_key="${PANGAEA_ROUTER_API_KEY:-1}"
 router_peer_token="${PANGAEA_ROUTER_PEER_TOKEN:-kind-peer-token}"
@@ -90,6 +90,56 @@ resolve_antigravity_auth_path() {
   done
 
   return 0
+}
+
+server_bundle_ready() {
+  local dir="$1"
+  [ -s "${dir}/out/server-main.js" ] && {
+    [ -x "${dir}/node" ] || [ -f "${dir}/node" ]
+  }
+}
+
+resolve_antigravity_server_bundle_dir() {
+  if [ -n "${antigravity_server_bundle_dir}" ]; then
+    if server_bundle_ready "${antigravity_server_bundle_dir}"; then
+      printf '%s\n' "${antigravity_server_bundle_dir}"
+      return 0
+    fi
+    echo "PANGAEA_ANTIGRAVITY_SERVER_BUNDLE_DIR is not a usable Antigravity server bundle: ${antigravity_server_bundle_dir}" >&2
+    return 1
+  fi
+  local candidates=(
+    "${repo_root}/providers/antigravity-runtime/server-bundle"
+    "${repo_root}/../antigravity-cli/antigravity-compat-proxy/server-bundle"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if server_bundle_ready "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 0
+}
+
+prepare_antigravity_server_bundle() {
+  local source="$1"
+  local target="${repo_root}/providers/antigravity-runtime/server-bundle"
+  if server_bundle_ready "${target}"; then
+    return 0
+  fi
+  if [ -z "${source}" ]; then
+    return 1
+  fi
+  if [ "${source}" = "${target}" ]; then
+    return 0
+  fi
+  if ! command -v rsync >/dev/null 2>&1; then
+    echo "rsync is required to stage Antigravity server bundle from ${source}" >&2
+    return 1
+  fi
+  mkdir -p "${target}"
+  rsync -a --delete --exclude='.gitkeep' "${source}/" "${target}/"
 }
 
 kubectl_arch() {
@@ -265,11 +315,6 @@ require_tool kind
 require_tool curl
 require_tool python3
 
-if [ ! -f "${antigravity_proxy_dir}/Dockerfile" ]; then
-  echo "Antigravity compat proxy Dockerfile not found: ${antigravity_proxy_dir}/Dockerfile" >&2
-  exit 1
-fi
-
 mkdir -p "${work_dir}"
 case "${storage_mode}" in
   persistent|ephemeral) ;;
@@ -279,11 +324,16 @@ case "${storage_mode}" in
     ;;
 esac
 antigravity_auth_path="$(resolve_antigravity_auth_path)"
+server_bundle_source="$(resolve_antigravity_server_bundle_dir)"
 
 if [ "${PANGAEA_E2E_SKIP_BUILD:-0}" != "1" ]; then
+  if ! prepare_antigravity_server_bundle "${server_bundle_source}"; then
+    echo "Antigravity server bundle not found. Populate providers/antigravity-runtime/server-bundle or set PANGAEA_ANTIGRAVITY_SERVER_BUNDLE_DIR." >&2
+    exit 1
+  fi
   docker build -f "${repo_root}/deploy/kind/router.Dockerfile" -t "${router_image}" --build-arg VERSION=kind "${repo_root}"
   docker build -f "${repo_root}/providers/antigravity-sidecar/Dockerfile" -t "${shim_image}" --build-arg VERSION=kind "${repo_root}"
-  docker build -f "${antigravity_proxy_dir}/Dockerfile" -t "${runtime_image}" "${antigravity_proxy_dir}"
+  docker build -f "${repo_root}/providers/antigravity-runtime/Dockerfile" -t "${runtime_image}" --build-arg VERSION=kind "${repo_root}"
 fi
 
 if ! kind get clusters | grep -qx "${cluster}"; then

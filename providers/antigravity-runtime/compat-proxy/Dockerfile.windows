@@ -1,0 +1,35 @@
+# Multi-stage Dockerfile for Antigravity Compat Proxy (Windows)
+
+# Stage 1: Build the Go Proxy
+FROM golang:latest AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN apt-get update && apt-get install -y make && make windows-amd64-release
+
+# Stage 2: Final Runtime Image (Windows Server Core)
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+WORKDIR /app
+
+# Copy Antigravity Windows bundle (Must be prepared in server-bundle-windows/)
+# Expected structure:
+# server-bundle-windows/
+#   Antigravity.exe
+#   resources/app/out/server-main.js
+#   resources/app/extensions/antigravity/bin/language_server_windows_x64.exe
+COPY server-bundle-windows/ C:/opt/antigravity-server/
+
+# Copy our Go proxy
+COPY --from=builder /app/build/windows-amd64/release/antigravity-compat-proxy.exe C:/windows/system32/
+
+# Set environment variables
+ENV ANTIGRAVITY_SERVER_DIR=C:/opt/antigravity-server
+ENV VSCDB_PATH=C:/Users/ContainerUser/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb
+ENV SERVER_PATH=C:/opt/antigravity-server/resources/app/out/server-main.js
+ENV CORE_PATH=C:/opt/antigravity-server/resources/app/extensions/antigravity/bin/language_server_windows_x64.exe
+
+EXPOSE 8080
+
+ENTRYPOINT ["antigravity-compat-proxy.exe"]
+CMD ["serve", "--proxy-addr", ":8080"]

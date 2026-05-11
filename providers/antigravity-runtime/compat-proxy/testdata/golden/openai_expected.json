@@ -1,0 +1,12 @@
+{
+  "elements": [
+    {
+      "kind": "SYSTEM",
+      "content": "You are a helpful assistant."
+    },
+    {
+      "kind": "TEXT",
+      "content": "<|user|>\nHello!"
+    }
+  ]
+}

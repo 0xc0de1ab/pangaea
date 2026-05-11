@@ -94,12 +94,13 @@ Run:
 ./scripts/e2e-kind-antigravity.sh
 ```
 
-By default it builds the runtime image from the sibling
-`../antigravity-cli/antigravity-compat-proxy` checkout. Override that path when
-needed:
+By default it builds the runtime image from Pangaea's integrated
+`providers/antigravity-runtime` source. The Antigravity server bundle itself is
+not committed. Put a prepared bundle under
+`providers/antigravity-runtime/server-bundle`, or point the script at one:
 
 ```bash
-PANGAEA_ANTIGRAVITY_PROXY_DIR=../antigravity-cli/antigravity-compat-proxy \
+PANGAEA_ANTIGRAVITY_SERVER_BUNDLE_DIR=/path/to/server-bundle \
 ./scripts/e2e-kind-antigravity.sh
 ```
 

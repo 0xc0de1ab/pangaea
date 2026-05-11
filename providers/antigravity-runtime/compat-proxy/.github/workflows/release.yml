@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type (patch, minor, major)'
+        default: 'patch'
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: antigravity-compat-proxy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Bump Version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION=$(cat VERSION)
+          IFS='.' read -r major minor patch <<< "$VERSION"
+          if [ "${{ github.event.inputs.bump }}" == "major" ]; then
+            major=$((major + 1))
+            minor=0
+            patch=0
+          elif [ "${{ github.event.inputs.bump }}" == "minor" ]; then
+            minor=$((minor + 1))
+            patch=0
+          else
+            patch=$((patch + 1))
+          fi
+          NEW_VERSION="$major.$minor.$patch"
+          echo "$NEW_VERSION" > VERSION
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: bump version to $NEW_VERSION"
+          git tag "v$NEW_VERSION"
+          git push origin main --tags
+
+      - name: Build Binaries
+        run: |
+          make clean
+          make linux-amd64-release
+          make linux-arm64-release
+          make windows-amd64-release
+          make windows-arm64-release
+          make darwin-amd64-release
+          make darwin-arm64-release
+          VERSION=$(cat VERSION)
+          mv build/linux-amd64/release/antigravity-compat-proxy build/antigravity-compat-proxy-linux-amd64
+          mv build/linux-arm64/release/antigravity-compat-proxy build/antigravity-compat-proxy-linux-arm64
+          mv build/windows-amd64/release/antigravity-compat-proxy.exe build/antigravity-compat-proxy-windows-amd64.exe
+          mv build/windows-arm64/release/antigravity-compat-proxy.exe build/antigravity-compat-proxy-windows-arm64.exe
+          mv build/darwin-amd64/release/antigravity-compat-proxy build/antigravity-compat-proxy-darwin-amd64
+          mv build/darwin-arm64/release/antigravity-compat-proxy build/antigravity-compat-proxy-darwin-arm64
+
+      - name: Create Dummy Server Bundle for CI
+        run: |
+          mkdir -p server-bundle
+          mkdir -p server-bundle-windows
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          files: |
+            antigravity-compat-proxy/build/antigravity-compat-proxy-linux-amd64
+            antigravity-compat-proxy/build/antigravity-compat-proxy-linux-arm64
+            antigravity-compat-proxy/build/antigravity-compat-proxy-windows-amd64.exe
+            antigravity-compat-proxy/build/antigravity-compat-proxy-windows-arm64.exe
+            antigravity-compat-proxy/build/antigravity-compat-proxy-darwin-amd64
+            antigravity-compat-proxy/build/antigravity-compat-proxy-darwin-arm64
+          body: "Release ${{ env.NEW_VERSION || github.ref_name }}"
+          draft: false
+          prerelease: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image (Linux Multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: antigravity-compat-proxy/
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/antigravity-compat-proxy:latest
+            ghcr.io/${{ github.repository_owner }}/antigravity-compat-proxy:${{ env.NEW_VERSION || github.ref_name }}
+          build-args: |
+            VERSION=${{ env.NEW_VERSION || github.ref_name }}
+
+  build-windows:
+    name: Build Windows Docker
+    runs-on: windows-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    defaults:
+      run:
+        working-directory: antigravity-compat-proxy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create Dummy Server Bundle for CI
+        run: mkdir -p server-bundle-windows
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Windows Docker image
+        run: |
+          docker build -t ghcr.io/${{ github.repository_owner }}/antigravity-compat-proxy:latest-windows -f Dockerfile.windows .
+          docker push ghcr.io/${{ github.repository_owner }}/antigravity-compat-proxy:latest-windows

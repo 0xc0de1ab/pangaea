@@ -546,7 +546,9 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 		if strings.TrimSpace(defaults.UpstreamDialect) == "" {
 			defaults.UpstreamDialect = "openai"
 		}
-		defaults.ShimCommand = nil
+		if len(defaults.ShimCommand) == 0 {
+			defaults.ShimCommand = setupProviderAntigravityRuntimeCommand()
+		}
 	default:
 		return "", fmt.Errorf("--mode must be one of app-server, http-direct, cli-adapter, acp, ls-core-sidecar")
 	}
@@ -555,6 +557,17 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 
 func normalizeSetupProviderMode(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func setupProviderAntigravityRuntimeCommand() []string {
+	return []string{
+		"antigravity-compat-proxy",
+		"serve",
+		"--proxy-addr",
+		"127.0.0.1:8080",
+		"--db-path",
+		"/var/lib/antigravity/state/User/globalStorage/state.vscdb",
+	}
 }
 
 func setupProviderRuntimeKind(setupType string) string {
@@ -686,6 +699,7 @@ func setupDefaultsForService(service provider.Service) (setupProviderDefaults, e
 			ProviderMode:    "ls-core-sidecar",
 			UpstreamBaseURL: "http://127.0.0.1:8080",
 			UpstreamDialect: "openai",
+			ShimCommand:     setupProviderAntigravityRuntimeCommand(),
 			Models: []provider.Model{{
 				ID:           "antigravity-default",
 				Aliases:      []string{"antigravity-default"},
@@ -693,7 +707,10 @@ func setupDefaultsForService(service provider.Service) (setupProviderDefaults, e
 			}},
 			ExtraCapabilities: sidecarCaps,
 			ExtraEnv: map[string]string{
-				"HOME": "/var/lib/pangaea/home/antigravity",
+				"HOME":                     "/var/lib/pangaea/home/antigravity",
+				"ANTIGRAVITY_GEMINI_DIR":   "/var/lib/antigravity/state",
+				"ANTIGRAVITY_APP_DATA_DIR": ".",
+				"STATE_VSCDB_PATH":         "/var/lib/antigravity/state/User/globalStorage/state.vscdb",
 			},
 		}, nil
 	default:

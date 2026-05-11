@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PROXY_API_KEY=test-secret-key
+    # Mount the local state.vscdb if available, otherwise it might fail to authenticate to Google
+    volumes:
+      - ~/.antigravity-server/data/User/globalStorage/state.vscdb:/root/.antigravity-server/data/User/globalStorage/state.vscdb:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  e2e-tests:
+    build:
+      context: ./e2e
+      dockerfile: Dockerfile
+    environment:
+      - PROXY_BASE_URL=http://proxy:8080/v1
+      - PROXY_API_KEY=test-secret-key
+    depends_on:
+      proxy:
+        condition: service_healthy

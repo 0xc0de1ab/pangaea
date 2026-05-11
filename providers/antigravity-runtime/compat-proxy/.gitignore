@@ -1,0 +1,26 @@
+# Binaries
+antigravity-compat-proxy
+build/
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Dependencies
+# server-bundle contains external binaries/bundle
+server-bundle/
+
+# Test data / Temp
+tmp/
+*.db
+*.log
+vision_req.json
+vision_tag_req.json
+create_req.json
+create_req.py
+vision_e2e.py
+vision_multi_model_e2e.py
