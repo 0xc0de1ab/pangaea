@@ -271,3 +271,83 @@ func TestRouterTelegramCommandUpdateSendsProviderResponse(t *testing.T) {
 		t.Fatalf("command delivery not recorded: %#v", history)
 	}
 }
+
+func TestRouterTelegramPeriodicSendsOneMessagePerServiceAccount(t *testing.T) {
+	now := time.Date(2026, 5, 11, 1, 0, 0, 0, time.Local)
+	reset := time.Date(2026, 5, 11, 6, 0, 0, 0, time.Local)
+	var sent []telegram.SendMessageRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var req telegram.SendMessageRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		sent = append(sent, req)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	registry := provider.NewRegistry()
+	codexA := registration("codex-primary-a1", "codex-cli", "codex@example.test", 10, 0)
+	codexB := registration("codex-primary-rpi5", "codex-cli", "codex@example.test", 10, 0)
+	codexB.Identity.NodeID = "rpi5"
+	codexB.Identity.HostName = "rpi5"
+	gemini := registration("gemini-primary-a1", "gemini-cli", "gemini@example.test", 10, 0)
+	gemini.Identity.Service = provider.ServiceGemini
+	for _, reg := range []provider.Registration{codexA, codexB, gemini} {
+		if err := registry.Upsert(reg); err != nil {
+			t.Fatalf("upsert provider: %v", err)
+		}
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	for _, providerID := range []string{"codex-primary-a1", "codex-primary-rpi5", "gemini-primary-a1"} {
+		if err := engine.UpdateProviderUsage(providerID, provider.UsageReport{
+			ObservedAt: now,
+			NativeSummary: map[string]any{
+				"windows": []any{map[string]any{
+					"label":         "5h limit",
+					"remaining_pct": 88,
+					"reset_at":      reset.Format(time.RFC3339),
+				}},
+			},
+		}, now); err != nil {
+			t.Fatalf("update usage: %v", err)
+		}
+	}
+	notifier := &routerTelegramNotifier{
+		cfg:    RouterTelegramNotifierOptions{Enabled: true, BotToken: "T", ChatID: "100"},
+		client: &telegram.Client{BotToken: "T", Endpoint: srv.URL, HTTP: srv.Client()},
+	}
+
+	notifier.send(context.Background(), engine, "periodic")
+
+	if len(sent) != 2 {
+		t.Fatalf("sent %d messages, want one per service/account; %#v", len(sent), sent)
+	}
+	joined := sent[0].Text + "\n---\n" + sent[1].Text
+	for _, want := range []string{
+		"Pangaea Router · Codex",
+		"Pangaea Router · Gemini",
+		"codex #1 - codex@example.test",
+		"gemini #1 - gemini@example.test",
+		"nodes: node-a1,rpi5",
+		"5h limit",
+		"88% left",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("periodic messages missing %q\n--- messages ---\n%s", want, joined)
+		}
+	}
+	for _, req := range sent {
+		if strings.Contains(req.Text, "Providers: 3") || (strings.Contains(req.Text, "codex@example.test") && strings.Contains(req.Text, "gemini@example.test")) {
+			t.Fatalf("periodic message should not be a combined summary:\n%s", req.Text)
+		}
+	}
+	history := engine.NotifierHistory(10)
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2: %#v", len(history), history)
+	}
+}

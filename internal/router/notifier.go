@@ -185,6 +185,38 @@ func (n *routerTelegramNotifier) send(ctx context.Context, engine *Engine, deliv
 		delivery.CompletedAt = time.Now().UTC()
 		return engine.RecordNotifierDelivery(delivery)
 	}
+	if routerTelegramDeliveryShouldSplitByProvider(deliveryType) {
+		messages := renderRouterTelegramProviderAccountMessages(engine, deliveryType, now)
+		if len(messages) == 0 {
+			messages = []string{renderRouterTelegramSummary(engine, deliveryType, now)}
+		}
+		var last NotifierDelivery
+		for _, text := range messages {
+			item := NotifierDelivery{
+				NotifierID:  "telegram",
+				Type:        deliveryType,
+				Destination: redactNotifierDestination(n.cfg.ChatID),
+				Status:      "failed",
+				CreatedAt:   time.Now().UTC(),
+			}
+			err := n.client.SendMessage(ctx, telegram.SendMessageRequest{
+				ChatID:              n.cfg.ChatID,
+				Text:                text,
+				ParseMode:           "HTML",
+				DisableNotification: n.cfg.DisableNotification,
+			})
+			item.CompletedAt = time.Now().UTC()
+			item.Message = routerNotificationMessageSummary(text)
+			if err != nil {
+				item.Error = err.Error()
+				last = engine.RecordNotifierDelivery(item)
+				return last
+			}
+			item.Status = "sent"
+			last = engine.RecordNotifierDelivery(item)
+		}
+		return last
+	}
 	text := renderRouterTelegramSummary(engine, deliveryType, now)
 	err := n.client.SendMessage(ctx, telegram.SendMessageRequest{
 		ChatID:              n.cfg.ChatID,
@@ -200,6 +232,15 @@ func (n *routerTelegramNotifier) send(ctx context.Context, engine *Engine, deliv
 	}
 	delivery.Status = "sent"
 	return engine.RecordNotifierDelivery(delivery)
+}
+
+func routerTelegramDeliveryShouldSplitByProvider(deliveryType string) bool {
+	switch strings.ToLower(strings.TrimSpace(deliveryType)) {
+	case "startup", "periodic":
+		return true
+	default:
+		return false
+	}
 }
 
 func (n *routerTelegramNotifier) runCommands(ctx context.Context, engine *Engine) {
@@ -472,6 +513,157 @@ func renderRouterTelegramSummary(engine *Engine, deliveryType string, now time.T
 		lines = append(lines, quotaLines...)
 	}
 	return "<b>Pangaea Router</b>\n<pre>" + html.EscapeString(strings.Join(lines, "\n")) + "</pre>"
+}
+
+type routerProviderAccountGroup struct {
+	Service     string
+	ServiceKey  string
+	Account     string
+	Providers   []provider.Registration
+	Nodes       []string
+	ProviderIDs []string
+	Health      []string
+	Auth        []string
+	Versions    []string
+	Windows     []routerQuotaWindow
+}
+
+func renderRouterTelegramProviderAccountMessages(engine *Engine, deliveryType string, now time.Time) []string {
+	if engine == nil {
+		return nil
+	}
+	providers := engine.Providers()
+	usages := routerUsageByProvider(engine.ProviderUsages())
+	groups := routerProviderAccountGroups(providers, usages)
+	if len(groups) == 0 {
+		return nil
+	}
+	seqByService := map[string]int{}
+	messages := make([]string, 0, len(groups))
+	for _, group := range groups {
+		seqByService[group.ServiceKey]++
+		messages = append(messages, renderRouterTelegramProviderAccountMessage(group, seqByService[group.ServiceKey], deliveryType, now))
+	}
+	return messages
+}
+
+func routerProviderAccountGroups(providers []provider.Registration, usages map[string]ProviderUsageSnapshot) []routerProviderAccountGroup {
+	byKey := map[string]*routerProviderAccountGroup{}
+	for _, registration := range providers {
+		serviceKey := routerProviderServiceKey(registration)
+		if serviceKey == "" {
+			serviceKey = "provider"
+		}
+		service := routerCommandTitle(serviceKey)
+		account := routerProviderAccountLabel(registration)
+		if account == "" {
+			account = registration.Identity.ProviderInstanceID
+		}
+		key := serviceKey + "\x00" + account
+		group := byKey[key]
+		if group == nil {
+			group = &routerProviderAccountGroup{
+				Service:    service,
+				ServiceKey: serviceKey,
+				Account:    account,
+			}
+			byKey[key] = group
+		}
+		group.Providers = append(group.Providers, registration)
+		group.Nodes = appendStringUniqueRouter(group.Nodes, routerProviderNodeLabel(registration))
+		group.ProviderIDs = appendStringUniqueRouter(group.ProviderIDs, registration.Identity.ProviderInstanceID)
+		group.Health = appendStringUniqueRouter(group.Health, string(firstNonEmptyHealthStatus(registration.Health.Status)))
+		group.Auth = appendStringUniqueRouter(group.Auth, string(firstNonEmptyAuthStatus(registration.Auth.Status)))
+		group.Versions = appendStringUniqueRouter(group.Versions, registration.Identity.TargetVersion)
+		group.Windows = append(group.Windows, routerProviderQuotaWindows(registration, usages[registration.Identity.ProviderInstanceID])...)
+	}
+	groups := make([]routerProviderAccountGroup, 0, len(byKey))
+	for _, group := range byKey {
+		sort.Strings(group.Nodes)
+		sort.Strings(group.ProviderIDs)
+		sort.Strings(group.Health)
+		sort.Strings(group.Auth)
+		sort.Strings(group.Versions)
+		group.Windows = dedupeRouterQuotaWindows(group.Windows)
+		sortRouterQuotaWindows(group.Windows)
+		groups = append(groups, *group)
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		switch {
+		case groups[i].ServiceKey != groups[j].ServiceKey:
+			return groups[i].ServiceKey < groups[j].ServiceKey
+		case groups[i].Account != groups[j].Account:
+			return groups[i].Account < groups[j].Account
+		default:
+			return strings.Join(groups[i].ProviderIDs, ",") < strings.Join(groups[j].ProviderIDs, ",")
+		}
+	})
+	return groups
+}
+
+func renderRouterTelegramProviderAccountMessage(group routerProviderAccountGroup, seq int, deliveryType string, now time.Time) string {
+	title := fmt.Sprintf("%s #%d", strings.ToLower(group.ServiceKey), seq)
+	lines := []string{
+		fmt.Sprintf("%s - %s", title, group.Account),
+		"event: " + deliveryType,
+		"nodes: " + strings.Join(group.Nodes, ","),
+	}
+	if len(group.ProviderIDs) > 0 {
+		lines = append(lines, "providers: "+strings.Join(group.ProviderIDs, ","))
+	}
+	if len(group.Versions) > 0 {
+		lines = append(lines, "version: "+strings.Join(group.Versions, ","))
+	}
+	lines = append(lines,
+		"health: "+strings.Join(group.Health, ","),
+		"auth: "+strings.Join(group.Auth, ","),
+		"at: "+now.Local().Format("01-02 15:04:05"),
+	)
+	if len(group.Windows) == 0 {
+		lines = append(lines, "", "quota not reported")
+	} else {
+		lines = append(lines, "", "quota:")
+		for _, window := range group.Windows {
+			lines = append(lines, routerQuotaWindowRows(window, now)...)
+		}
+	}
+	heading := "Pangaea Router · " + group.Service
+	return "<b>" + html.EscapeString(heading) + "</b>\n<pre>" + html.EscapeString(strings.Join(lines, "\n")) + "</pre>"
+}
+
+func routerProviderServiceKey(registration provider.Registration) string {
+	service := normalizeRouterCommandService(string(registration.Identity.Service))
+	if service != "" {
+		return service
+	}
+	return normalizeRouterCommandService(registration.Identity.ProviderType)
+}
+
+func firstNonEmptyHealthStatus(status provider.HealthStatus) provider.HealthStatus {
+	if status != "" {
+		return status
+	}
+	return provider.HealthUnknown
+}
+
+func firstNonEmptyAuthStatus(status provider.AuthStatus) provider.AuthStatus {
+	if status != "" {
+		return status
+	}
+	return provider.AuthUnknown
+}
+
+func appendStringUniqueRouter(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func renderRouterTelegramCommand(engine *Engine, cmd string, now time.Time) string {
@@ -957,6 +1149,24 @@ func dedupeRouterQuotaWindows(windows []routerQuotaWindow) []routerQuotaWindow {
 		out = append(out, window)
 	}
 	return out
+}
+
+func sortRouterQuotaWindows(windows []routerQuotaWindow) {
+	sort.SliceStable(windows, func(i, j int) bool {
+		if windows[i].Label != windows[j].Label {
+			return windows[i].Label < windows[j].Label
+		}
+		switch {
+		case windows[i].ResetAt.IsZero() && !windows[j].ResetAt.IsZero():
+			return false
+		case !windows[i].ResetAt.IsZero() && windows[j].ResetAt.IsZero():
+			return true
+		case !windows[i].ResetAt.Equal(windows[j].ResetAt):
+			return windows[i].ResetAt.Before(windows[j].ResetAt)
+		default:
+			return routerQuotaRemainingPct(windows[i]) < routerQuotaRemainingPct(windows[j])
+		}
+	})
 }
 
 func routerQuotaWindowRows(window routerQuotaWindow, now time.Time) []string {
