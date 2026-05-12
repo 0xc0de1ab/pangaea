@@ -94,6 +94,8 @@ const (
 	liveRouterDialectOpenAI    liveRouterDialect = "openai"
 	liveRouterDialectAnthropic liveRouterDialect = "anthropic"
 	liveRouterDialectGemini    liveRouterDialect = "gemini"
+
+	liveRouterSmokeMaxTokens = 512
 )
 
 func (d liveRouterDialect) capability() provider.Capability {
@@ -253,7 +255,7 @@ func liveRouterInvokeDialect(client *http.Client, baseURL string, apiKey string,
 func liveRouterInvokeOpenAI(client *http.Client, baseURL string, apiKey string, providerInstanceID string, model string) (string, error) {
 	body := map[string]any{
 		"model":      model,
-		"max_tokens": 16,
+		"max_tokens": liveRouterSmokeMaxTokens,
 		"messages": []map[string]string{{
 			"role":    "user",
 			"content": "Reply with one short sentence containing the word pong.",
@@ -290,7 +292,7 @@ func liveRouterInvokeOpenAI(client *http.Client, baseURL string, apiKey string, 
 func liveRouterInvokeAnthropic(client *http.Client, baseURL string, apiKey string, providerInstanceID string, model string) (string, error) {
 	body := map[string]any{
 		"model":      model,
-		"max_tokens": 16,
+		"max_tokens": liveRouterSmokeMaxTokens,
 		"messages": []map[string]string{{
 			"role":    "user",
 			"content": "Reply with one short sentence containing the word pong.",
@@ -338,7 +340,7 @@ func liveRouterInvokeGemini(client *http.Client, baseURL string, apiKey string, 
 				"text": "Reply with one short sentence containing the word pong.",
 			}},
 		}},
-		"generationConfig": map[string]any{"maxOutputTokens": 16},
+		"generationConfig": map[string]any{"maxOutputTokens": liveRouterSmokeMaxTokens},
 	}
 	endpoint := baseURL + "/v1beta/models/" + url.PathEscape(model) + ":generateContent"
 	req, err := liveRouterJSONRequest(http.MethodPost, endpoint, body)
