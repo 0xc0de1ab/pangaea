@@ -158,9 +158,7 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 		sum := sha256.Sum256(raw)
 		fingerprint = hex.EncodeToString(sum[:])
 	}
-	if filename == "" {
-		filename = authFilename(identity.Service, format)
-	}
+	filename = canonicalAuthFilename(identity.Service, format, filename)
 	authID := authRecordID(identity.Service, account, providerInstanceID)
 	replica := AuthReplica{
 		ProviderType:       identity.ProviderType,
@@ -202,7 +200,7 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 	record.BootstrapSource = auth.BootstrapSource
 	record.Fingerprint = firstNonEmpty(fingerprint, record.Fingerprint)
 	record.Source = firstNonEmpty(source, auth.SelectedSource, record.Source)
-	record.Filename = firstNonEmpty(filename, record.Filename, authFilename(identity.Service, format))
+	record.Filename = canonicalAuthFilename(identity.Service, format, firstNonEmpty(filename, record.Filename))
 	record.Format = firstNonEmpty(format, record.Format)
 	record.LatestProviderType = identity.ProviderType
 	record.ProviderInstanceID = providerInstanceID
@@ -246,6 +244,7 @@ func (e *Engine) AuthRecords() []AuthRecord {
 	defer e.authMu.RUnlock()
 	out := make([]AuthRecord, 0, len(e.authRecords))
 	for _, record := range e.authRecords {
+		record.Filename = canonicalAuthFilename(record.Service, record.Format, record.Filename)
 		record.Replicas = append([]AuthReplica(nil), record.Replicas...)
 		out = append(out, record)
 	}
@@ -291,7 +290,7 @@ func (e *Engine) AuthDownload(authID string) ([]byte, string, bool) {
 	if !ok || len(raw) == 0 {
 		return nil, "", false
 	}
-	return append([]byte(nil), raw...), firstNonEmpty(record.Filename, authFilename(record.Service, record.Format)), true
+	return append([]byte(nil), raw...), canonicalAuthFilename(record.Service, record.Format, record.Filename), true
 }
 
 func (e *Engine) appendAuthEventLocked(event AuthEvent) {
@@ -412,9 +411,22 @@ func authFilename(service provider.Service, format string) string {
 		return "oauth_creds.json"
 	case service == provider.ServiceAntigravity:
 		return "state.vscdb"
+	case format == "github-copilot-apps-json-format":
+		return "apps.json"
+	case service == provider.ServiceGitHubCopilot || format == "github-copilot-config-json-format":
+		return "config.json"
 	default:
 		return "auth.json"
 	}
+}
+
+func canonicalAuthFilename(service provider.Service, format string, filename string) string {
+	filename = strings.TrimSpace(filename)
+	fallback := authFilename(service, format)
+	if filename == "" || (filename == "auth.json" && fallback != "auth.json") {
+		return fallback
+	}
+	return filename
 }
 
 func firstNonEmpty(values ...string) string {
