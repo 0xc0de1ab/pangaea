@@ -6,10 +6,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version follows vSEMVER-YYYYMM.seq.<commit-sha>. Release and CI builds
-// override this via -ldflags; the checked-in default marks the initial
-// version cut from the current HEAD.
-var version = "v0.9.0-202604.1.5878da97dbb8"
+// version follows vSEMVER-YYYYMM.seq. Release and CI builds override this via
+// -ldflags; the checked-in default marks the current release line.
+var version = "v0.9.0-202605.1"
 
 // rootGlobals holds persistent-flag values bound at root level. Subcommands
 // reach them via cmd.Flags().GetString — but this file owns the binder so

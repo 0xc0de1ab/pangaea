@@ -526,11 +526,7 @@ func (s *Server) handleGeminiModels(c *gin.Context) {
 func (s *Server) handleDetailedModels(c *gin.Context) {
 	details, err := s.engine.GetDetailedModels(c.Request.Context())
 	if err != nil {
-		// Mock models for health sync
-		mock := map[string]models.ModelDetail{
-			"gemini-3-flash": {Model: "gemini-3-flash", Label: "Gemini 3 Flash", QuotaInfo: &models.QuotaInfo{RemainingFraction: 1.0}},
-		}
-		c.JSON(http.StatusOK, mock)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -540,13 +536,7 @@ func (s *Server) handleDetailedModels(c *gin.Context) {
 func (s *Server) handleAccount(c *gin.Context) {
 	acc, err := s.engine.GetAccount(c.Request.Context())
 	if err != nil {
-		// Fallback for sync health checks
-		c.JSON(http.StatusOK, models.UserStatus{
-			Name:       "Mock User",
-			Email:      "mock@example.com",
-			UserTier:   &models.UserTier{Name: "Free"},
-			PlanStatus: &models.PlanStatus{PlanInfo: &models.PlanInfo{PlanName: "Standard"}},
-		})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -570,7 +560,8 @@ func (s *Server) handleUsage(c *gin.Context) {
 
 func (s *Server) handleHealth(c *gin.Context) {
 	serverVersion, serverCommit := detectAntigravityServerVersion()
-	c.JSON(http.StatusOK, gin.H{
+	status := http.StatusOK
+	body := gin.H{
 		"status":         "healthy",
 		"proxy":          "up",
 		"version":        s.version,
@@ -579,7 +570,14 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"server_commit":  serverCommit,
 		"target_version": serverVersion,
 		"time":           time.Now().Format(time.RFC3339),
-	})
+	}
+	if _, err := s.engine.GetDetailedModels(c.Request.Context()); err != nil {
+		status = http.StatusServiceUnavailable
+		body["status"] = "degraded"
+		body["core"] = "unavailable"
+		body["error"] = err.Error()
+	}
+	c.JSON(status, body)
 }
 
 func detectAntigravityServerVersion() (string, string) {

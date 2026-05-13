@@ -257,6 +257,96 @@ func TestHTTPProviders(t *testing.T) {
 	}
 }
 
+func TestHTTPDeleteDisconnectedProviderRemovesRelatedState(t *testing.T) {
+	engine, _ := testEngine(t)
+	now := time.Now().UTC()
+	engine.RecordAuthSnapshot(control.AuthSnapshot{
+		ProviderInstanceID: "codex-primary-a1",
+		Auth: provider.AuthState{
+			Status:      provider.AuthHealthy,
+			Account:     provider.Account{ID: "primary@example.test", Display: "primary@example.test"},
+			ExpiresAt:   now.Add(time.Hour),
+			Refreshable: true,
+		},
+		Fingerprint: "auth-fingerprint",
+		Source:      "test/auth.json",
+		Filename:    "auth.json",
+		Format:      "codex-auth-json-format",
+		Raw:         []byte(`{"access_token":"redacted"}`),
+		ObservedAt:  now,
+	})
+	if err := engine.UpdateProviderUsage("codex-primary-a1", provider.UsageReport{Requests: 7, TotalTokens: 90, ObservedAt: now}, now); err != nil {
+		t.Fatalf("update usage: %v", err)
+	}
+	if err := engine.ApplyProviderInventoryReport(control.ProviderInventoryReport{
+		NodeID:   "node-a1",
+		HostName: "snowbox",
+		Containers: []control.ContainerReport{{
+			ContainerID:        "container-1",
+			ContainerKind:      "docker",
+			ContainerName:      "codex-primary-a1",
+			ProviderType:       "codex-cli",
+			ProviderInstanceID: "codex-primary-a1",
+			State:              "exited",
+		}},
+		ReportedAt: now,
+	}); err != nil {
+		t.Fatalf("apply inventory: %v", err)
+	}
+
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+	req := httptest.NewRequest(http.MethodDelete, "/router/v1/providers", bytes.NewReader([]byte(`{"provider_instance_ids":["codex-primary-a1"],"reason":"stale cleanup","confirm":true}`)))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Deleted int                    `json:"deleted"`
+		Results []ProviderDeleteResult `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if out.Deleted != 1 || len(out.Results) != 1 || out.Results[0].AuthRecordsRemoved != 1 || out.Results[0].AuthReplicasRemoved != 1 || !out.Results[0].UsageRemoved || out.Results[0].ContainersRemoved != 1 {
+		t.Fatalf("unexpected delete result: %#v", out)
+	}
+	if providers := engine.Providers(); len(providers) != 0 {
+		t.Fatalf("expected provider removed, got %#v", providers)
+	}
+	if auth := engine.AuthRecords(); len(auth) != 0 {
+		t.Fatalf("expected auth records removed, got %#v", auth)
+	}
+	if usages := engine.ProviderUsages(); len(usages) != 0 {
+		t.Fatalf("expected usage removed, got %#v", usages)
+	}
+	if containers := engine.Containers(); len(containers) != 0 {
+		t.Fatalf("expected containers removed, got %#v", containers)
+	}
+	events := engine.AuthEvents("")
+	if len(events) == 0 || events[0].Type != "auth.provider.deleted" {
+		t.Fatalf("expected auth delete event, got %#v", events)
+	}
+}
+
+func TestHTTPDeleteConnectedProviderRejected(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.bindProviderControlSession("codex-primary-a1", newControlSession(nil))
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodDelete, "/router/v1/providers", bytes.NewReader([]byte(`{"provider_instance_ids":["codex-primary-a1"],"reason":"stale cleanup","confirm":true}`)))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if providers := engine.Providers(); len(providers) != 1 || providers[0].Identity.ProviderInstanceID != "codex-primary-a1" {
+		t.Fatalf("expected provider retained, got %#v", providers)
+	}
+}
+
 func TestHTTPNodesAndContainers(t *testing.T) {
 	engine, _ := testEngine(t)
 	if err := engine.UpdateNodeHello(control.NodeHello{
@@ -889,6 +979,61 @@ func TestHTTPRouterAdminRequiresAPIKeyWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestHTTPRouterAdminAuthDisablesBearerWhenGoogleOAuthEnabled(t *testing.T) {
+	engine, _ := testEngine(t)
+	store := security.NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKey("public_key", "pk_public_router", "team-a", "usr_1"); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
+	oauth := GoogleOAuthOptions{
+		Enabled:       true,
+		ClientID:      "client-test",
+		ClientSecret:  "secret-test",
+		SessionSecret: "session-secret-test",
+		AllowedEmails: []string{"operator@example.test"},
+		SessionTTL:    time.Hour,
+	}
+	for _, mode := range []string{routerAdminAuthModeAuto, routerAdminAuthModeBoth} {
+		t.Run(mode, func(t *testing.T) {
+			handler := NewHTTPHandler(HTTPOptions{
+				Engine:  engine,
+				APIKeys: store,
+				AdminAuth: AdminAuthOptions{
+					Mode:        mode,
+					GoogleOAuth: oauth,
+				},
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+			req.Header.Set("authorization", "Bearer pk_public_router")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code == http.StatusOK {
+				t.Fatalf("admin bearer token must be disabled when Google OAuth is enabled")
+			}
+			if !strings.Contains(rec.Body.String(), "google oauth session") {
+				t.Fatalf("expected Google OAuth session rejection, got %d body=%s", rec.Code, rec.Body.String())
+			}
+
+			req = httptest.NewRequest(http.MethodGet, "/router/v1/providers", nil)
+			req.AddCookie(testGoogleOAuthSessionCookie(t, oauth, "operator@example.test"))
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 with allowed google session, got %d body=%s", rec.Code, rec.Body.String())
+			}
+
+			req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			req.Header.Set("authorization", "Bearer pk_public_router")
+			rec = httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("public inference API key should still work, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestHTTPRouterAdminAcceptsAllowedGoogleOAuthSession(t *testing.T) {
 	engine, _ := testEngine(t)
 	oauth := GoogleOAuthOptions{
@@ -920,6 +1065,51 @@ func TestHTTPRouterAdminAcceptsAllowedGoogleOAuthSession(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 with allowed google session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPRouterCompatChatAcceptsAllowedGoogleOAuthSession(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.SetInvoker(fakeInvoker{})
+	oauth := GoogleOAuthOptions{
+		Enabled:       true,
+		ClientID:      "client-test",
+		ClientSecret:  "secret-test",
+		SessionSecret: "session-secret-test",
+		AllowedEmails: []string{"operator@example.test"},
+		SessionTTL:    time.Hour,
+	}
+	handler := NewHTTPHandler(HTTPOptions{
+		Engine: engine,
+		AdminAuth: AdminAuthOptions{
+			Mode:        routerAdminAuthModeGoogle,
+			GoogleOAuth: oauth,
+		},
+	})
+	body := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":"hello"}]}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/router/v1/compat/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without google session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/router/v1/compat/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.AddCookie(testGoogleOAuthSessionCookie(t, oauth, "operator@example.test"))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 with google session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out compat.OpenAIChatResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode OpenAI response: %v", err)
+	}
+	if len(out.Choices) != 1 || out.Choices[0].Message.Content != "ok" {
+		t.Fatalf("unexpected OpenAI response: %#v", out)
 	}
 }
 

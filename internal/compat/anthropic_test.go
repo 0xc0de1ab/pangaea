@@ -84,6 +84,45 @@ func TestAnthropicMessagesResponseFromCanonical(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessagesResponseToCanonicalIgnoresThinkingBlocks(t *testing.T) {
+	response, err := AnthropicMessagesResponseToCanonical(AnthropicMessagesResponse{
+		ID:    "msg_1",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "MiniMax-M2.7",
+		Usage: AnthropicUsage{InputTokens: 3, OutputTokens: 5},
+		Content: []AnthropicContentBlock{
+			{Type: "thinking"},
+			{Type: "text", Text: "done"},
+		},
+		StopReason: "end_turn",
+	})
+	if err != nil {
+		t.Fatalf("expected conversion to succeed: %v", err)
+	}
+	if got := response.Message.Content[0].Text; got != "done" {
+		t.Fatalf("expected final text only, got %q", got)
+	}
+}
+
+func TestAnthropicMessagesResponseToCanonicalAllowsThinkingOnlyResponse(t *testing.T) {
+	response, err := AnthropicMessagesResponseToCanonical(AnthropicMessagesResponse{
+		ID:         "msg_1",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "MiniMax-M2.7",
+		Usage:      AnthropicUsage{InputTokens: 3, OutputTokens: 5},
+		Content:    []AnthropicContentBlock{{Type: "thinking"}},
+		StopReason: "max_tokens",
+	})
+	if err != nil {
+		t.Fatalf("expected conversion to succeed: %v", err)
+	}
+	if got := response.Message.Content[0].Text; got != "" {
+		t.Fatalf("expected empty text for thinking-only response, got %q", got)
+	}
+}
+
 func TestAnthropicMessagesRequestToCanonicalImage(t *testing.T) {
 	request, err := AnthropicMessagesRequestToCanonical(AnthropicMessagesRequest{
 		Model: "claude-sonnet",

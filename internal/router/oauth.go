@@ -99,18 +99,19 @@ type googleOAuthTokenInfo struct {
 	Description   string `json:"error_description"`
 }
 
-func normalizeAdminAuthOptions(opts AdminAuthOptions, storeHasKeys bool) AdminAuthOptions {
+func normalizeAdminAuthOptions(opts AdminAuthOptions, _ bool) AdminAuthOptions {
 	opts.Mode = strings.ToLower(strings.TrimSpace(opts.Mode))
 	if opts.Mode == "" {
 		opts.Mode = routerAdminAuthModeAuto
 	}
 	opts.GoogleOAuth = normalizeGoogleOAuthOptions(opts.GoogleOAuth)
+	if opts.GoogleOAuth.Enabled && opts.Mode == routerAdminAuthModeBoth {
+		opts.Mode = routerAdminAuthModeGoogle
+	}
 	if opts.Mode != routerAdminAuthModeAuto {
 		return opts
 	}
 	switch {
-	case opts.GoogleOAuth.Enabled && storeHasKeys:
-		opts.Mode = routerAdminAuthModeBoth
 	case opts.GoogleOAuth.Enabled:
 		opts.Mode = routerAdminAuthModeGoogle
 	default:

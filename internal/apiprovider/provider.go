@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,12 +14,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 var ErrAPIProviderConfig = errors.New("invalid direct-http provider config")
@@ -188,6 +192,9 @@ type geminiModel struct {
 type compatibleModelStatus struct {
 	Model          string                      `json:"model"`
 	Label          string                      `json:"label,omitempty"`
+	Kind           string                      `json:"kind,omitempty"`
+	GroupMembers   []string                    `json:"groupMembers,omitempty"`
+	GroupMembersV1 []string                    `json:"group_members,omitempty"`
 	MaxTokens      int                         `json:"maxTokens,omitempty"`
 	QuotaInfo      *compatibleModelStatusQuota `json:"quotaInfo,omitempty"`
 	SupportsImages bool                        `json:"supportsImages,omitempty"`
@@ -199,10 +206,61 @@ type compatibleModelStatusQuota struct {
 }
 
 type antigravityAccountResponse struct {
-	Name       string                 `json:"name"`
-	Email      string                 `json:"email"`
-	PlanStatus *antigravityPlanStatus `json:"planStatus"`
-	UserTier   *antigravityUserTier   `json:"userTier"`
+	Name                   string                             `json:"name"`
+	Email                  string                             `json:"email"`
+	PlanStatus             *antigravityPlanStatus             `json:"planStatus"`
+	UserTier               *antigravityUserTier               `json:"userTier"`
+	CascadeModelConfigData *antigravityCascadeModelConfigData `json:"cascadeModelConfigData"`
+}
+
+type antigravityCascadeModelConfigData struct {
+	ClientModelConfigs []antigravityClientModelConfig `json:"clientModelConfigs"`
+}
+
+type antigravityClientModelConfig struct {
+	Label     string                      `json:"label"`
+	QuotaInfo *compatibleModelStatusQuota `json:"quotaInfo,omitempty"`
+}
+
+type miniMAXTokenPlanResponse struct {
+	ModelRemains []miniMAXModelRemain `json:"model_remains"`
+	BaseResp     struct {
+		StatusCode int    `json:"status_code"`
+		StatusMsg  string `json:"status_msg"`
+	} `json:"base_resp"`
+}
+
+type miniMAXModelRemain struct {
+	StartTime                 int64  `json:"start_time"`
+	EndTime                   int64  `json:"end_time"`
+	RemainsTime               int64  `json:"remains_time"`
+	CurrentIntervalTotalCount int64  `json:"current_interval_total_count"`
+	CurrentIntervalUsageCount int64  `json:"current_interval_usage_count"`
+	ModelName                 string `json:"model_name"`
+	CurrentWeeklyTotalCount   int64  `json:"current_weekly_total_count"`
+	CurrentWeeklyUsageCount   int64  `json:"current_weekly_usage_count"`
+	WeeklyStartTime           int64  `json:"weekly_start_time"`
+	WeeklyEndTime             int64  `json:"weekly_end_time"`
+	WeeklyRemainsTime         int64  `json:"weekly_remains_time"`
+}
+
+type copilotAuthStatusResponse struct {
+	IsAuthenticated  bool                       `json:"isAuthenticated"`
+	AuthType         string                     `json:"authType"`
+	Host             string                     `json:"host"`
+	Login            string                     `json:"login"`
+	StatusMessage    string                     `json:"statusMessage"`
+	Subscription     *provider.SubscriptionInfo `json:"subscription"`
+	PlanStatus       *antigravityPlanStatus     `json:"planStatus"`
+	UserTier         *antigravityUserTier       `json:"userTier"`
+	Plan             string                     `json:"plan"`
+	PlanName         string                     `json:"planName"`
+	SKU              string                     `json:"sku"`
+	SubscriptionType string                     `json:"subscriptionType"`
+	SubscriptionTier string                     `json:"subscriptionTier"`
+	BillingPlan      string                     `json:"billingPlan"`
+	PaidTier         string                     `json:"paidTier"`
+	RateLimitTier    string                     `json:"rateLimitTier"`
 }
 
 type antigravityPlanStatus struct {
@@ -250,6 +308,12 @@ func (p *Provider) enrichModelsFromStatus(ctx context.Context, models []provider
 		if detail.Label != "" && detail.Label != models[i].ID {
 			models[i].Aliases = mergeStringSet(models[i].Aliases, []string{detail.Label})
 		}
+		if detail.Kind != "" {
+			models[i].Kind = detail.Kind
+		}
+		if len(detail.GroupMembers) > 0 || len(detail.GroupMembersV1) > 0 {
+			models[i].GroupMembers = mergeStringSet(models[i].GroupMembers, append(detail.GroupMembers, detail.GroupMembersV1...))
+		}
 		if detail.MaxTokens > 0 {
 			if models[i].ContextTokens == 0 {
 				models[i].ContextTokens = detail.MaxTokens
@@ -263,7 +327,7 @@ func (p *Provider) enrichModelsFromStatus(ctx context.Context, models []provider
 		}
 		if detail.QuotaInfo != nil {
 			quota := &provider.ModelQuota{
-				RemainingPct: detail.QuotaInfo.RemainingFraction * 100,
+				RemainingPct: quotaRemainingPct(detail.QuotaInfo.RemainingFraction),
 				Source:       "antigravity-model-quota",
 			}
 			if resetAt := parseModelQuotaReset(detail.QuotaInfo.ResetTime); !resetAt.IsZero() {
@@ -447,6 +511,12 @@ func (p *Provider) Usage() (provider.UsageReport, error) {
 	if p == nil {
 		return provider.UsageReport{}, ErrAPIProviderConfig
 	}
+	if p.registration.Identity.Service == provider.ServiceMiniMAX {
+		p.refreshMiniMAXUsage()
+	}
+	if p.registration.Identity.Service == provider.ServiceAntigravity {
+		p.refreshAntigravityUsage()
+	}
 	p.usageMu.Lock()
 	defer p.usageMu.Unlock()
 	usage := p.usage
@@ -482,6 +552,12 @@ func (p *Provider) Auth() (provider.AuthState, error) {
 	if p.registration.Identity.Service == provider.ServiceAntigravity {
 		p.refreshAntigravityAccount()
 	}
+	if p.registration.Identity.Service == provider.ServiceGitHubCopilot {
+		p.refreshGitHubCopilotAccount()
+	}
+	if p.registration.Identity.Service == provider.ServiceMiniMAX {
+		p.refreshMiniMAXAccount()
+	}
 	p.authMu.Lock()
 	defer p.authMu.Unlock()
 	auth := p.auth
@@ -491,14 +567,440 @@ func (p *Provider) Auth() (provider.AuthState, error) {
 	return auth, nil
 }
 
+func (p *Provider) refreshMiniMAXAccount() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	plan, err := p.fetchMiniMAXTokenPlan(ctx)
+	if err != nil {
+		p.authMu.Lock()
+		p.auth.SelectedSource = "minimax-token-plan-remains"
+		p.auth.LastRefreshErr = err.Error()
+		p.authMu.Unlock()
+		return
+	}
+	apiKey, _ := p.apiKeyForRequest()
+	account := miniMAXAccountFromAPIKey(apiKey)
+	subscription := miniMAXSubscription()
+	p.authMu.Lock()
+	defer p.authMu.Unlock()
+	p.auth.Status = provider.AuthHealthy
+	p.auth.SelectedSource = "minimax-token-plan-remains"
+	p.auth.LastRefreshErr = ""
+	if shouldReplaceMiniMAXAccount(p.registration, p.auth.Account) {
+		p.auth.Account = account
+		p.registration.Identity.Account = account
+	}
+	if p.auth.Subscription == nil || p.auth.Subscription.Source == "" || strings.Contains(p.auth.Subscription.Source, "minimax") {
+		p.auth.Subscription = mergeProviderSubscription(p.auth.Subscription, subscription)
+	}
+	if plan.BaseResp.StatusMsg != "" && p.auth.Subscription != nil && p.auth.Subscription.Status == "" {
+		p.auth.Subscription.Status = plan.BaseResp.StatusMsg
+	}
+}
+
+func (p *Provider) refreshMiniMAXUsage() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	plan, err := p.fetchMiniMAXTokenPlan(ctx)
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	if err != nil {
+		p.usage.ObservedAt = time.Now().UTC()
+		p.usage.Source = joinProviderUsageSources(p.usage.Source, "minimax-token-plan-error")
+		p.usage.NativeSummary = formats.UsageReport{
+			PlanTier: "token-plan",
+			Notes:    []string{"probe_error: " + err.Error()},
+		}
+		return
+	}
+	report := miniMAXTokenPlanUsageReport(plan, time.Now().UTC())
+	p.usage.ObservedAt = report.ObservedAt
+	p.usage.Source = joinProviderUsageSources(p.usage.Source, report.Source)
+	p.usage.PlanTier = firstNonEmpty(p.usage.PlanTier, report.PlanTier)
+	p.usage.Subscription = mergeProviderSubscription(p.usage.Subscription, report.Subscription)
+	p.usage.NativeSummary = report.NativeSummary
+}
+
+func (p *Provider) fetchMiniMAXTokenPlan(ctx context.Context) (miniMAXTokenPlanResponse, error) {
+	var out miniMAXTokenPlanResponse
+	apiKey, err := p.apiKeyForRequest()
+	if err != nil {
+		return out, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.rootEndpoint("/v1/token_plan/remains", apiKey), nil)
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("accept", "application/json")
+	if err := p.applyAPIKeyHeader(req, apiKey); err != nil {
+		return out, err
+	}
+	for key, value := range p.headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return out, err
+		}
+		return out, &provider.UpstreamError{Message: err.Error()}
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return out, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return out, upstreamHTTPError(resp, responseBody)
+	}
+	if len(responseBody) == 0 {
+		return out, fmt.Errorf("%w: empty upstream response", ErrAPIProviderConfig)
+	}
+	if err := json.Unmarshal(responseBody, &out); err != nil {
+		return out, err
+	}
+	if out.BaseResp.StatusCode != 0 {
+		return out, fmt.Errorf("%w: minimax token plan status %d: %s", ErrAPIProviderConfig, out.BaseResp.StatusCode, out.BaseResp.StatusMsg)
+	}
+	return out, nil
+}
+
+func (p *Provider) refreshAntigravityUsage() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	account, accountErr := p.fetchAntigravityAccount(ctx)
+	var modelStatus map[string]compatibleModelStatus
+	statusErr := p.doGETJSON(ctx, "/v1/models/status", &modelStatus)
+
+	report := antigravityUsageReport(account, accountErr, modelStatus, statusErr, time.Now().UTC())
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	p.usage.ObservedAt = report.ObservedAt
+	source := p.usage.Source
+	if report.Source != "antigravity-usage-error" {
+		source = removeProviderUsageSource(source, "antigravity-usage-error")
+	}
+	p.usage.Source = joinProviderUsageSources(source, report.Source)
+	if report.Source == "antigravity-usage-error" {
+		p.usage.PlanTier = firstNonEmpty(p.usage.PlanTier, report.PlanTier)
+	} else {
+		p.usage.PlanTier = firstNonEmpty(report.PlanTier, p.usage.PlanTier)
+	}
+	p.usage.Subscription = mergeProviderSubscription(p.usage.Subscription, report.Subscription)
+	p.usage.NativeSummary = report.NativeSummary
+}
+
+func (p *Provider) fetchAntigravityAccount(ctx context.Context) (antigravityAccountResponse, error) {
+	var account antigravityAccountResponse
+	if err := p.doGETJSON(ctx, "/v1/account", &account); err != nil {
+		return antigravityAccountResponse{}, err
+	}
+	if isAntigravityFallbackAccount(account) {
+		return antigravityAccountResponse{}, fmt.Errorf("%w: antigravity fallback account", ErrAPIProviderConfig)
+	}
+	return account, nil
+}
+
+func antigravityUsageReport(account antigravityAccountResponse, accountErr error, modelStatus map[string]compatibleModelStatus, statusErr error, observedAt time.Time) provider.UsageReport {
+	subscription := subscriptionFromAntigravityAccount(account)
+	planTier := "antigravity"
+	if subscription != nil {
+		planTier = firstNonEmpty(subscription.Name, subscription.Tier, planTier)
+	}
+	native := formats.UsageReport{
+		PlanTier: planTier,
+		Unit:     "quota",
+	}
+
+	source := "antigravity-account-quota"
+	native.Windows = antigravityUsageWindowsFromAccount(account)
+	if len(native.Windows) == 0 {
+		source = "antigravity-model-quota"
+		native.Windows = antigravityUsageWindowsFromStatus(modelStatus)
+	}
+	if len(native.Windows) == 0 {
+		source = "antigravity-usage-error"
+		native.Notes = antigravityUsageProbeNotes(accountErr, statusErr)
+	}
+
+	return provider.UsageReport{
+		ObservedAt:    observedAt.UTC(),
+		Source:        source,
+		PlanTier:      planTier,
+		Subscription:  subscription,
+		NativeSummary: native,
+	}
+}
+
+func antigravityUsageWindowsFromAccount(account antigravityAccountResponse) []formats.UsageWindow {
+	if account.CascadeModelConfigData == nil {
+		return nil
+	}
+	windows := make([]formats.UsageWindow, 0, len(account.CascadeModelConfigData.ClientModelConfigs))
+	for _, config := range account.CascadeModelConfigData.ClientModelConfigs {
+		window, ok := antigravityUsageWindow(strings.TrimSpace(config.Label), config.QuotaInfo)
+		if ok {
+			windows = append(windows, window)
+		}
+	}
+	return windows
+}
+
+func antigravityUsageWindowsFromStatus(modelStatus map[string]compatibleModelStatus) []formats.UsageWindow {
+	if len(modelStatus) == 0 {
+		return nil
+	}
+	type statusEntry struct {
+		key    string
+		label  string
+		status compatibleModelStatus
+	}
+	entries := make([]statusEntry, 0, len(modelStatus))
+	for key, status := range modelStatus {
+		label := firstNonEmpty(status.Label, key)
+		if strings.TrimSpace(label) == "" || status.QuotaInfo == nil {
+			continue
+		}
+		entries = append(entries, statusEntry{key: key, label: label, status: status})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		left := strings.ToLower(entries[i].label)
+		right := strings.ToLower(entries[j].label)
+		if left == right {
+			return entries[i].key < entries[j].key
+		}
+		return left < right
+	})
+	windows := make([]formats.UsageWindow, 0, len(entries))
+	for _, entry := range entries {
+		window, ok := antigravityUsageWindow(entry.label, entry.status.QuotaInfo)
+		if ok {
+			windows = append(windows, window)
+		}
+	}
+	return windows
+}
+
+func antigravityUsageWindow(label string, quota *compatibleModelStatusQuota) (formats.UsageWindow, bool) {
+	label = strings.TrimSpace(label)
+	if label == "" || quota == nil {
+		return formats.UsageWindow{}, false
+	}
+	window := formats.UsageWindow{
+		Label:        label,
+		RemainingPct: quotaRemainingPct(quota.RemainingFraction),
+		Unit:         "quota",
+	}
+	if resetAt := parseModelQuotaReset(quota.ResetTime); !resetAt.IsZero() {
+		window.ResetAt = resetAt
+	}
+	return window, true
+}
+
+func quotaRemainingPct(value float64) float64 {
+	if value <= 1 {
+		value *= 100
+	}
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func antigravityUsageProbeNotes(accountErr error, statusErr error) []string {
+	notes := []string{}
+	if accountErr != nil {
+		notes = append(notes, "account_probe_error: "+accountErr.Error())
+	}
+	if statusErr != nil {
+		notes = append(notes, "model_status_probe_error: "+statusErr.Error())
+	}
+	if len(notes) == 0 {
+		notes = append(notes, "quota unavailable")
+	}
+	return notes
+}
+
+func miniMAXTokenPlanUsageReport(plan miniMAXTokenPlanResponse, observedAt time.Time) provider.UsageReport {
+	native := formats.UsageReport{
+		PlanTier: "token-plan",
+		Unit:     "requests",
+		Notes:    []string{"tier: MiniMAX Token Plan"},
+	}
+	for _, remain := range plan.ModelRemains {
+		label := strings.TrimSpace(remain.ModelName)
+		if label == "" {
+			continue
+		}
+		if remain.CurrentIntervalTotalCount > 0 {
+			window := formats.UsageWindow{
+				Label:        label + " current window",
+				Used:         remain.CurrentIntervalUsageCount,
+				Limit:        remain.CurrentIntervalTotalCount,
+				RemainingPct: remainingPct(remain.CurrentIntervalUsageCount, remain.CurrentIntervalTotalCount),
+				Unit:         "requests",
+				ResetAt:      unixMilliUTC(remain.EndTime),
+			}
+			native.Windows = append(native.Windows, window)
+			if native.Limit == 0 {
+				native.Used = window.Used
+				native.Limit = window.Limit
+				native.RemainingPct = window.RemainingPct
+				native.ResetAt = window.ResetAt
+			}
+		}
+		if remain.CurrentWeeklyTotalCount > 0 {
+			native.Windows = append(native.Windows, formats.UsageWindow{
+				Label:        label + " weekly",
+				Used:         remain.CurrentWeeklyUsageCount,
+				Limit:        remain.CurrentWeeklyTotalCount,
+				RemainingPct: remainingPct(remain.CurrentWeeklyUsageCount, remain.CurrentWeeklyTotalCount),
+				Unit:         "requests",
+				ResetAt:      unixMilliUTC(remain.WeeklyEndTime),
+			})
+		}
+	}
+	return provider.UsageReport{
+		ObservedAt:    observedAt.UTC(),
+		Source:        "minimax-token-plan-remains",
+		PlanTier:      "token-plan",
+		Subscription:  miniMAXSubscription(),
+		NativeSummary: native,
+	}
+}
+
+func miniMAXSubscription() *provider.SubscriptionInfo {
+	return &provider.SubscriptionInfo{
+		Tier:   "token-plan",
+		Name:   "MiniMAX Token Plan",
+		Source: "minimax-token-plan-remains",
+	}
+}
+
+func miniMAXAccountFromAPIKey(apiKey string) provider.Account {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return provider.Account{}
+	}
+	sum := sha256.Sum256([]byte(apiKey))
+	fingerprint := hex.EncodeToString(sum[:])[:12]
+	id := "minimax-key-" + fingerprint
+	return provider.Account{ID: id, Display: "MiniMAX Token Plan " + fingerprint}
+}
+
+func shouldReplaceMiniMAXAccount(registration provider.Registration, account provider.Account) bool {
+	label := strings.TrimSpace(firstNonEmpty(account.Display, account.ID, registration.Identity.Account.Display, registration.Identity.Account.ID))
+	if label == "" {
+		return true
+	}
+	normalized := strings.ToLower(label)
+	generic := []string{
+		"minimax",
+		"minimax-prod",
+		"minimax-api",
+		strings.ToLower(strings.TrimSpace(registration.Identity.ProviderType)),
+		strings.ToLower(strings.TrimSpace(registration.Identity.ProviderInstanceID)),
+	}
+	for _, candidate := range generic {
+		if candidate != "" && normalized == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func remainingPct(used, limit int64) float64 {
+	if limit <= 0 {
+		return 0
+	}
+	pct := 100 - (float64(used)/float64(limit))*100
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+func unixMilliUTC(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
+}
+
+func joinProviderUsageSources(left, right string) string {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" {
+		return right
+	}
+	if right == "" || left == right || strings.Contains(left, right) {
+		return left
+	}
+	return left + "+" + right
+}
+
+func removeProviderUsageSource(source string, remove string) string {
+	source = strings.TrimSpace(source)
+	remove = strings.TrimSpace(remove)
+	if source == "" || remove == "" {
+		return source
+	}
+	parts := strings.Split(source, "+")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == remove {
+			continue
+		}
+		out = append(out, part)
+	}
+	return strings.Join(out, "+")
+}
+
+func (p *Provider) refreshGitHubCopilotAccount() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var status copilotAuthStatusResponse
+	if err := p.doGETJSON(ctx, "/v1/auth/status", &status); err != nil {
+		return
+	}
+	p.authMu.Lock()
+	defer p.authMu.Unlock()
+	p.auth.SelectedSource = "copilot-auth-status"
+	if !status.IsAuthenticated {
+		p.auth.Status = provider.AuthUnavailable
+		p.auth.LastRefreshErr = strings.TrimSpace(status.StatusMessage)
+		return
+	}
+	p.auth.Status = provider.AuthHealthy
+	p.auth.LastRefreshErr = ""
+	login := strings.TrimSpace(status.Login)
+	if login == "" {
+		login = strings.TrimSpace(status.StatusMessage)
+	}
+	if login != "" {
+		p.auth.Account.ID = login
+		p.auth.Account.Display = login
+		p.registration.Identity.Account.ID = login
+		p.registration.Identity.Account.Display = login
+	}
+	if subscription := subscriptionFromGitHubCopilotStatus(status); subscription != nil {
+		p.auth.Subscription = mergeProviderSubscription(p.auth.Subscription, subscription)
+	}
+}
+
 func (p *Provider) refreshAntigravityAccount() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	var account antigravityAccountResponse
-	if err := p.doGETJSON(ctx, "/v1/account", &account); err != nil {
-		return
-	}
-	if isAntigravityFallbackAccount(account) {
+	account, err := p.fetchAntigravityAccount(ctx)
+	if err != nil {
 		return
 	}
 	p.authMu.Lock()
@@ -540,6 +1042,38 @@ func subscriptionFromAntigravityAccount(account antigravityAccountResponse) *pro
 		Source: "antigravity-account",
 	}
 	if info.Tier == "" && info.Name == "" && info.Status == "" && info.PaidTier == "" {
+		return nil
+	}
+	return &info
+}
+
+func subscriptionFromGitHubCopilotStatus(status copilotAuthStatusResponse) *provider.SubscriptionInfo {
+	if status.Subscription != nil && *status.Subscription != (provider.SubscriptionInfo{}) {
+		info := *status.Subscription
+		if info.Source == "" {
+			info.Source = "copilot-auth-status"
+		}
+		return &info
+	}
+	var planName string
+	if status.PlanStatus != nil && status.PlanStatus.PlanInfo != nil {
+		planName = strings.TrimSpace(status.PlanStatus.PlanInfo.PlanName)
+	}
+	var tierName, tierID, tierStatus string
+	if status.UserTier != nil {
+		tierName = strings.TrimSpace(status.UserTier.Name)
+		tierID = strings.TrimSpace(status.UserTier.ID)
+		tierStatus = strings.TrimSpace(status.UserTier.UpgradeSubscriptionText)
+	}
+	info := provider.SubscriptionInfo{
+		Tier:          firstNonEmpty(status.SKU, status.Plan, status.SubscriptionTier, status.SubscriptionType, tierName, tierID, planName, status.PlanName, status.BillingPlan),
+		Name:          firstNonEmpty(status.PlanName, tierName, planName, status.Plan, status.SubscriptionTier, status.SubscriptionType, status.SKU),
+		Status:        tierStatus,
+		PaidTier:      strings.TrimSpace(status.PaidTier),
+		RateLimitTier: strings.TrimSpace(status.RateLimitTier),
+		Source:        "copilot-auth-status",
+	}
+	if info.Tier == "" && info.Name == "" && info.Status == "" && info.PaidTier == "" && info.RateLimitTier == "" {
 		return nil
 	}
 	return &info
@@ -766,6 +1300,7 @@ func (p *Provider) invokeAnthropicStream(ctx context.Context, request compat.Req
 	if err != nil {
 		return compat.Response{}, err
 	}
+	p.adjustAnthropicUpstreamRequest(&upstreamRequest)
 	upstreamRequest.Stream = true
 	resp, err := p.doRequest(ctx, http.MethodPost, "/v1/messages", upstreamRequest, "text/event-stream")
 	if err != nil {
@@ -898,6 +1433,7 @@ func (p *Provider) invokeAnthropic(ctx context.Context, request compat.Request) 
 	if err != nil {
 		return compat.Response{}, err
 	}
+	p.adjustAnthropicUpstreamRequest(&upstreamRequest)
 	upstreamRequest.Stream = false
 	var upstreamResponse compat.AnthropicMessagesResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/messages", upstreamRequest, &upstreamResponse); err != nil {
@@ -912,6 +1448,21 @@ func (p *Provider) invokeAnthropic(ctx context.Context, request compat.Request) 
 	}
 	response.Dialect = request.Dialect
 	return response, nil
+}
+
+const miniMAXM2MinimumTextOutputTokens = 128
+
+func (p *Provider) adjustAnthropicUpstreamRequest(request *compat.AnthropicMessagesRequest) {
+	if p == nil || request == nil || p.registration.Identity.Service != provider.ServiceMiniMAX {
+		return
+	}
+	model := strings.ToLower(strings.TrimSpace(request.Model))
+	if !strings.HasPrefix(model, "minimax-m2") {
+		return
+	}
+	if request.MaxTokens > 0 && request.MaxTokens < miniMAXM2MinimumTextOutputTokens {
+		request.MaxTokens = miniMAXM2MinimumTextOutputTokens
+	}
 }
 
 func (p *Provider) invokeGemini(ctx context.Context, request compat.Request) (compat.Response, error) {
@@ -1296,6 +1847,31 @@ func (p *Provider) endpoint(path string, apiKey string) string {
 	} else {
 		u.Path = basePath + pathOnly
 	}
+	if hasQuery {
+		u.RawQuery = rawQuery
+	}
+	if apiKey != "" && p.apiKeyMode == "query" {
+		q := u.Query()
+		q.Set(p.apiKeyQueryParam, apiKey)
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
+}
+
+func (p *Provider) rootEndpoint(path string, apiKey string) string {
+	u := *p.baseURL
+	u.Path = ""
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	pathOnly, rawQuery, hasQuery := strings.Cut(path, "?")
+	if pathOnly == "" {
+		pathOnly = "/"
+	}
+	if !strings.HasPrefix(pathOnly, "/") {
+		pathOnly = "/" + pathOnly
+	}
+	u.Path = pathOnly
 	if hasQuery {
 		u.RawQuery = rawQuery
 	}

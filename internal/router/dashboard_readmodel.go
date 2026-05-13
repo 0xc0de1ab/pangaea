@@ -920,10 +920,7 @@ func freshnessAt(now time.Time, source string, at time.Time, staleAfter time.Dur
 }
 
 func accountWithFallback(primary provider.Account, fallback provider.Account) provider.Account {
-	if primary.ID != "" || primary.Display != "" {
-		return primary
-	}
-	return fallback
+	return primary.MergeMissingFrom(fallback)
 }
 
 func providerModels(engine *Engine, registration provider.Registration) []provider.Model {

@@ -539,10 +539,13 @@ func TestBuildSidecarProviderForGitHubCopilot(t *testing.T) {
 	if registration.Identity.Kind != provider.KindSidecar || registration.Identity.Service != provider.ServiceGitHubCopilot {
 		t.Fatalf("unexpected registration identity: %#v", registration.Identity)
 	}
-	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityCodeCompletion, provider.CapabilityAgentWorkspaceRead} {
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent, provider.CapabilityCodeCompletion} {
 		if !hasCapability(registration.Capabilities, capability) {
 			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
 		}
+	}
+	if hasCapability(registration.Capabilities, provider.CapabilityAgentWorkspaceRead) {
+		t.Fatalf("github copilot sidecar should not advertise workspace read by default: %v", registration.Capabilities)
 	}
 }
 

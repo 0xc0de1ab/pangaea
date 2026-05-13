@@ -11,7 +11,6 @@ import (
 
 	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
-	"github.com/gorilla/websocket"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -100,7 +99,7 @@ func runAPICompatibleShimSession(ctx context.Context, opts APICompatibleShimOpti
 	eg.Go(func() error {
 		authSnapshotReporter, _ := opts.Provider.(authSnapshotReporter)
 		authPushApplier, _ := opts.Provider.(authPushApplier)
-		return RunStaticControlClient(ctx, StaticControlClientOptions{
+		if err := RunStaticControlClient(ctx, StaticControlClientOptions{
 			ControlURL:            opts.ControlURL,
 			PeerToken:             opts.PeerToken,
 			HeartbeatInterval:     opts.HeartbeatInterval,
@@ -115,15 +114,25 @@ func runAPICompatibleShimSession(ctx context.Context, opts APICompatibleShimOpti
 			AuthRefresher:         opts.AuthRefresher,
 			AutoRefreshThreshold:  opts.AutoRefreshThreshold,
 			AutoRefreshCooldown:   opts.AutoRefreshCooldown,
-		})
+		}); err != nil {
+			err = fmt.Errorf("control ws: %w", err)
+			_, _ = fmt.Fprintf(os.Stderr, "provider shim control session ended: %v\n", err)
+			return err
+		}
+		return nil
 	})
 	eg.Go(func() error {
-		return RunSimulatorDataClient(ctx, DataClientOptions{
+		if err := RunSimulatorDataClient(ctx, DataClientOptions{
 			DataURL:   dataURL,
 			PeerToken: opts.PeerToken,
 			TokenKey:  opts.TokenKey,
 			Provider:  opts.Provider,
-		})
+		}); err != nil {
+			err = fmt.Errorf("data ws: %w", err)
+			_, _ = fmt.Fprintf(os.Stderr, "provider shim data session ended: %v\n", err)
+			return err
+		}
+		return nil
 	})
 	return eg.Wait()
 }
@@ -200,7 +209,7 @@ func RunStaticControlClient(ctx context.Context, opts StaticControlClientOptions
 	refreshStaticModels(ctx, state, opts.ModelReporter)
 	refreshStaticHealth(ctx, state, opts.HealthReporter)
 	refreshStaticAuth(ctx, state, opts.AuthReporter)
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
+	conn, _, err := routerWebSocketDialer().DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		return err
 	}
@@ -314,6 +323,7 @@ func (s *staticControlState) setAuth(auth provider.AuthState) provider.Registrat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registration.Auth = auth
+	s.registration.Identity.Account = s.registration.Identity.Account.MergeMissingFrom(auth.Account)
 	return s.registration
 }
 
@@ -340,6 +350,7 @@ func (s *staticControlState) setAuthFromReporter(auth provider.AuthState) provid
 		return s.registration
 	}
 	s.registration.Auth = auth
+	s.registration.Identity.Account = s.registration.Identity.Account.MergeMissingFrom(auth.Account)
 	return s.registration
 }
 

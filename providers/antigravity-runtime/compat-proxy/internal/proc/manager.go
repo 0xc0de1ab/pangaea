@@ -129,22 +129,18 @@ func (pm *ProcessManager) Start() error {
 	pm.coreCmd.Stdout = os.Stdout
 	pm.coreCmd.Stderr = os.Stderr
 
-	var metadataStdin io.WriteCloser
-	var metadataPayload []byte
-	if pm.auth != nil {
-		token, err := pm.auth.GetLatestToken()
-		if err == nil && strings.TrimSpace(token) != "" {
-			stdin, err := pm.coreCmd.StdinPipe()
-			if err != nil {
-				pm.serverCmd.Process.Kill()
-				return fmt.Errorf("failed to open ls_core stdin: %w", err)
-			}
-			metadataStdin = stdin
-			metadataPayload = extserver.EncodeCodeiumMetadataForProcess(token)
-		} else if err != nil {
-			fmt.Printf("Warning: failed to load Antigravity token for ls_core metadata: %v\n", err)
-		}
+	token, err := pm.waitForAuthToken(10*time.Second, 250*time.Millisecond)
+	if err != nil {
+		pm.serverCmd.Process.Kill()
+		return fmt.Errorf("failed to load Antigravity token for ls_core metadata: %w", err)
 	}
+	stdin, err := pm.coreCmd.StdinPipe()
+	if err != nil {
+		pm.serverCmd.Process.Kill()
+		return fmt.Errorf("failed to open ls_core stdin: %w", err)
+	}
+	var metadataStdin io.WriteCloser = stdin
+	metadataPayload := extserver.EncodeCodeiumMetadataForProcess(token)
 
 	if err := pm.coreCmd.Start(); err != nil {
 		// Cleanup server if core fails
@@ -160,6 +156,29 @@ func (pm *ProcessManager) Start() error {
 
 	fmt.Printf("Processes started: antigravity-server (pid %d), ls_core (pid %d, extension server port %s)\n", pm.serverCmd.Process.Pid, pm.coreCmd.Process.Pid, pm.extServerPort)
 	return nil
+}
+
+func (pm *ProcessManager) waitForAuthToken(timeout time.Duration, interval time.Duration) (string, error) {
+	if pm.auth == nil {
+		return "", fmt.Errorf("auth provider is not configured")
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		token, err := pm.auth.GetLatestToken()
+		if err == nil && strings.TrimSpace(token) != "" {
+			return strings.TrimSpace(token), nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("empty token")
+		}
+		if time.Now().After(deadline) {
+			return "", lastErr
+		}
+		time.Sleep(interval)
+	}
 }
 
 func (pm *ProcessManager) Stop() error {

@@ -249,6 +249,8 @@ export type RouteRequest = {
   tenant_id?: string;
   user_id?: string;
   api_key_id?: string;
+  provider_instance_id?: string;
+  provider_type?: string;
   model: string;
   api_dialect: "openai" | "anthropic" | "gemini" | string;
   stream?: boolean;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Bot, Braces, Clipboard, ListChecks, MessageSquare, Radio, RefreshCw, Sparkles, X, type LucideIcon } from "lucide-react";
-import { ServiceIcon } from "../components/ServiceIcon";
+import { Activity, Braces, Clipboard, ListChecks, Radio, RefreshCw, X, type LucideIcon } from "lucide-react";
+import { ProtocolIcon, ServiceIcon } from "../components/ServiceIcon";
 import { api } from "../lib/api";
 import { providerAccountLabel, providerInstanceID } from "../lib/derive";
 import { copyText, cx, fmtTime, middleEllipsis, n } from "../lib/format";
@@ -32,7 +32,6 @@ type ModelRow = {
   contextTokens?: number;
   maxContextTokens?: number;
   maxOutputTokens?: number;
-  quota?: ProviderModel["quota"];
 };
 
 type ModelAlias = {
@@ -128,10 +127,10 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
 
   const modelRows = useMemo(() => {
     if (!activeTarget || activeTarget.kind !== "models") return [];
-    return normalizeModelRows(activeTarget.endpoint, activeTarget.provider.models ?? [], state.rawModels);
+    return normalizeModelRows(activeTarget.endpoint, activeTarget.provider, state.rawModels);
   }, [activeTarget, state.rawModels]);
 
-  const usageRows = useMemo(() => normalizeUsageRows(state.usage ?? activeTarget?.usage, activeTarget?.provider.models ?? []), [activeTarget?.provider.models, activeTarget?.usage, state.usage]);
+  const usageRows = useMemo(() => normalizeUsageRows(state.usage ?? activeTarget?.usage), [activeTarget?.usage, state.usage]);
 
   if (!activeTarget) {
     return null;
@@ -152,7 +151,11 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
       <aside className="chat-workbench data-workbench" aria-label={`${workbenchLabel} ${title.toLowerCase()}`}>
         <div className="chat-header">
           <div className="chat-title-row">
-            <ServiceIcon service={endpoint?.protocol ?? service} size={30} label={endpoint?.protocolLabel ?? serviceName} />
+            {endpoint ? (
+              <ProtocolIcon protocol={endpoint.protocol} size={30} label={`${endpoint.protocolLabel} API via ${endpoint.label}`} />
+            ) : (
+              <ServiceIcon service={service} size={30} label={serviceName} />
+            )}
             <div>
               <h2>{workbenchLabel} {title}</h2>
               <p>
@@ -186,26 +189,20 @@ export function EndpointDataWorkbench({ target, token, onClose }: EndpointDataWo
 
         <div className="data-workbench-body">
           {state.error ? <div className="inline-error endpoint-error">{state.error}</div> : null}
-          {activeTarget.kind === "models" ? <ModelsTable rows={modelRows} loading={state.loading} showQuota={shouldShowModelQuota(provider)} /> : <UsageTable snapshot={state.usage ?? activeTarget.usage} rows={usageRows} loading={state.loading} now={clock} scopeKey={targetKey} />}
+          {activeTarget.kind === "models" ? <ModelsTable rows={modelRows} loading={state.loading} /> : <UsageTable snapshot={state.usage ?? activeTarget.usage} rows={usageRows} loading={state.loading} now={clock} scopeKey={targetKey} />}
         </div>
       </aside>
     </div>
   );
 }
 
-function shouldShowModelQuota(provider: ProviderRegistration) {
-  const service = provider.identity.service.trim().toLowerCase();
-  const providerType = provider.identity.provider_type.trim().toLowerCase();
-  return service !== "antigravity" && service !== "antigravity-sidecar" && providerType !== "antigravity-sidecar";
-}
-
-function ModelsTable({ rows, loading, showQuota }: { rows: ModelRow[]; loading: boolean; showQuota: boolean }) {
+function ModelsTable({ rows, loading }: { rows: ModelRow[]; loading: boolean }) {
   if (!loading && rows.length === 0) {
     return <div className="chat-empty">No models reported</div>;
   }
   return (
     <div className="workbench-table-frame">
-      <table className={cx("workbench-table models-table", !showQuota && "models-table-no-quota")}>
+      <table className="workbench-table models-table">
         <thead>
           <tr>
             <th>Model</th>
@@ -214,7 +211,6 @@ function ModelsTable({ rows, loading, showQuota }: { rows: ModelRow[]; loading: 
             <th>Capabilities</th>
             <th>Context</th>
             <th>Output</th>
-            {showQuota ? <th>Quota</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -223,6 +219,7 @@ function ModelsTable({ rows, loading, showQuota }: { rows: ModelRow[]; loading: 
               <td>
                 <span className="model-name-line">
                   {isGroupModel(row) ? <span className="model-group-badge" title="Group model">G</span> : null}
+                  {isAliasModel(row) ? <span className="model-alias-badge" title="Alias model">A</span> : null}
                   <strong className="mono">{row.id}</strong>
                 </span>
                 {row.display && row.display !== row.id ? <span className="table-subtext">{row.display}</span> : null}
@@ -237,27 +234,10 @@ function ModelsTable({ rows, loading, showQuota }: { rows: ModelRow[]; loading: 
               <td className="numeric mono" title={outputLimitTitle(row.maxOutputTokens)}>
                 {formatTokenWindow(row.maxOutputTokens)}
               </td>
-              {showQuota ? <td><ModelQuotaCell quota={row.quota} /></td> : null}
             </tr>
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function ModelQuotaCell({ quota }: { quota?: ProviderModel["quota"] }) {
-  if (!quota || quota.remaining_pct === undefined) {
-    return <span className="muted">-</span>;
-  }
-  const remaining = clampPercent(quota.remaining_pct);
-  return (
-    <div className="model-quota-cell" title={quota.source || undefined}>
-      <div className="usage-progress" aria-label={`${Math.round(remaining)} percent remaining`}>
-        <span className={progressTone(remaining)} style={{ width: `${remaining}%` }} />
-      </div>
-      <strong>{formatPercent(remaining)}</strong>
-      {quota.reset_at ? <span>{formatTimeLeft(quota.reset_at, Date.now())}</span> : null}
     </div>
   );
 }
@@ -289,7 +269,7 @@ function CapabilityIcons({ capabilities }: { capabilities: string[] }) {
         const Icon = meta.icon;
         return (
           <span className={cx("capability-icon", meta.tone)} key={capability} title={meta.label} aria-label={meta.label}>
-            <Icon aria-hidden="true" size={14} strokeWidth={2.15} />
+            {meta.protocol ? <ProtocolIcon protocol={meta.protocol} size={15} label={meta.label} /> : <Icon aria-hidden="true" size={14} strokeWidth={2.15} />}
           </span>
         );
       })}
@@ -541,28 +521,31 @@ function modelsForProtocol(protocol: ProviderProtocol, token?: string) {
   }
 }
 
-function normalizeModelRows(endpoint: ServiceEndpoint | undefined, providerModels: ProviderModel[], rawModels: unknown): ModelRow[] {
+function normalizeModelRows(endpoint: ServiceEndpoint | undefined, provider: ProviderRegistration, rawModels: unknown): ModelRow[] {
   const rows = new Map<string, ModelRow>();
-  const rawRows = normalizeRawModelRows(endpoint, rawModels);
+  const providerModels = provider.models ?? [];
+  const service = provider.identity.service;
+  const rawRows = normalizeRawModelRows(endpoint, service, rawModels);
   const rawByID = new Map(rawRows.map((row) => [row.id, row]));
   const publicModelIDs = new Set(rawRows.map((row) => row.id).filter(Boolean));
   const protocol = endpoint?.protocol ?? "provider";
   const protocolLabel = endpoint?.protocolLabel ?? "Provider";
+  const providerModelIDs = providerModels.map((model) => model.id).filter((id) => id && !isProviderAutoGroupModel(service, id));
   for (const model of providerModels) {
     const raw = rawByID.get(model.id);
     const key = `${protocol}:${model.id}`;
+    const isAutoGroup = isProviderAutoGroupModel(service, model.id);
     rows.set(key, {
       id: model.id,
-      display: raw?.display,
-      kind: model.kind,
-      groupMembers: model.group_members,
+      display: modelDisplayName(model.id, model.aliases, raw?.display),
+      kind: isAutoGroup && !model.kind ? "group" : model.kind,
+      groupMembers: model.group_members?.length ? model.group_members : isAutoGroup ? providerModelIDs : undefined,
       aliases: normalizeModelAliases(model.id, model.aliases ?? [], publicModelIDs),
       protocol: protocolLabel,
       capabilities: model.capabilities ?? [],
       contextTokens: model.context_tokens,
       maxContextTokens: model.max_context_tokens,
       maxOutputTokens: model.max_output_tokens ?? raw?.maxOutputTokens,
-      quota: model.quota,
     });
   }
   if (rows.size > 0) {
@@ -577,6 +560,10 @@ function normalizeModelRows(endpoint: ServiceEndpoint | undefined, providerModel
 
 function isGroupModel(model: Pick<ModelRow, "kind" | "groupMembers">) {
   return model.kind === "group" || Boolean(model.groupMembers?.length);
+}
+
+function isAliasModel(model: Pick<ModelRow, "id" | "kind">) {
+  return model.kind === "alias" || model.id === "antigravity-default";
 }
 
 function normalizeModelAliases(modelID: string, aliases: string[], publicModelIDs: Set<string>): ModelAlias[] {
@@ -596,7 +583,7 @@ function normalizeModelAliases(modelID: string, aliases: string[], publicModelID
   return out;
 }
 
-function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, rawModels: unknown): ModelRow[] {
+function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, service: string, rawModels: unknown): ModelRow[] {
   if (!endpoint) return [];
   const root = asRecord(rawModels);
   if (!root) return [];
@@ -604,9 +591,10 @@ function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, rawModels:
     return asArray(root.models).map((item) => {
       const record = asRecord(item) ?? {};
       const name = stringValue(record.name);
+      const id = name.replace(/^models\//, "") || name;
       return {
-        id: name.replace(/^models\//, "") || name,
-        display: stringValue(record.displayName) || name,
+        id,
+        display: modelDisplayName(id, [], stringValue(record.displayName) || name),
         protocol: endpoint.protocolLabel,
         capabilities: asArray(record.supportedGenerationMethods).map((value) => String(value)),
         contextTokens: numberValue(record.inputTokenLimit),
@@ -617,12 +605,53 @@ function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, rawModels:
   }
   return asArray(root.data).map((item) => {
     const record = asRecord(item) ?? {};
+    const id = stringValue(record.id);
+    const isAutoGroup = isProviderAutoGroupModel(service, id);
     return {
-      id: stringValue(record.id),
-      display: stringValue(record.display_name) || stringValue(record.id),
+      id,
+      display: stringValue(record.display_name) || id,
+      kind: isAutoGroup ? "group" : undefined,
       protocol: endpoint.protocolLabel,
     };
   }).filter((row) => row.id);
+}
+
+function modelDisplayName(modelID: string, aliases: string[] = [], rawDisplay?: string) {
+  const gemini = geminiCLIModelLabel(modelID);
+  if (gemini) {
+    return gemini;
+  }
+  const providerAlias = aliases.find((alias) => /\s/.test(alias.trim()) && alias.trim() !== modelID);
+  return providerAlias || rawDisplay;
+}
+
+function geminiCLIModelLabel(modelID: string) {
+  const id = modelID.trim().toLowerCase();
+  if (id === "auto-gemini-3") return "Auto (Gemini 3)";
+  if (id === "auto-gemini-2.5") return "Auto (Gemini 2.5)";
+  if (!id.startsWith("gemini-")) return "";
+  if (id.includes("flash-lite")) return "Flash Lite";
+  if (id.includes("flash")) return "Flash";
+  if (id.includes("pro")) return "Pro";
+  return "";
+}
+
+function isProviderAutoGroupModel(service: string | undefined, modelID: string | undefined) {
+  if ((modelID ?? "").trim().toLowerCase() !== "auto") {
+    return false;
+  }
+  const key = (service ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  return [
+    "github-copilot",
+    "github-copilot-sidecar",
+    "github-copilot-acp",
+    "github-copilot-sdk",
+    "githubcopilot",
+    "copilot",
+    "copilot-sidecar",
+    "copilot-acp",
+    "copilot-sdk",
+  ].includes(key);
 }
 
 function uniqueStrings(values: string[]) {
@@ -639,16 +668,16 @@ function uniqueStrings(values: string[]) {
   return out;
 }
 
-function capabilityMeta(capability: string): { label: string; icon: LucideIcon; tone: string } {
+function capabilityMeta(capability: string): { label: string; icon: LucideIcon; tone: string; protocol?: ProviderProtocol } {
   switch (capability) {
     case "api.openai.chat":
-      return { label: "OpenAI Chat", icon: MessageSquare, tone: "openai" };
+      return { label: "OpenAI Chat", icon: Braces, tone: "openai", protocol: "openai" };
     case "api.openai.responses":
-      return { label: "OpenAI Responses", icon: Bot, tone: "openai" };
+      return { label: "OpenAI Responses", icon: Braces, tone: "openai", protocol: "openai" };
     case "api.anthropic.messages":
-      return { label: "Anthropic Messages", icon: Braces, tone: "anthropic" };
+      return { label: "Anthropic Messages", icon: Braces, tone: "anthropic", protocol: "anthropic" };
     case "api.gemini.generateContent":
-      return { label: "Gemini Generate Content", icon: Sparkles, tone: "gemini" };
+      return { label: "Gemini Generate Content", icon: Braces, tone: "gemini", protocol: "gemini" };
     case "stream.sse":
       return { label: "SSE Streaming", icon: Radio, tone: "stream" };
     case "models.read":
@@ -660,7 +689,7 @@ function capabilityMeta(capability: string): { label: string; icon: LucideIcon; 
   }
 }
 
-function normalizeUsageRows(snapshot?: ProviderUsageSnapshot, providerModels: ProviderModel[] = []): UsageWindowRow[] {
+function normalizeUsageRows(snapshot?: ProviderUsageSnapshot): UsageWindowRow[] {
   const native = asRecord(snapshot?.usage?.native_summary);
   const rows: UsageWindowRow[] = [];
   if (native) {
@@ -670,19 +699,7 @@ function normalizeUsageRows(snapshot?: ProviderUsageSnapshot, providerModels: Pr
       rows.unshift(summary);
     }
   }
-  rows.push(...modelQuotaUsageRows(providerModels));
   return rows;
-}
-
-function modelQuotaUsageRows(models: ProviderModel[]): UsageWindowRow[] {
-  return models
-    .filter((model) => model.quota && model.quota.remaining_pct !== undefined)
-    .map((model) => ({
-      label: model.aliases?.[0] || model.id,
-      remainingPct: model.quota?.remaining_pct,
-      unit: "model quota",
-      resetAt: model.quota?.reset_at,
-    }));
 }
 
 function duplicateUsageWindow(left: UsageWindowRow, right: UsageWindowRow) {

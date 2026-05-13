@@ -19,7 +19,13 @@ export STATE_VSCDB_PATH="${STATE_VSCDB_PATH:-/var/lib/antigravity/state/User/glo
 export VSCDB_PATH="${VSCDB_PATH:-${STATE_VSCDB_PATH}}"
 export PATH="${ANTIGRAVITY_SERVER_DIR}:${PATH}"
 
-mkdir -p "$(dirname "${STATE_VSCDB_PATH}")" "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/globalStorage"
+mkdir -p \
+  "$(dirname "${STATE_VSCDB_PATH}")" \
+  "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/globalStorage" \
+  "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/History" \
+  "${HOME:-/root}/.antigravity-server/extensions" \
+  "${HOME:-/root}/.antigravity-server/data/User/globalStorage" \
+  "${HOME:-/root}/.antigravity-server/data/User/History"
 
 if [ "$#" -eq 0 ]; then
   set -- serve --proxy-addr 0.0.0.0:8080 --db-path "${STATE_VSCDB_PATH}"

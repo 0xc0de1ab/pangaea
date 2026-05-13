@@ -19,6 +19,9 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/codexprovider"
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/control"
+	"github.com/0xc0de1ab/pangaea/internal/copilotacp"
+	"github.com/0xc0de1ab/pangaea/internal/cursoracp"
+	"github.com/0xc0de1ab/pangaea/internal/cursordirect"
 	"github.com/0xc0de1ab/pangaea/internal/geminidirect"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providershim"
@@ -135,6 +138,12 @@ func DefaultRegistry() *Registry {
 			BuildCLIContainerAdapter: buildGeminiCLIContainerAdapter,
 		},
 		Definition{
+			Service:                  provider.ServiceCursor,
+			DefaultAuthFormat:        "cursor-auth-json-format",
+			NormalizeCLIAdapter:      normalizeCursorCLIAdapter,
+			BuildCLIContainerAdapter: buildCursorCLIContainerAdapter,
+		},
+		Definition{
 			Service:           provider.ServiceAntigravity,
 			DefaultAuthFormat: "antigravity-state-vscdb-format",
 			SidecarCapabilities: []provider.Capability{
@@ -145,10 +154,14 @@ func DefaultRegistry() *Registry {
 			},
 		},
 		Definition{
-			Service: provider.ServiceGitHubCopilot,
+			Service:                  provider.ServiceGitHubCopilot,
+			DefaultAuthFormat:        "github-copilot-config-json-format",
+			NormalizeCLIAdapter:      normalizeGitHubCopilotCLIAdapter,
+			BuildCLIContainerAdapter: buildGitHubCopilotCLIContainerAdapter,
 			SidecarCapabilities: []provider.Capability{
+				provider.CapabilityAnthropicMessages,
+				provider.CapabilityGeminiGenerateContent,
 				provider.CapabilityCodeCompletion,
-				provider.CapabilityAgentWorkspaceRead,
 			},
 		},
 	)
@@ -426,8 +439,20 @@ func adapterFromProviderMode(cfg Config) (string, bool, error) {
 			return "", true, fmt.Errorf("--provider-mode app-server is currently supported only for service codex")
 		}
 		return "codex-websocket", true, nil
+	case "sdk":
+		if provider.Service(cfg.Service) != provider.ServiceGitHubCopilot {
+			return "", true, fmt.Errorf("--provider-mode sdk is only supported for service=github-copilot")
+		}
+		return "copilot-sdk", true, nil
 	case "acp":
-		return "", true, fmt.Errorf("--provider-mode acp is not implemented yet")
+		switch provider.Service(cfg.Service) {
+		case provider.ServiceCursor:
+			return "cursor-acp", true, nil
+		case provider.ServiceGitHubCopilot:
+			return "copilot-acp", true, nil
+		default:
+			return "", true, fmt.Errorf("--provider-mode acp is only supported for service=cursor or service=github-copilot")
+		}
 	case "ls-core-sidecar":
 		return "", true, fmt.Errorf("--provider-mode ls-core-sidecar is not implemented by provider-shim yet")
 	default:
@@ -493,6 +518,67 @@ func buildGeminiCLIContainerAdapter(_ context.Context, buildCtx BuildContext, ad
 		MaxToolRounds:  cfg.MCPToolRounds,
 	})
 	return geminiProvider, true, err
+}
+
+func normalizeGitHubCopilotCLIAdapter(cfg Config) (string, error) {
+	if adapter, ok, err := adapterFromProviderMode(cfg); ok || err != nil {
+		return adapter, err
+	}
+	return "copilot-acp", nil
+}
+
+func buildGitHubCopilotCLIContainerAdapter(_ context.Context, buildCtx BuildContext, adapter string) (providershim.APICompatibleProvider, bool, error) {
+	cfg := buildCtx.Config
+	switch adapter {
+	case "copilot-acp":
+		registration, err := buildProviderRegistrationWithoutUpstream(cfg, provider.KindCLIContainer, buildCtx.Auth, buildCtx.ExtraCapabilities)
+		if err != nil {
+			return nil, true, err
+		}
+		p, err := copilotacp.New(copilotacp.Options{Registration: registration})
+		return p, true, err
+	case "copilot-sdk":
+		return nil, true, fmt.Errorf("--provider-mode sdk requires --sidecar for service=github-copilot")
+	default:
+		return nil, false, nil
+	}
+}
+
+func normalizeCursorCLIAdapter(cfg Config) (string, error) {
+	if adapter, ok, err := adapterFromProviderMode(cfg); ok || err != nil {
+		return adapter, err
+	}
+	return "cursor-acp", nil
+}
+
+func buildCursorCLIContainerAdapter(_ context.Context, buildCtx BuildContext, adapter string) (providershim.APICompatibleProvider, bool, error) {
+	cfg := buildCtx.Config
+	switch adapter {
+	case "direct-http":
+		registration, err := buildProviderRegistrationWithoutUpstream(cfg, provider.KindCLIContainer, buildCtx.Auth, buildCtx.ExtraCapabilities)
+		if err != nil {
+			return nil, true, err
+		}
+		p, err := cursordirect.New(cursordirect.Options{
+			Registration: registration,
+			BaseURL:      cfg.UpstreamBaseURL,
+			AuthPath:     cfg.AuthPath,
+			APIKey:       cfg.UpstreamAPIKey,
+		})
+		return p, true, err
+	case "cursor-acp":
+		registration, err := buildProviderRegistrationWithoutUpstream(cfg, provider.KindCLIContainer, buildCtx.Auth, buildCtx.ExtraCapabilities)
+		if err != nil {
+			return nil, true, err
+		}
+		p, err := cursoracp.New(cursoracp.Options{
+			Registration:   registration,
+			MCPServersJSON: cfg.MCPServersJSON,
+		})
+		return p, true, err
+	default:
+		return nil, false, nil
+	}
 }
 
 func geminiMCPServersJSONFromSettings() string {
@@ -608,10 +694,12 @@ func buildProviderRegistrationWithOptions(cfg Config, kind provider.Kind, auth p
 	if err != nil {
 		return provider.Registration{}, err
 	}
+	capabilities = registrationServiceCapabilities(service, capabilities)
 	modelCapabilities, err := registrationModelCapabilities(cfg, capabilities)
 	if err != nil {
 		return provider.Registration{}, err
 	}
+	modelCapabilities = registrationServiceModelCapabilities(service, modelCapabilities)
 	account := auth.Account
 	if account.Display == "" {
 		account.Display = cfg.Account
@@ -682,6 +770,10 @@ func resolveTargetVersion(cfg Config, service provider.Service) string {
 		return detectCommandTargetVersion("gemini")
 	case provider.ServiceClaude:
 		return detectCommandTargetVersion("claude")
+	case provider.ServiceCursor:
+		return detectCommandTargetVersion("agent")
+	case provider.ServiceGitHubCopilot:
+		return detectCommandTargetVersion("copilot")
 	case provider.ServiceAntigravity:
 		if version := detectHTTPHealthTargetVersion(cfg.UpstreamBaseURL); version != "" {
 			return version
@@ -823,29 +915,33 @@ func applyKnownModelMetadata(service provider.Service, model *provider.Model) {
 }
 
 func defaultContextTokens(service provider.Service, model string) int {
-	if service != provider.ServiceGemini {
-		return 0
-	}
 	model = strings.ToLower(strings.TrimSpace(model))
-	switch {
-	case strings.Contains(model, "gemini-"):
-		return 1_048_576
-	default:
-		return 0
+	switch service {
+	case provider.ServiceGemini:
+		if strings.Contains(model, "gemini-") {
+			return 1_048_576
+		}
+	case provider.ServiceMiniMAX:
+		if strings.HasPrefix(model, "minimax-m2") {
+			return 204_800
+		}
 	}
+	return 0
 }
 
 func defaultOutputTokens(service provider.Service, model string) int {
-	if service != provider.ServiceGemini {
-		return 0
-	}
 	model = strings.ToLower(strings.TrimSpace(model))
-	switch {
-	case strings.Contains(model, "gemini-"):
-		return 65_536
-	default:
-		return 0
+	switch service {
+	case provider.ServiceGemini:
+		if strings.Contains(model, "gemini-") {
+			return 65_536
+		}
+	case provider.ServiceMiniMAX:
+		if strings.HasPrefix(model, "minimax-m2") {
+			return 2_048
+		}
 	}
+	return 0
 }
 
 func registrationCapabilities(cfg Config, defaultCapability provider.Capability, extraCapabilities []provider.Capability) ([]provider.Capability, error) {
@@ -886,6 +982,30 @@ func registrationModelCapabilities(cfg Config, registrationCapabilities []provid
 		}
 	}
 	return dedupeCapabilities(capabilities), nil
+}
+
+func registrationServiceCapabilities(service provider.Service, capabilities []provider.Capability) []provider.Capability {
+	switch service {
+	case provider.ServiceMiniMAX:
+		capabilities = append(capabilities,
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+		)
+	}
+	return dedupeCapabilities(capabilities)
+}
+
+func registrationServiceModelCapabilities(service provider.Service, capabilities []provider.Capability) []provider.Capability {
+	switch service {
+	case provider.ServiceMiniMAX:
+		capabilities = append(capabilities,
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+		)
+	}
+	return dedupeCapabilities(capabilities)
 }
 
 func isModelCapability(capability provider.Capability) bool {
@@ -1213,6 +1333,16 @@ func authFilenameForFormat(format string) string {
 		return "oauth_creds.json"
 	case "antigravity-state-vscdb-format":
 		return "state.vscdb"
+	case "github-copilot-apps-json-format":
+		return "apps.json"
+	case "github-copilot-config-json-format":
+		return "config.json"
+	case "cursor-auth-json-format":
+		return "auth.json"
+	case "cursor-cli-config-json-format":
+		return "cli-config.json"
+	case "cursor-api-token-plain-format":
+		return "api_token"
 	default:
 		return "auth.json"
 	}

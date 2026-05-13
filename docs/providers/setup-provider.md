@@ -25,7 +25,9 @@ host-native, Docker, Podman, kind, and Kubernetes targets.
   Codex Responses transport.
 - `cli-adapter`: invoke the provider CLI per request. This is the default for
   Claude and is also available for Gemini.
-- `acp`: reserved for Gemini ACP JSON-RPC transport.
+- `sdk`: use the GitHub Copilot SDK through a local OpenAI-compatible relay.
+  This is the default for GitHub Copilot.
+- `acp`: use GitHub Copilot CLI's ACP JSON-RPC transport.
 - `ls-core-sidecar`: reserved for Antigravity ls-core sidecar transport.
 
 ## Identity Rules
@@ -36,10 +38,11 @@ The command always separates host identity from container identity:
   It is optional; by default `setup-provider` reads the local OS hostname on
   the machine where the command runs.
 - `--node-id` is optional. If omitted, `setup-provider` creates a stable
-  six-character lower-case base36 id per provider instance. The generated id is
+  six-digit numeric id per provider instance. The generated id is
   stored under
   `~/.config/pangaea/setup-provider/<type>/<service>/<provider-instance>/runtime.json`
-  and reused on later setup runs.
+  and reused on later setup runs. Existing six-character lower-case base36 ids
+  remain accepted when already present in persisted runtime settings.
 - Docker/Podman setup injects `PANGAEA_CONTAINER_KIND` and the deterministic
   container name. The shim falls back to runtime `HOSTNAME` as container id
   when no explicit id is available.

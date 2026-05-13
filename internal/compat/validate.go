@@ -47,7 +47,7 @@ func (r Response) Validate() error {
 	if r.Message.Role != MessageRoleAssistant {
 		return ErrInvalidResponse
 	}
-	if err := validateMessage(r.Message, false); err != nil {
+	if err := validateResponseMessage(r.Message); err != nil {
 		return ErrInvalidResponse
 	}
 	if err := r.Usage.Validate(); err != nil {
@@ -226,6 +226,34 @@ func validateMessage(m Message, allowEmpty bool) error {
 	for _, toolCall := range m.ToolCalls {
 		if err := toolCall.Validate(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateResponseMessage(m Message) error {
+	if !m.Role.Valid() {
+		return ErrInvalidResponse
+	}
+	if len(m.Content) == 0 && len(m.ToolCalls) == 0 {
+		return ErrInvalidResponse
+	}
+	for _, part := range m.Content {
+		if !part.Type.Valid() {
+			return ErrInvalidResponse
+		}
+		if part.Type == ContentPartImage {
+			if blank(part.URL) && blank(part.Data) {
+				return ErrInvalidResponse
+			}
+			if !blank(part.MIME) && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(part.MIME)), "image/") {
+				return ErrInvalidResponse
+			}
+		}
+	}
+	for _, toolCall := range m.ToolCalls {
+		if err := toolCall.Validate(); err != nil {
+			return ErrInvalidResponse
 		}
 	}
 	return nil

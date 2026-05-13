@@ -33,6 +33,9 @@ func TestDashboardUIServesEmbeddedIndexWithSecurityHeaders(t *testing.T) {
 	if !strings.Contains(lowerCSP, "default-src") || !strings.Contains(lowerCSP, "'self'") {
 		t.Fatalf("expected CSP to restrict default sources to self, got %q", csp)
 	}
+	if !strings.Contains(lowerCSP, "img-src") || !strings.Contains(lowerCSP, "https://*.googleusercontent.com") {
+		t.Fatalf("expected CSP to allow Google OAuth profile images, got %q", csp)
+	}
 	if !dashboardUIBlocksFraming(rec.Header()) {
 		t.Fatalf("expected dashboard UI response to block framing, got X-Frame-Options=%q CSP=%q", rec.Header().Get("x-frame-options"), csp)
 	}

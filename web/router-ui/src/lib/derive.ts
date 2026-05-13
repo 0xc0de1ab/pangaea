@@ -16,7 +16,23 @@ export function providerInstanceID(provider: ProviderRegistration) {
 }
 
 export function providerAccount(provider: ProviderRegistration) {
-  return provider.identity.account?.display || provider.identity.account?.id ? provider.identity.account : provider.auth?.account;
+  const idAcc = provider.identity.account;
+  const authAcc = provider.auth?.account;
+  const display = trimAccountField(idAcc?.display) || trimAccountField(authAcc?.display);
+  const id = trimAccountField(idAcc?.id) || trimAccountField(authAcc?.id);
+  if (!display && !id) {
+    return undefined;
+  }
+  return {
+    ...(display ? { display } : {}),
+    ...(id ? { id } : {}),
+  };
+}
+
+function trimAccountField(value?: string) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return trimmed || "";
 }
 
 export function providerAccountLabel(provider: ProviderRegistration) {

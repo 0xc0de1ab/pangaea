@@ -223,6 +223,39 @@ func TestRoutingPolicyEvaluateAcceptsReportedModelAlias(t *testing.T) {
 	}
 }
 
+func TestRoutingPolicyEvaluateHonorsPinnedProviderInstance(t *testing.T) {
+	policy := RoutingPolicy{
+		Version: RoutingPolicyVersion,
+		ModelAliases: map[string]ModelAlias{
+			"github-copilot-default": {CanonicalModel: "auto"},
+		},
+		Routes: []Route{
+			{
+				ID:         "codex-openai",
+				Match:      RouteMatch{Models: []string{"codex-default"}, APIDialects: []compat.APIDialect{compat.APIDialectOpenAI}},
+				Candidates: []Candidate{{ProviderType: "codex-cli", Weight: 100}},
+			},
+		},
+	}
+	copilot := registration("github-copilot-130258", "github-copilot-sidecar", "copilot@example.test", 100, 0)
+	copilot.Identity.Service = provider.ServiceGitHubCopilot
+	copilot.Capabilities = []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}
+	copilot.Models = []provider.Model{{ID: "auto", Kind: "group", GroupMembers: []string{"gpt-5.2"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}}}
+
+	decision := policy.Evaluate(RouteRequest{
+		ProviderInstanceID: "github-copilot-130258",
+		Model:              "github-copilot-default",
+		APIDialect:         compat.APIDialectOpenAI,
+		Stream:             true,
+	}, []provider.Registration{copilot})
+	if !decision.Allowed || decision.Selected != "github-copilot-130258" || decision.CanonicalModel != "auto" {
+		t.Fatalf("expected pinned provider to route through auto model: %#v", decision)
+	}
+	if decision.RouteID != "provider:github-copilot-130258" {
+		t.Fatalf("expected provider-pinned route id, got %q", decision.RouteID)
+	}
+}
+
 func TestRoutingPolicyEvaluateUsesCanonicalModelPriorityList(t *testing.T) {
 	policy := RoutingPolicy{
 		Version: RoutingPolicyVersion,

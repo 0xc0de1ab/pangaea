@@ -96,7 +96,7 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 	if err != nil {
 		return err
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.DataURL, routerPeerDialHeader(opts.PeerToken))
+	conn, _, err := routerWebSocketDialer().DialContext(ctx, opts.DataURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil

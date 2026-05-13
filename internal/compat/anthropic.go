@@ -218,15 +218,32 @@ func AnthropicMessagesResponseFromCanonical(in Response) (AnthropicMessagesRespo
 }
 
 func AnthropicMessagesResponseToCanonical(in AnthropicMessagesResponse) (Response, error) {
-	raw, err := json.Marshal(in.Content)
-	if err != nil {
-		return Response{}, ErrInvalidResponse
+	content := make([]AnthropicContentBlock, 0, len(in.Content))
+	for _, block := range in.Content {
+		switch block.Type {
+		case "thinking", "redacted_thinking":
+			continue
+		default:
+			content = append(content, block)
+		}
 	}
-	messages, err := anthropicMessageToCanonical(AnthropicMessage{Role: in.Role, Content: raw})
-	if err != nil || len(messages) == 0 {
-		return Response{}, ErrInvalidResponse
+	if len(content) == 0 {
+		content = []AnthropicContentBlock{{Type: "text", Text: ""}}
 	}
-	message := messages[0]
+	message := Message{}
+	if len(content) == 1 && content[0].Type == "text" && content[0].Text == "" {
+		message = Message{Role: anthropicRoleToCanonical(in.Role), Content: []ContentPart{{Type: ContentPartText, Text: ""}}}
+	} else {
+		raw, err := json.Marshal(content)
+		if err != nil {
+			return Response{}, ErrInvalidResponse
+		}
+		messages, err := anthropicMessageToCanonical(AnthropicMessage{Role: in.Role, Content: raw})
+		if err != nil || len(messages) == 0 {
+			return Response{}, ErrInvalidResponse
+		}
+		message = messages[0]
+	}
 	message.Role = MessageRoleAssistant
 	total := in.Usage.InputTokens + in.Usage.OutputTokens
 	out := Response{

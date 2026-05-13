@@ -35,7 +35,7 @@ func RunSimulatorControlClient(ctx context.Context, opts ControlClientOptions) e
 		heartbeatInterval = 30 * time.Second
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
+	conn, _, err := routerWebSocketDialer().DialContext(ctx, opts.ControlURL, routerPeerDialHeader(opts.PeerToken))
 	if err != nil {
 		return err
 	}
@@ -111,7 +111,7 @@ func RegisterSimulatorOnceWithPeerToken(ctx context.Context, controlURL string, 
 	if controlURL == "" || sim == nil {
 		return fmt.Errorf("%w: control url and simulator are required", ErrShimConfig)
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, controlURL, routerPeerDialHeader(peerToken))
+	conn, _, err := routerWebSocketDialer().DialContext(ctx, controlURL, routerPeerDialHeader(peerToken))
 	if err != nil {
 		return err
 	}

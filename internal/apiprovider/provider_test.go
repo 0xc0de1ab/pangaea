@@ -14,6 +14,7 @@ import (
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 func TestProviderInvokeOpenAICompatibleUpstream(t *testing.T) {
@@ -164,8 +165,10 @@ func TestProviderDiscoversOpenAICompatibleModels(t *testing.T) {
 		case "/v1/models/status":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"gpt-upstream-a": map[string]any{
-					"label":     "GPT Upstream A",
-					"maxTokens": 128000,
+					"label":        "GPT Upstream A",
+					"kind":         "group",
+					"groupMembers": []string{"gpt-upstream-b"},
+					"maxTokens":    128000,
 					"quotaInfo": map[string]any{
 						"remainingFraction": 0.75,
 						"resetTime":         "2026-05-09T06:20:16Z",
@@ -208,6 +211,9 @@ func TestProviderDiscoversOpenAICompatibleModels(t *testing.T) {
 	}
 	if models[0].ContextTokens != 128000 || models[0].MaxContextTokens != 128000 {
 		t.Fatalf("expected context enrichment from model status: %#v", models[0])
+	}
+	if models[0].Kind != "group" || strings.Join(models[0].GroupMembers, ",") != "gpt-upstream-b" {
+		t.Fatalf("expected group metadata from model status: %#v", models[0])
 	}
 }
 
@@ -261,6 +267,187 @@ func TestProviderDiscoversAntigravitySubscription(t *testing.T) {
 	}
 	if auth.Subscription.Status != "You are subscribed to the best plan." {
 		t.Fatalf("unexpected subscription status: %#v", auth.Subscription)
+	}
+}
+
+func TestProviderDiscoversAntigravityUsageFromAccountQuota(t *testing.T) {
+	var sawAccount bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/account":
+			sawAccount = true
+			if r.Header.Get("authorization") != "Bearer sk_antigravity" {
+				t.Fatalf("missing auth header: %q", r.Header.Get("authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name":  "Dave Kam",
+				"email": "donghee.kam@gmail.com",
+				"planStatus": map[string]any{
+					"planInfo": map[string]any{"planName": "Pro"},
+				},
+				"userTier": map[string]any{
+					"id":                      "g1-pro-tier",
+					"name":                    "Google AI Pro",
+					"upgradeSubscriptionText": "You can upgrade to the Google AI Ultra plan to receive the highest rate limits.",
+				},
+				"cascadeModelConfigData": map[string]any{
+					"clientModelConfigs": []map[string]any{
+						{
+							"label": "Gemini 3.1 Pro (High)",
+							"quotaInfo": map[string]any{
+								"remainingFraction": 0.5,
+								"resetTime":         "2026-05-13T17:10:31Z",
+							},
+						},
+						{
+							"label": "Claude Sonnet 4.6 (Thinking)",
+							"quotaInfo": map[string]any{
+								"remainingFraction": 1.0,
+								"resetTime":         "2026-05-13T18:10:31Z",
+							},
+						},
+					},
+				},
+			})
+		case "/v1/models/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_antigravity",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	client.usage.Source = "direct-http+antigravity-usage-error"
+	client.usage.PlanTier = "antigravity"
+	usage, err := client.Usage()
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !sawAccount {
+		t.Fatalf("expected account quota request")
+	}
+	if !strings.Contains(usage.Source, "antigravity-account-quota") {
+		t.Fatalf("unexpected usage source: %q", usage.Source)
+	}
+	if strings.Contains(usage.Source, "antigravity-usage-error") {
+		t.Fatalf("successful quota refresh should clear stale error source: %q", usage.Source)
+	}
+	if usage.Subscription == nil || usage.Subscription.Name != "Google AI Pro" || usage.PlanTier != "Google AI Pro" {
+		t.Fatalf("unexpected subscription or tier: usage=%#v subscription=%#v", usage, usage.Subscription)
+	}
+	native, ok := usage.NativeSummary.(formats.UsageReport)
+	if !ok {
+		t.Fatalf("unexpected native summary type: %T", usage.NativeSummary)
+	}
+	if native.RemainingPct != 0 || native.ResetAt != (time.Time{}) {
+		t.Fatalf("native summary should expose quota only as windows to avoid duplicate current window: %#v", native)
+	}
+	if native.PlanTier != "Google AI Pro" || native.Unit != "quota" || len(native.Windows) != 2 {
+		t.Fatalf("unexpected native usage summary: %#v", native)
+	}
+	if native.Windows[0].Label != "Gemini 3.1 Pro (High)" || native.Windows[0].RemainingPct != 50 || native.Windows[0].Unit != "quota" {
+		t.Fatalf("unexpected first window: %#v", native.Windows[0])
+	}
+	if native.Windows[1].Label != "Claude Sonnet 4.6 (Thinking)" || native.Windows[1].RemainingPct != 100 || native.Windows[1].ResetAt.IsZero() {
+		t.Fatalf("unexpected second window: %#v", native.Windows[1])
+	}
+}
+
+func TestProviderDiscoversMiniMAXTokenPlanAccountAndUsage(t *testing.T) {
+	var sawTokenPlan bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/token_plan/remains":
+			sawTokenPlan = true
+		case "/anthropic/v1/token_plan/remains":
+			t.Fatalf("minimax token plan usage must be fetched from base host root, got %s", r.URL.Path)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("authorization") != "Bearer sk_minimax" {
+			t.Fatalf("missing auth header: %q", r.Header.Get("authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model_remains": []map[string]any{
+				{
+					"model_name":                   "MiniMax-M*",
+					"start_time":                   1778529600000,
+					"end_time":                     1778544000000,
+					"remains_time":                 900000,
+					"current_interval_total_count": 1500,
+					"current_interval_usage_count": 25,
+					"current_weekly_total_count":   15000,
+					"current_weekly_usage_count":   38,
+					"weekly_start_time":            1778457600000,
+					"weekly_end_time":              1779062400000,
+					"weekly_remains_time":          519300000,
+				},
+			},
+			"base_resp": map[string]any{"status_code": 0, "status_msg": "success"},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceMiniMAX
+	registration.Identity.ProviderType = "minimax-api"
+	registration.Identity.ProviderInstanceID = "minimax-api"
+	registration.Identity.Account = provider.Account{Display: "minimax-prod"}
+	registration.Auth.Account = provider.Account{Display: "minimax-prod"}
+	registration.Auth.Subscription = nil
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL + "/anthropic",
+		Dialect:      compat.APIDialectAnthropic,
+		APIKey:       "sk_minimax",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	expectedAccount := miniMAXAccountFromAPIKey("sk_minimax")
+	if auth.Account != expectedAccount {
+		t.Fatalf("unexpected minimax account: %#v, want %#v", auth.Account, expectedAccount)
+	}
+	if auth.Subscription == nil || auth.Subscription.Name != "MiniMAX Token Plan" || auth.Subscription.Tier != "token-plan" {
+		t.Fatalf("unexpected minimax subscription: %#v", auth.Subscription)
+	}
+	usage, err := client.Usage()
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !sawTokenPlan {
+		t.Fatalf("expected token plan endpoint request")
+	}
+	if !strings.Contains(usage.Source, "minimax-token-plan-remains") {
+		t.Fatalf("unexpected usage source: %q", usage.Source)
+	}
+	native, ok := usage.NativeSummary.(formats.UsageReport)
+	if !ok {
+		t.Fatalf("unexpected native summary type: %T", usage.NativeSummary)
+	}
+	if native.PlanTier != "token-plan" || len(native.Windows) != 2 {
+		t.Fatalf("unexpected native usage summary: %#v", native)
+	}
+	if native.Windows[0].Label != "MiniMax-M* current window" || native.Windows[0].Used != 25 || native.Windows[0].Limit != 1500 {
+		t.Fatalf("unexpected current window: %#v", native.Windows[0])
+	}
+	if native.Windows[1].Label != "MiniMax-M* weekly" || native.Windows[1].Used != 38 || native.Windows[1].Limit != 15000 {
+		t.Fatalf("unexpected weekly window: %#v", native.Windows[1])
 	}
 }
 
@@ -389,6 +576,69 @@ func TestProviderInvokeAnthropicCompatibleUpstream(t *testing.T) {
 		t.Fatalf("invoke: %v", err)
 	}
 	if response.Dialect != compat.APIDialectOpenAI || response.Message.Content[0].Text != "anthropic world" || response.Usage.TotalTokens != 11 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
+func TestProviderInvokeMiniMAXAnthropicUpstreamRaisesSmallMaxTokens(t *testing.T) {
+	var sawMaxTokens int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request compat.AnthropicMessagesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		sawMaxTokens = request.MaxTokens
+		if request.Stream {
+			t.Fatalf("buffered minimax request unexpectedly streamed: %#v", request)
+		}
+		if request.Model != "MiniMax-M2.7" {
+			t.Fatalf("unexpected model %q", request.Model)
+		}
+		_ = json.NewEncoder(w).Encode(compat.AnthropicMessagesResponse{
+			ID:         "msg-minimax",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "MiniMax-M2.7",
+			StopReason: "end_turn",
+			Content: []compat.AnthropicContentBlock{
+				{Type: "thinking", Text: "hidden reasoning"},
+				{Type: "text", Text: "OK"},
+			},
+			Usage: compat.AnthropicUsage{InputTokens: 11, OutputTokens: 79},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceMiniMAX
+	registration.Models = []provider.Model{{ID: "MiniMax-M2.7", MaxOutputTokens: 2048, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages}}}
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectAnthropic,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	response, err := client.Invoke(context.Background(), mustRegistration(t, client), compat.Request{
+		Dialect:         compat.APIDialectOpenAI,
+		Model:           "MiniMax-M2.7",
+		MaxOutputTokens: 32,
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "Reply with exactly OK."}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if sawMaxTokens != miniMAXM2MinimumTextOutputTokens {
+		t.Fatalf("upstream max_tokens = %d, want %d", sawMaxTokens, miniMAXM2MinimumTextOutputTokens)
+	}
+	if response.Dialect != compat.APIDialectOpenAI || response.Message.Content[0].Text != "OK" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }
@@ -561,6 +811,91 @@ func TestProviderInvokeStreamAnthropicCompatibleUpstreamSSE(t *testing.T) {
 	}
 	if len(events) != 6 || events[0].Type != compat.EventMessageStart || events[2].ContentDelta.Text != "anthropic " || events[3].ContentDelta.Text != "stream" || events[4].UsageDelta.OutputTokens != 6 || events[5].DoneReason != "end_turn" {
 		t.Fatalf("unexpected stream events: %#v", events)
+	}
+}
+
+func TestProviderInvokeStreamMiniMAXAnthropicUpstreamSkipsThinkingAndRaisesSmallMaxTokens(t *testing.T) {
+	var sawMaxTokens int
+	var sawStream bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request compat.AnthropicMessagesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		sawMaxTokens = request.MaxTokens
+		sawStream = request.Stream
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-minimax-stream\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"MiniMax-M2.7\",\"content\":[],\"usage\":{\"input_tokens\":11}}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hidden\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"redacted\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_stop\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_stop\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_stop\",\"index\":1}\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":75}}\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceMiniMAX
+	registration.Models = []provider.Model{{ID: "MiniMax-M2.7", MaxOutputTokens: 2048, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityStreamSSE}}}
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectAnthropic,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	events := []compat.Event{}
+	response, err := client.InvokeStream(context.Background(), mustRegistration(t, client), compat.Request{
+		Dialect:         compat.APIDialectGemini,
+		Model:           "MiniMax-M2.7",
+		MaxOutputTokens: 32,
+		Stream:          true,
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "Reply with exactly OK."}},
+		}},
+	}, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if !sawStream {
+		t.Fatalf("expected upstream stream=true")
+	}
+	if sawMaxTokens != miniMAXM2MinimumTextOutputTokens {
+		t.Fatalf("upstream max_tokens = %d, want %d", sawMaxTokens, miniMAXM2MinimumTextOutputTokens)
+	}
+	if response.Dialect != compat.APIDialectGemini || response.Message.Content[0].Text != "OK" || response.Usage.TotalTokens != 86 {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	var sawTextDelta bool
+	for _, event := range events {
+		if event.Type == compat.EventContentDelta && event.ContentDelta != nil && event.ContentDelta.Text == "OK" {
+			sawTextDelta = true
+		}
+	}
+	if !sawTextDelta {
+		t.Fatalf("stream events did not include text delta: %#v", events)
 	}
 }
 
@@ -954,6 +1289,60 @@ func TestProviderTracksUpstreamAuthFailure(t *testing.T) {
 	}
 	if auth.Status != provider.AuthUnavailable || !strings.Contains(auth.LastRefreshErr, "invalid_api_key") {
 		t.Fatalf("unexpected auth: %#v", auth)
+	}
+}
+
+func TestProviderRefreshesGitHubCopilotAccountFromRelayAuthStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/auth/status" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"isAuthenticated": true,
+			"authType":        "user",
+			"host":            "https://github.com",
+			"login":           "octocat",
+			"statusMessage":   "octocat",
+			"subscription": map[string]any{
+				"tier":   "copilot_for_business_seat",
+				"name":   "Copilot Business",
+				"status": "active",
+			},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceGitHubCopilot
+	registration.Identity.ProviderType = "github-copilot-sidecar"
+	registration.Identity.ProviderInstanceID = "github-copilot-sidecar"
+	registration.Identity.Kind = provider.KindSidecar
+	registration.Identity.Account = provider.Account{}
+	registration.Auth = provider.AuthState{Status: provider.AuthHealthy}
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	auth, err := client.Auth()
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	if auth.Status != provider.AuthHealthy || auth.Account.Display != "octocat" || auth.SelectedSource != "copilot-auth-status" {
+		t.Fatalf("unexpected copilot auth: %#v", auth)
+	}
+	if auth.Subscription == nil || auth.Subscription.Tier != "copilot_for_business_seat" || auth.Subscription.Name != "Copilot Business" || auth.Subscription.Status != "active" {
+		t.Fatalf("unexpected copilot subscription: %#v", auth.Subscription)
+	}
+	updated, err := client.Registration()
+	if err != nil {
+		t.Fatalf("registration: %v", err)
+	}
+	if updated.Identity.Account.Display != "octocat" {
+		t.Fatalf("registration account was not updated: %#v", updated.Identity.Account)
 	}
 }
 

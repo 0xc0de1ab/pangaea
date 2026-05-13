@@ -323,7 +323,7 @@ func resolveDefaultModel(details map[string]models.ModelDetail) string {
 func (b *engineBridge) GetModels(ctx context.Context) ([]string, error) {
 	detailed, err := b.GetDetailedModels(ctx)
 	if err != nil {
-		return []string{"gpt-4o", "claude-3-5-sonnet-20240620", "gemini-1.5-pro-latest"}, nil
+		return nil, err
 	}
 
 	var modelsList []string

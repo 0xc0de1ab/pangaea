@@ -353,7 +353,7 @@ func normalizedStorageMode(mode string) string {
 
 func validateProviderMode(providerType string, mode string) error {
 	switch normalizedProviderMode(mode) {
-	case "", "http-direct", "app-server", "cli-adapter", "acp", "ls-core-sidecar":
+	case "", "http-direct", "app-server", "cli-adapter", "sdk", "acp", "ls-core-sidecar":
 		return nil
 	default:
 		return fmt.Errorf("%w: provider %q unsupported provider_mode %q", ErrNodeAgentConfig, providerType, mode)

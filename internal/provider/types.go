@@ -4,6 +4,7 @@ package provider
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,7 @@ const (
 	ServiceAntigravity   Service = "antigravity"
 	ServiceCline         Service = "cline"
 	ServiceGitHubCopilot Service = "github-copilot"
+	ServiceCursor        Service = "cursor"
 )
 
 type Capability string
@@ -72,6 +74,18 @@ type ProviderIdentity struct {
 type Account struct {
 	ID      string `json:"id,omitempty"`
 	Display string `json:"display,omitempty"`
+}
+
+// MergeMissingFrom fills empty ID/Display from other without overwriting non-empty fields.
+func (a Account) MergeMissingFrom(b Account) Account {
+	out := a
+	if strings.TrimSpace(out.Display) == "" {
+		out.Display = strings.TrimSpace(b.Display)
+	}
+	if strings.TrimSpace(out.ID) == "" {
+		out.ID = strings.TrimSpace(b.ID)
+	}
+	return out
 }
 
 type Model struct {

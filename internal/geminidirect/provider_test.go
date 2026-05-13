@@ -86,6 +86,64 @@ func TestInvokeUsesCodeAssistGenerateContent(t *testing.T) {
 	}
 }
 
+func TestInvokeRetriesShortRateLimit(t *testing.T) {
+	authPath := writeAuthFile(t, time.Now().Add(time.Hour))
+	generateCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireBearer(t, r)
+		switch r.URL.Path {
+		case "/v1internal:loadCodeAssist":
+			_ = json.NewEncoder(w).Encode(loadCodeAssistResponse{CloudaiCompanionProject: "fine-canyon-test"})
+		case "/v1internal:generateContent":
+			generateCalls++
+			if generateCalls == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(geminiRateLimitBody("0s")))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(codeAssistGenerateResponse{
+				Response: codeAssistModelResponse{
+					ResponseID:   "response-1",
+					ModelVersion: "gemini-2.5-flash-lite",
+					Candidates: []codeAssistCandidate{{
+						FinishReason: "STOP",
+						Content:      codeAssistContent{Role: "model", Parts: []codeAssistPart{{Text: "OK"}}},
+					}},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(t, srv.URL, authPath)
+	response, err := p.Invoke(context.Background(), testRegistration(), compat.Request{
+		Dialect: compat.APIDialectAnthropic,
+		Model:   "gemini-2.5-flash-lite",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if generateCalls != 2 {
+		t.Fatalf("generate calls = %d, want 2", generateCalls)
+	}
+	if got := response.Message.Content[0].Text; got != "OK" {
+		t.Fatalf("response text = %q, want OK", got)
+	}
+	health, err := p.Health()
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if health.Status != provider.HealthReady {
+		t.Fatalf("health = %#v, want ready", health)
+	}
+}
+
 func TestInvokeStreamSkipsThoughtChunks(t *testing.T) {
 	authPath := writeAuthFile(t, time.Now().Add(time.Hour))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +204,63 @@ func TestInvokeStreamSkipsThoughtChunks(t *testing.T) {
 	}
 	if response.Usage.TotalTokens != 5 {
 		t.Fatalf("usage = %#v", response.Usage)
+	}
+}
+
+func TestInvokeStreamRetriesShortRateLimit(t *testing.T) {
+	authPath := writeAuthFile(t, time.Now().Add(time.Hour))
+	streamCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireBearer(t, r)
+		switch r.URL.Path {
+		case "/v1internal:loadCodeAssist":
+			_ = json.NewEncoder(w).Encode(loadCodeAssistResponse{CloudaiCompanionProject: "fine-canyon-test"})
+		case "/v1internal:streamGenerateContent":
+			streamCalls++
+			if streamCalls == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(geminiRateLimitBody("0s")))
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSE(t, w, codeAssistGenerateResponse{Response: codeAssistModelResponse{
+				ResponseID:   "stream-1",
+				ModelVersion: "gemini-2.5-flash-lite",
+				Candidates: []codeAssistCandidate{{
+					FinishReason: "STOP",
+					Content:      codeAssistContent{Role: "model", Parts: []codeAssistPart{{Text: "OK"}}},
+				}},
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(t, srv.URL, authPath)
+	var events []compat.Event
+	response, err := p.InvokeStream(context.Background(), testRegistration(), compat.Request{
+		Dialect: compat.APIDialectGemini,
+		Model:   "gemini-2.5-flash-lite",
+		Messages: []compat.Message{{
+			Role:    compat.MessageRoleUser,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}},
+		}},
+	}, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("InvokeStream: %v", err)
+	}
+	if streamCalls != 2 {
+		t.Fatalf("stream calls = %d, want 2", streamCalls)
+	}
+	if got := response.Message.Content[0].Text; got != "OK" {
+		t.Fatalf("response text = %q, want OK", got)
+	}
+	if len(events) == 0 || events[0].Type != compat.EventMessageStart {
+		t.Fatalf("unexpected events: %#v", events)
 	}
 }
 
@@ -726,6 +841,10 @@ func textResponse(status int, contentType string, body string) *http.Response {
 		Header:     http.Header{"Content-Type": []string{contentType}},
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+func geminiRateLimitBody(delay string) string {
+	return `{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after ` + delay + `.","status":"RESOURCE_EXHAUSTED","details":[{"metadata":{"quotaResetDelay":"` + delay + `"}},{"retryDelay":"` + delay + `"}]}}`
 }
 
 func writeAuthFile(t *testing.T, expiresAt time.Time) string {

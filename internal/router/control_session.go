@@ -230,6 +230,15 @@ func (e *Engine) ControlSessions() []ControlSessionSnapshot {
 	return out
 }
 
+func (e *Engine) ProviderControlConnected(providerInstanceID string) bool {
+	if e == nil || strings.TrimSpace(providerInstanceID) == "" {
+		return false
+	}
+	e.controlMu.RLock()
+	defer e.controlMu.RUnlock()
+	return e.controlSessions[providerInstanceID] != nil
+}
+
 func (e *Engine) completeAuthRefreshResult(result control.AuthRefreshResult) {
 	if e == nil || strings.TrimSpace(result.RefreshID) == "" {
 		return

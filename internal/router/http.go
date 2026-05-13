@@ -97,167 +97,120 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
 			return
 		}
-		engine, ok := requireEngine(c, opts.Engine)
-		if !ok {
-			return
-		}
-		if wantsAnthropicModels(c) {
-			c.JSON(http.StatusOK, anthropicModelsFromEngine(engine))
-			return
-		}
-		models := engine.Models()
-		now := time.Now().Unix()
-		out := openAIModelList{
-			Object: "list",
-			Data:   make([]openAIModel, 0, len(models)),
-		}
-		for _, model := range models {
-			out.Data = append(out.Data, openAIModel{
-				ID:      model.ID,
-				Object:  "model",
-				Created: now,
-				OwnedBy: "pangaea",
-			})
-		}
-		c.JSON(http.StatusOK, out)
+		handleOpenAIOrAnthropicModels(c, opts)
+	})
+	r.GET("/router/v1/compat/v1/models", func(c *gin.Context) {
+		handleOpenAIOrAnthropicModels(c, opts)
 	})
 	r.GET("/v1beta/models", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
 			return
 		}
-		engine, ok := requireEngine(c, opts.Engine)
-		if !ok {
-			return
-		}
-		c.JSON(http.StatusOK, geminiModelsFromEngine(engine))
+		handleGeminiModelsList(c, opts)
+	})
+	r.GET("/router/v1/compat/v1beta/models", func(c *gin.Context) {
+		handleGeminiModelsList(c, opts)
 	})
 	r.GET("/v1beta/models/*modelName", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
 			return
 		}
-		engine, ok := requireEngine(c, opts.Engine)
-		if !ok {
-			return
-		}
-		name := strings.TrimPrefix(c.Param("modelName"), "/")
-		model, ok := geminiModelFromEngine(engine, name)
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "model not found"})
-			return
-		}
-		c.JSON(http.StatusOK, model)
+		handleGeminiModelGet(c, opts)
+	})
+	r.GET("/router/v1/compat/v1beta/models/*modelName", func(c *gin.Context) {
+		handleGeminiModelGet(c, opts)
 	})
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
 		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
 		if !ok {
 			return
 		}
-		engine, ok := requireEngine(c, opts.Engine)
-		if !ok {
-			return
-		}
-		var openaiRequest compat.OpenAIChatRequest
-		if err := c.ShouldBindJSON(&openaiRequest); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		canonicalRequest, err := compat.OpenAIChatRequestToCanonical(openaiRequest)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		requestID := publicRequestID(c)
-		routeRequest := applyPublicPrincipal(principal, RouteRequest{
-			TenantID:   c.GetHeader("x-pangaea-tenant-id"),
-			UserID:     c.GetHeader("x-pangaea-user-id"),
-			APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
-			Model:      openaiRequest.Model,
-			APIDialect: compat.APIDialectOpenAI,
-			Stream:     openaiRequest.Stream,
+		handleOpenAIChatCompletions(c, opts, func(openaiRequest compat.OpenAIChatRequest) RouteRequest {
+			routeRequest := applyPublicPrincipal(principal, RouteRequest{
+				TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+				UserID:     c.GetHeader("x-pangaea-user-id"),
+				APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+				Model:      openaiRequest.Model,
+				APIDialect: compat.APIDialectOpenAI,
+				Stream:     openaiRequest.Stream,
+			})
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
 		})
-		execution := RouteExecutionRequest{
-			RequestID:     requestID,
-			RouteRequest:  routeRequest,
-			QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
-			QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
-		}
-		if openaiRequest.Stream {
-			writeOpenAIChatEventStream(c, engine, execution, canonicalRequest)
-			return
-		}
-		response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
-		if err != nil {
-			writeRouteError(c, err)
-			return
-		}
-		openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, openaiResponse)
+	})
+	r.POST("/router/v1/compat/v1/chat/completions", func(c *gin.Context) {
+		handleOpenAIChatCompletions(c, opts, func(openaiRequest compat.OpenAIChatRequest) RouteRequest {
+			return dashboardCompatRouteRequest(c, openaiRequest.Model, compat.APIDialectOpenAI, openaiRequest.Stream)
+		})
 	})
 	r.POST("/v1/messages", func(c *gin.Context) {
 		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
 		if !ok {
 			return
 		}
-		engine, ok := requireEngine(c, opts.Engine)
+		handleAnthropicMessages(c, opts, func(anthropicRequest compat.AnthropicMessagesRequest) RouteRequest {
+			routeRequest := applyPublicPrincipal(principal, RouteRequest{
+				TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+				UserID:     c.GetHeader("x-pangaea-user-id"),
+				APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+				Model:      anthropicRequest.Model,
+				APIDialect: compat.APIDialectAnthropic,
+				Stream:     anthropicRequest.Stream,
+			})
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
+	})
+	r.POST("/router/v1/compat/v1/messages", func(c *gin.Context) {
+		handleAnthropicMessages(c, opts, func(anthropicRequest compat.AnthropicMessagesRequest) RouteRequest {
+			return dashboardCompatRouteRequest(c, anthropicRequest.Model, compat.APIDialectAnthropic, anthropicRequest.Stream)
+		})
+	})
+	r.POST("/v1beta/models/*modelAction", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
 		if !ok {
 			return
 		}
-		var anthropicRequest compat.AnthropicMessagesRequest
-		if err := c.ShouldBindJSON(&anthropicRequest); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		canonicalRequest, err := compat.AnthropicMessagesRequestToCanonical(anthropicRequest)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		requestID := publicRequestID(c)
-		routeRequest := applyPublicPrincipal(principal, RouteRequest{
-			TenantID:   c.GetHeader("x-pangaea-tenant-id"),
-			UserID:     c.GetHeader("x-pangaea-user-id"),
-			APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
-			Model:      anthropicRequest.Model,
-			APIDialect: compat.APIDialectAnthropic,
-			Stream:     anthropicRequest.Stream,
+		handleGeminiGenerateContent(c, opts, func(model string, stream bool) RouteRequest {
+			routeRequest := applyPublicPrincipal(principal, RouteRequest{
+				TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+				UserID:     c.GetHeader("x-pangaea-user-id"),
+				APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+				Model:      model,
+				APIDialect: compat.APIDialectGemini,
+				Stream:     stream,
+			})
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
 		})
-		execution := RouteExecutionRequest{
-			RequestID:     requestID,
-			RouteRequest:  routeRequest,
-			QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
-			QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
-		}
-		if anthropicRequest.Stream {
-			writeAnthropicMessagesEventStream(c, engine, execution, canonicalRequest)
-			return
-		}
-		response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
-		if err != nil {
-			writeRouteError(c, err)
-			return
-		}
-		anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, anthropicResponse)
-	})
-	r.POST("/v1beta/models/*modelAction", func(c *gin.Context) {
-		handleGeminiGenerateContent(c, opts)
 	})
 	r.POST("/v1/models/*modelAction", func(c *gin.Context) {
-		handleGeminiGenerateContent(c, opts)
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok {
+			return
+		}
+		handleGeminiGenerateContent(c, opts, func(model string, stream bool) RouteRequest {
+			routeRequest := applyPublicPrincipal(principal, RouteRequest{
+				TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+				UserID:     c.GetHeader("x-pangaea-user-id"),
+				APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+				Model:      model,
+				APIDialect: compat.APIDialectGemini,
+				Stream:     stream,
+			})
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
 	})
 	r.POST("/router/v1/compat/v1beta/models/*modelAction", func(c *gin.Context) {
-		handleGeminiGenerateContent(c, opts)
+		handleGeminiGenerateContent(c, opts, func(model string, stream bool) RouteRequest {
+			return dashboardCompatRouteRequest(c, model, compat.APIDialectGemini, stream)
+		})
 	})
 	r.POST("/router/v1/compat/v1/models/*modelAction", func(c *gin.Context) {
-		handleGeminiGenerateContent(c, opts)
+		handleGeminiGenerateContent(c, opts, func(model string, stream bool) RouteRequest {
+			return dashboardCompatRouteRequest(c, model, compat.APIDialectGemini, stream)
+		})
 	})
 	r.GET("/router/v1/providers", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -265,6 +218,108 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"providers": engine.Providers()})
+	})
+	r.DELETE("/router/v1/providers", func(c *gin.Context) {
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request providerDeleteHTTPRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		providerInstanceIDs := uniqueNonEmptyStrings(request.ProviderInstanceIDs)
+		request.Reason = strings.TrimSpace(request.Reason)
+		if !request.Confirm {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "confirm must be true"})
+			return
+		}
+		if request.Reason == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "reason is required"})
+			return
+		}
+		if len(providerInstanceIDs) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "provider_instance_ids is required"})
+			return
+		}
+		for _, providerInstanceID := range providerInstanceIDs {
+			if _, ok := engine.registry.Get(providerInstanceID); !ok {
+				recordHTTPAuditEvent(engine, c, AuditEvent{
+					Type:    AuditEventProviderDelete,
+					Target:  AuditTarget{ProviderInstanceID: providerInstanceID},
+					Reason:  request.Reason,
+					Outcome: AuditOutcomeFailed,
+					Error:   provider.ErrProviderNotFound.Error(),
+				})
+				c.JSON(http.StatusNotFound, gin.H{"error": "provider not found", "provider_instance_id": providerInstanceID})
+				return
+			}
+			if engine.ProviderControlConnected(providerInstanceID) {
+				recordHTTPAuditEvent(engine, c, AuditEvent{
+					Type:    AuditEventProviderDelete,
+					Target:  auditProviderTarget(engine, providerInstanceID),
+					Reason:  request.Reason,
+					Outcome: AuditOutcomeFailed,
+					Error:   "provider control session is still connected",
+				})
+				c.JSON(http.StatusConflict, gin.H{"error": "provider control session is still connected", "provider_instance_id": providerInstanceID})
+				return
+			}
+			if opts.DataBroker != nil && opts.DataBroker.ProviderAvailable(providerInstanceID) {
+				recordHTTPAuditEvent(engine, c, AuditEvent{
+					Type:    AuditEventProviderDelete,
+					Target:  auditProviderTarget(engine, providerInstanceID),
+					Reason:  request.Reason,
+					Outcome: AuditOutcomeFailed,
+					Error:   "provider data session is still connected",
+				})
+				c.JSON(http.StatusConflict, gin.H{"error": "provider data session is still connected", "provider_instance_id": providerInstanceID})
+				return
+			}
+		}
+		results := make([]ProviderDeleteResult, 0, len(providerInstanceIDs))
+		authRecordsRemoved := 0
+		authReplicasRemoved := 0
+		containersRemoved := 0
+		usageRemoved := 0
+		for _, providerInstanceID := range providerInstanceIDs {
+			target := auditProviderTarget(engine, providerInstanceID)
+			result, err := engine.DeleteProvider(providerInstanceID)
+			if err != nil {
+				recordHTTPAuditEvent(engine, c, AuditEvent{
+					Type:    AuditEventProviderDelete,
+					Target:  target,
+					Reason:  request.Reason,
+					Outcome: AuditOutcomeFailed,
+					Error:   err.Error(),
+				})
+				writeControlCommandError(c, err)
+				return
+			}
+			results = append(results, result)
+			authRecordsRemoved += result.AuthRecordsRemoved
+			authReplicasRemoved += result.AuthReplicasRemoved
+			containersRemoved += result.ContainersRemoved
+			if result.UsageRemoved {
+				usageRemoved++
+			}
+		}
+		recordHTTPAuditEvent(engine, c, AuditEvent{
+			Type:    AuditEventProviderDelete,
+			Target:  AuditTarget{ProviderInstanceID: firstNonEmpty(providerInstanceIDs...)},
+			Reason:  request.Reason,
+			Outcome: AuditOutcomeSucceeded,
+			Metadata: map[string]string{
+				"requested":             strconv.Itoa(len(providerInstanceIDs)),
+				"deleted":               strconv.Itoa(len(results)),
+				"auth_records_removed":  strconv.Itoa(authRecordsRemoved),
+				"auth_replicas_removed": strconv.Itoa(authReplicasRemoved),
+				"usage_removed":         strconv.Itoa(usageRemoved),
+				"containers_removed":    strconv.Itoa(containersRemoved),
+			},
+		})
+		c.JSON(http.StatusOK, gin.H{"deleted": len(results), "results": results})
 	})
 	r.GET("/router/v1/auth", func(c *gin.Context) {
 		engine, ok := requireEngine(c, opts.Engine)
@@ -789,6 +844,188 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	return r
 }
 
+func handleOpenAIChatCompletions(c *gin.Context, opts HTTPOptions, buildRouteRequest func(compat.OpenAIChatRequest) RouteRequest) {
+	engine, ok := requireEngine(c, opts.Engine)
+	if !ok {
+		return
+	}
+	var openaiRequest compat.OpenAIChatRequest
+	if err := c.ShouldBindJSON(&openaiRequest); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	canonicalRequest, err := compat.OpenAIChatRequestToCanonical(openaiRequest)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	requestID := publicRequestID(c)
+	routeRequest := buildRouteRequest(openaiRequest)
+	execution := RouteExecutionRequest{
+		RequestID:     requestID,
+		RouteRequest:  routeRequest,
+		QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
+		QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
+	}
+	if openaiRequest.Stream {
+		writeOpenAIChatEventStream(c, engine, execution, canonicalRequest)
+		return
+	}
+	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	if err != nil {
+		writeRouteError(c, err)
+		return
+	}
+	openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, openaiResponse)
+}
+
+func handleAnthropicMessages(c *gin.Context, opts HTTPOptions, buildRouteRequest func(compat.AnthropicMessagesRequest) RouteRequest) {
+	engine, ok := requireEngine(c, opts.Engine)
+	if !ok {
+		return
+	}
+	var anthropicRequest compat.AnthropicMessagesRequest
+	if err := c.ShouldBindJSON(&anthropicRequest); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	canonicalRequest, err := compat.AnthropicMessagesRequestToCanonical(anthropicRequest)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	requestID := publicRequestID(c)
+	routeRequest := buildRouteRequest(anthropicRequest)
+	execution := RouteExecutionRequest{
+		RequestID:     requestID,
+		RouteRequest:  routeRequest,
+		QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
+		QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
+	}
+	if anthropicRequest.Stream {
+		writeAnthropicMessagesEventStream(c, engine, execution, canonicalRequest)
+		return
+	}
+	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	if err != nil {
+		writeRouteError(c, err)
+		return
+	}
+	anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, anthropicResponse)
+}
+
+func handleOpenAIOrAnthropicModels(c *gin.Context, opts HTTPOptions) {
+	engine, ok := requireEngine(c, opts.Engine)
+	if !ok {
+		return
+	}
+	if wantsAnthropicModels(c) {
+		c.JSON(http.StatusOK, anthropicModelsFromEngine(engine))
+		return
+	}
+	models := engine.Models()
+	now := time.Now().Unix()
+	out := openAIModelList{
+		Object: "list",
+		Data:   make([]openAIModel, 0, len(models)),
+	}
+	for _, model := range models {
+		out.Data = append(out.Data, openAIModel{
+			ID:      model.ID,
+			Object:  "model",
+			Created: now,
+			OwnedBy: "pangaea",
+		})
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func handleGeminiModelsList(c *gin.Context, opts HTTPOptions) {
+	engine, ok := requireEngine(c, opts.Engine)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, geminiModelsFromEngine(engine))
+}
+
+func handleGeminiModelGet(c *gin.Context, opts HTTPOptions) {
+	engine, ok := requireEngine(c, opts.Engine)
+	if !ok {
+		return
+	}
+	name := strings.TrimPrefix(c.Param("modelName"), "/")
+	model, ok := geminiModelFromEngine(engine, name)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "model not found"})
+		return
+	}
+	c.JSON(http.StatusOK, model)
+}
+
+func dashboardCompatRouteRequest(c *gin.Context, model string, dialect compat.APIDialect, stream bool) RouteRequest {
+	routeRequest := RouteRequest{
+		TenantID:   "dashboard",
+		UserID:     "dashboard",
+		Model:      model,
+		APIDialect: dialect,
+		Stream:     stream,
+	}
+	applyRouteRequestProviderHeaders(c, &routeRequest)
+	if value, ok := c.Get("router_admin_principal"); ok {
+		if principal, ok := value.(security.APIKeyPrincipal); ok && principal.ID != "" {
+			routeRequest.TenantID = principal.TenantID
+			routeRequest.UserID = principal.UserID
+			routeRequest.APIKeyID = principal.ID
+			return routeRequest
+		}
+	}
+	if value, ok := c.Get(routerAdminSessionContextKey); ok {
+		if session, ok := value.(GoogleOAuthSession); ok && session.Email != "" {
+			routeRequest.TenantID = "google"
+			routeRequest.UserID = session.Email
+			return routeRequest
+		}
+	}
+	if tenantID := strings.TrimSpace(c.GetHeader("x-pangaea-tenant-id")); tenantID != "" {
+		routeRequest.TenantID = tenantID
+	}
+	if userID := strings.TrimSpace(c.GetHeader("x-pangaea-user-id")); userID != "" {
+		routeRequest.UserID = userID
+	}
+	if apiKeyID := strings.TrimSpace(c.GetHeader("x-pangaea-api-key-id")); apiKeyID != "" {
+		routeRequest.APIKeyID = apiKeyID
+	}
+	return routeRequest
+}
+
+func applyRouteRequestProviderHeaders(c *gin.Context, routeRequest *RouteRequest) {
+	if c == nil || routeRequest == nil {
+		return
+	}
+	if providerInstanceID := firstNonEmpty(
+		c.GetHeader("x-pangaea-provider-instance-id"),
+		c.Query("provider_instance_id"),
+	); providerInstanceID != "" {
+		routeRequest.ProviderInstanceID = providerInstanceID
+	}
+	if providerType := firstNonEmpty(
+		c.GetHeader("x-pangaea-provider-type"),
+		c.Query("provider_type"),
+	); providerType != "" {
+		routeRequest.ProviderType = providerType
+	}
+}
+
 func routerAdminAuthMiddleware(store *security.APIKeyStore, auth AdminAuthOptions) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
@@ -847,6 +1084,8 @@ func traceCapturablePath(method string, path string) bool {
 	}
 	return path == "/v1/chat/completions" ||
 		path == "/v1/messages" ||
+		path == "/router/v1/compat/v1/chat/completions" ||
+		path == "/router/v1/compat/v1/messages" ||
 		strings.HasPrefix(path, "/v1beta/models/") ||
 		strings.HasPrefix(path, "/v1/models/") ||
 		strings.HasPrefix(path, "/router/v1/compat/v1beta/models/") ||
@@ -1100,6 +1339,12 @@ type providerDrainHTTPRequest struct {
 	Reason         string `json:"reason,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 	Confirm        bool   `json:"confirm,omitempty"`
+}
+
+type providerDeleteHTTPRequest struct {
+	ProviderInstanceIDs []string `json:"provider_instance_ids"`
+	Reason              string   `json:"reason,omitempty"`
+	Confirm             bool     `json:"confirm,omitempty"`
 }
 
 type openAIChatStreamChoice struct {
@@ -1768,11 +2013,7 @@ func flushSSE(c *gin.Context) {
 	}
 }
 
-func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
-	principal, ok := authenticatePublicRequest(c, opts.APIKeys)
-	if !ok {
-		return
-	}
+func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions, buildRouteRequest func(model string, stream bool) RouteRequest) {
 	engine, ok := requireEngine(c, opts.Engine)
 	if !ok {
 		return
@@ -1797,14 +2038,7 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions) {
 	}
 	canonicalRequest.Stream = stream
 	requestID := publicRequestID(c)
-	routeRequest := applyPublicPrincipal(principal, RouteRequest{
-		TenantID:   c.GetHeader("x-pangaea-tenant-id"),
-		UserID:     c.GetHeader("x-pangaea-user-id"),
-		APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
-		Model:      model,
-		APIDialect: compat.APIDialectGemini,
-		Stream:     stream,
-	})
+	routeRequest := buildRouteRequest(model, stream)
 	execution := RouteExecutionRequest{
 		RequestID:     requestID,
 		RouteRequest:  routeRequest,

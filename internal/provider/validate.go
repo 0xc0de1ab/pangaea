@@ -50,7 +50,7 @@ func (s Service) Valid() bool {
 	switch s {
 	case ServiceCodex, ServiceClaude, ServiceGemini, ServiceOpenAI, ServiceAnthropic,
 		ServiceGLM, ServiceMiniMAX, ServiceDeepSeek, ServiceAntigravity, ServiceCline,
-		ServiceGitHubCopilot:
+		ServiceGitHubCopilot, ServiceCursor:
 		return true
 	}
 	return false

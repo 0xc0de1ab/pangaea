@@ -227,6 +227,33 @@ func TestContainerSpecFromProviderSpecWithOptionsIncludesRouterURLs(t *testing.T
 	}
 }
 
+func TestContainerSpecFromProviderSpecSkipsStaticCopilotSDKModelEnv(t *testing.T) {
+	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
+		ProviderType: "github-copilot-sidecar",
+		InstanceID:   "github-copilot-octocat",
+		Kind:         provider.KindSidecar,
+		Image:        "pangaea/provider-github-copilot-sidecar:test",
+		Service:      provider.ServiceGitHubCopilot,
+		ProviderMode: "sdk",
+		Models: []provider.Model{{
+			ID:      "github-copilot-default",
+			Aliases: []string{"copilot-default"},
+		}},
+		Shim: ShimSpec{
+			Protocols:    []string{"openai", "anthropic", "gemini"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent, provider.CapabilityModelsRead},
+		},
+	}, "node-a1", "snowbox")
+	if err != nil {
+		t.Fatalf("container spec from provider spec: %v", err)
+	}
+	for _, key := range []string{"PANGAEA_MODEL", "PANGAEA_MODEL_ALIAS", "PANGAEA_MODELS", "PANGAEA_MODEL_CAPABILITIES"} {
+		if value, ok := spec.Env[key]; ok {
+			t.Fatalf("copilot sdk should discover models dynamically, got env %s=%q in %#v", key, value, spec.Env)
+		}
+	}
+}
+
 func TestContainerSpecFromProviderSpecCopiesAPIKeyAuth(t *testing.T) {
 	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
 		ProviderType: "glm-api",

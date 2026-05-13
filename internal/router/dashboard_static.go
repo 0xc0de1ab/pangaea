@@ -152,7 +152,7 @@ func setEmbeddedRouterDashboardHeaders(c *gin.Context) {
 		"object-src 'none'",
 		"frame-ancestors 'none'",
 		"form-action 'self'",
-		"img-src 'self' data: blob:",
+		"img-src 'self' data: blob: https://*.googleusercontent.com",
 		"font-src 'self' data:",
 		"script-src 'self'",
 		"style-src 'self' 'unsafe-inline'",

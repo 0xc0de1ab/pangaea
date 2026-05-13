@@ -31,7 +31,14 @@ export STATE_VSCDB_PATH="${STATE_VSCDB_PATH:-/var/lib/antigravity/state/User/glo
 export VSCDB_PATH="${VSCDB_PATH:-${STATE_VSCDB_PATH}}"
 export PATH="${ANTIGRAVITY_SERVER_DIR}:${PATH}"
 
-mkdir -p "$(dirname "${STATE_VSCDB_PATH}")" "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/globalStorage" 2>/dev/null || true
+mkdir -p \
+  "$(dirname "${STATE_VSCDB_PATH}")" \
+  "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/globalStorage" \
+  "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/History" \
+  "${HOME}/.antigravity-server/extensions" \
+  "${HOME}/.antigravity-server/data/User/globalStorage" \
+  "${HOME}/.antigravity-server/data/User/History" \
+  2>/dev/null || true
 
 if [ -n "${PANGAEA_HOST_HOSTNAME:-${PANGAEA_NODE_HOST_NAME:-}}" ] && { [ -z "${PANGAEA_HOST_NAME:-}" ] || [ "${PANGAEA_HOST_NAME:-}" = "${HOSTNAME:-}" ]; }; then
   export PANGAEA_HOST_NAME="${PANGAEA_HOST_HOSTNAME:-${PANGAEA_NODE_HOST_NAME:-}}"

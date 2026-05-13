@@ -41,7 +41,7 @@ export function providerServiceEndpoints(provider: ProviderRegistration): Servic
 }
 
 export function normalizeService(service: string) {
-  return service.trim().toLowerCase().replace(/_/g, "-");
+  return service.trim().toLowerCase().replace(/[_\s]+/g, "-");
 }
 
 export function serviceLabel(service: string) {
@@ -55,9 +55,23 @@ export function serviceLabel(service: string) {
     case "gemini":
     case "gemini-cli":
       return "Gemini";
+    case "cursor":
+    case "cursor-cli":
+      return "Cursor";
     case "github-copilot":
+    case "github-copilot-sidecar":
+    case "github-copilot-acp":
+    case "github-copilot-sdk":
+    case "githubcopilot":
     case "copilot":
+    case "copilot-sidecar":
+    case "copilot-acp":
+    case "copilot-sdk":
       return "GitHub Copilot";
+    case "minimax":
+    case "minimax-api":
+    case "minimax-api-provider":
+      return "MiniMax";
     case "antigravity":
       return "Antigravity";
     default:
@@ -72,11 +86,11 @@ export function serviceLabel(service: string) {
 export function chatPath(protocol: ProviderProtocol, model: string, stream: boolean) {
   switch (protocol) {
     case "openai":
-      return "/v1/chat/completions";
+      return "/router/v1/compat/v1/chat/completions";
     case "anthropic":
-      return "/v1/messages";
+      return "/router/v1/compat/v1/messages";
     case "gemini":
-      return `/v1beta/models/${model}:${stream ? "streamGenerateContent" : "generateContent"}`;
+      return `/router/v1/compat/v1beta/models/${model}:${stream ? "streamGenerateContent" : "generateContent"}`;
   }
 }
 

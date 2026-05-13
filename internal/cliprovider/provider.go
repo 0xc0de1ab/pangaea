@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,11 +23,17 @@ import (
 )
 
 const (
-	defaultRequestTimeout = 5 * time.Minute
-	usageSource           = "cli-adapter"
+	defaultRequestTimeout             = 5 * time.Minute
+	transientRateLimitMaxAttempts     = 5
+	transientRateLimitMaxRetryDelay   = 5 * time.Second
+	transientRateLimitMinRetryDelay   = time.Second
+	transientRateLimitRetryDelaySlack = 500 * time.Millisecond
+	usageSource                       = "cli-adapter"
 )
 
 var ErrCLIProviderConfig = errors.New("invalid cli provider config")
+
+var retryDelayPattern = regexp.MustCompile(`(?i)(?:retryDelay|quotaResetDelay|retry after|reset after)[^0-9]{0,80}([0-9]+(?:\.[0-9]+)?\s*(?:ns|us|ms|s|m|h)?)`)
 
 type Options struct {
 	Registration   provider.Registration
@@ -188,7 +195,19 @@ func (p *Provider) Invoke(ctx context.Context, registration provider.Registratio
 		requestCtx, cancel = context.WithTimeout(ctx, p.requestTimeout)
 		defer cancel()
 	}
-	response, err := p.invoke(requestCtx, request)
+	var response compat.Response
+	var err error
+	for attempt := 0; attempt < transientRateLimitMaxAttempts; attempt++ {
+		response, err = p.invoke(requestCtx, request)
+		delay, ok := transientRateLimitRetryDelay(err)
+		if err == nil || !ok || attempt == transientRateLimitMaxAttempts-1 {
+			break
+		}
+		if waitErr := sleepRetryDelay(requestCtx, delay); waitErr != nil {
+			err = waitErr
+			break
+		}
+	}
 	p.recordInvocationResult(response.Usage, err)
 	return response, err
 }
@@ -213,7 +232,19 @@ func (p *Provider) InvokeStream(ctx context.Context, registration provider.Regis
 		requestCtx, cancel = context.WithTimeout(ctx, p.requestTimeout)
 		defer cancel()
 	}
-	response, err := p.invokeStream(requestCtx, request, emit)
+	var response compat.Response
+	var err error
+	for attempt := 0; attempt < transientRateLimitMaxAttempts; attempt++ {
+		response, err = p.invokeStream(requestCtx, request, emit)
+		delay, ok := transientRateLimitRetryDelay(err)
+		if err == nil || len(response.Message.Content) != 0 || !ok || attempt == transientRateLimitMaxAttempts-1 {
+			break
+		}
+		if waitErr := sleepRetryDelay(requestCtx, delay); waitErr != nil {
+			err = waitErr
+			break
+		}
+	}
 	p.recordInvocationResult(response.Usage, err)
 	return response, err
 }
@@ -787,6 +818,7 @@ func geminiStreamError(event geminiStreamJSONEvent) error {
 		StatusCode: upstreamStatusFromGeminiError(message),
 		Code:       code,
 		Message:    message,
+		RetryAfter: retryAfterFromText(message),
 	}
 }
 
@@ -801,6 +833,86 @@ func upstreamStatusFromGeminiError(message string) int {
 		return 401
 	default:
 		return 502
+	}
+}
+
+func transientRateLimitRetryDelay(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) || upstream.StatusCode != 429 {
+		return 0, false
+	}
+	for _, candidate := range []string{upstream.RetryAfter, upstream.Message, upstream.Body} {
+		delay, ok := parseRetryDelay(candidate)
+		if !ok {
+			continue
+		}
+		if delay < 0 {
+			delay = 0
+		}
+		if delay <= transientRateLimitMaxRetryDelay {
+			if delay < transientRateLimitMinRetryDelay {
+				delay = transientRateLimitMinRetryDelay
+			}
+			return delay + transientRateLimitRetryDelaySlack, true
+		}
+	}
+	return 0, false
+}
+
+func retryAfterFromText(text string) string {
+	delay, ok := parseRetryDelay(text)
+	if !ok {
+		return ""
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	seconds := int64(math.Ceil(delay.Seconds()))
+	if seconds < 0 {
+		seconds = 0
+	}
+	return strconv.FormatInt(seconds, 10)
+}
+
+func parseRetryDelay(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	if delay, err := time.ParseDuration(strings.ReplaceAll(raw, " ", "")); err == nil {
+		return delay, true
+	}
+	match := retryDelayPattern.FindStringSubmatch(raw)
+	if len(match) < 2 {
+		return 0, false
+	}
+	token := strings.ReplaceAll(strings.TrimSpace(match[1]), " ", "")
+	if delay, err := time.ParseDuration(token); err == nil {
+		return delay, true
+	}
+	if seconds, err := strconv.ParseFloat(token, 64); err == nil {
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	return 0, false
+}
+
+func sleepRetryDelay(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

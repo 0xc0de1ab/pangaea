@@ -460,7 +460,7 @@ func TestNotifier_AllSixSinksFanOut(t *testing.T) {
 	}
 }
 
-func TestNotifier_PeriodicSummaryAggregatesAndSkipsUnchanged(t *testing.T) {
+func TestNotifier_PeriodicTelegramSendsPerAccountEachTick(t *testing.T) {
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
@@ -529,26 +529,65 @@ func TestNotifier_PeriodicSummaryAggregatesAndSkipsUnchanged(t *testing.T) {
 	currentNow = currentNow.Add(time.Hour)
 	n.runOnce(context.Background())
 
-	if len(bodies) != 1 {
-		t.Fatalf("expected exactly one periodic send after dedupe, got %d", len(bodies))
+	if len(bodies) != 6 {
+		t.Fatalf("expected 6 telegram sends (3 accounts × 2 ticks), got %d", len(bodies))
 	}
-	body := bodies[0]
-	for _, want := range []string{
-		"<b>Auth State</b>",
-		"<b>claude #1</b>",
-		"opi5,snowbox",
-		"<b>codex #1</b>",
-		"Current session",
-		"2026-04-30 23:31:00.000",
-		"acct@example.test",
-		"last refresh",
-		"2026-04-26 10:02:03.000",
-		"<b>gemini #1</b> - ❌ no truth",
-		"█",
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "claude",
+			body: bodies[0],
+			want: []string{
+				"<b>Auth State</b>",
+				"claude",
+				"Claude",
+				"opi5",
+				"snowbox",
+				"Current session",
+				"93% left",
+				"acct@example.test",
+				"2026-04-30 23:31:00.000",
+			},
+		},
+		{
+			name: "codex",
+			body: bodies[1],
+			want: []string{
+				"<b>Auth State</b>",
+				"codex",
+				"Codex",
+				"codex@example.test",
+				"2026-04-28 20:00:00.000",
+				"2026-04-26 10:02:03.000",
+				"Current session",
+			},
+		},
+		{
+			name: "gemini",
+			body: bodies[2],
+			want: []string{
+				"<b>Auth State</b>",
+				"gemini",
+				"Gemini",
+				"opi5",
+				"snowbox",
+			},
+		},
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("periodic body missing %q\n--- body ---\n%s", want, body)
+		for _, sub := range tc.want {
+			if !strings.Contains(tc.body, sub) {
+				t.Fatalf("%s body missing %q\n--- body ---\n%s", tc.name, sub, tc.body)
+			}
 		}
+	}
+
+	combined := strings.Join(bodies[:3], "\n")
+	if strings.Contains(combined, "#1</b>") || strings.Contains(combined, "❌ no truth") {
+		t.Fatalf("batched periodic telegram markup should not appear:\n%s", combined)
 	}
 }
 

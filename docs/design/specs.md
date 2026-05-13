@@ -282,8 +282,9 @@ Release build:
 
 Version:
 
-- base: `v0.9.0-202604.1`
-- build-time output: `vSEMVER-YYYYMM.seq.<short-git-sha>`
+- base: `v0.9.0-202605.1`
+- build-time output: `vSEMVER-YYYYMM.seq`
+- optional diagnostic output: `vSEMVER-YYYYMM.seq.<short-git-sha>` with `VERSION_APPEND_SHA=1`
 - tag/release format: `vSEMVER-YYYYMM.seq`
 
 CI:

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/url"
 	"os"
 	"os/exec"
@@ -105,6 +106,8 @@ type setupProviderDefaults struct {
 	ProviderMode        string
 	UpstreamBaseURL     string
 	UpstreamDialect     string
+	ShimProtocols       []string
+	ShimCapabilities    []provider.Capability
 	ShimCommand         []string
 	Models              []provider.Model
 	ExtraCapabilities   []provider.Capability
@@ -124,14 +127,14 @@ func newSetupProviderCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.Type, "type", "", "provider runtime type (native-systemd|docker|podman|kind|k8s|kubernetes)")
-	cmd.Flags().StringVar(&opts.Mode, "mode", "", "provider adapter mode (app-server|http-direct|cli-adapter|acp|ls-core-sidecar)")
-	cmd.Flags().StringVar(&opts.Service, "service", "gemini", "provider service (codex|claude|gemini|antigravity)")
+	cmd.Flags().StringVar(&opts.Mode, "mode", "", "provider adapter mode (app-server|http-direct|cli-adapter|sdk|acp|ls-core-sidecar)")
+	cmd.Flags().StringVar(&opts.Service, "service", "gemini", "provider service (codex|claude|gemini|antigravity|github-copilot|cursor)")
 	cmd.Flags().StringVar(&opts.ProviderType, "provider-type", "", "logical provider type; defaults to <service>-cli")
 	cmd.Flags().StringVar(&opts.InstanceID, "instance-id", "", "provider instance id; defaults from derived auth account or provider type")
 	cmd.Flags().StringVar(&opts.AuthPath, "auth-path", "", "host auth file path to copy/bootstrap")
 	cmd.Flags().StringVar(&opts.SettingsPath, "settings-path", "", "optional Gemini settings.json path for MCP settings")
 	cmd.Flags().StringVar(&opts.OutDir, "out-dir", defaultSetupProviderOut, "directory for generated setup artifacts")
-	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "node id to report; defaults to host name")
+	cmd.Flags().StringVar(&opts.NodeID, "node-id", "", "node id to report; defaults to a stable random 6-digit id")
 	cmd.Flags().StringVar(&opts.HostName, "host-name", "", "physical host name to report; defaults to OS host name")
 	cmd.Flags().StringVar(&opts.Image, "image", "", "provider image; defaults from service and type")
 	cmd.Flags().StringVar(&opts.RuntimeImage, "runtime-image", "", "sidecar runtime image for providers that need a companion runtime")
@@ -195,7 +198,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 	if err != nil {
 		return setupProviderPlan{}, err
 	}
-	service := provider.Service(strings.TrimSpace(opts.Service))
+	service := setupProviderService(opts.Service)
 	defaults, err := setupDefaultsForService(service)
 	if err != nil {
 		return setupProviderPlan{}, err
@@ -215,6 +218,9 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 	authPath, err := setupProviderAuthPath(opts.AuthPath)
 	if err != nil {
 		return setupProviderPlan{}, err
+	}
+	if authPath != "" && strings.TrimSpace(defaults.AuthContainerPath) == "" {
+		return setupProviderPlan{}, fmt.Errorf("--auth-path is not supported yet for service %q", service)
 	}
 	account := ""
 	if authPath != "" {
@@ -268,7 +274,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 			storagePath = expanded
 		}
 	}
-	capabilities := append(defaultSetupCapabilities(authPath != ""), defaults.ExtraCapabilities...)
+	capabilities := setupProviderCapabilities(defaults, authPath != "")
 	if service == provider.ServiceAntigravity && authPath != "" {
 		capabilities = append(capabilities, provider.CapabilityAuthRefreshProtocol)
 	}
@@ -297,7 +303,7 @@ func buildSetupProviderPlan(opts setupProviderOptions) (setupProviderPlan, error
 		Env:             cloneSetupStringMap(defaults.ExtraEnv),
 		Refresh:         refreshSpec,
 		Shim: nodeagent.ShimSpec{
-			Protocols:    []string{"openai", "anthropic", "gemini"},
+			Protocols:    setupProviderProtocols(defaults),
 			Capabilities: capabilities,
 			Command:      append([]string(nil), defaults.ShimCommand...),
 			WorkingDir:   "/work",
@@ -493,6 +499,21 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 		return "", fmt.Errorf("--mode is required for service %q", defaults.Service)
 	}
 	switch mode {
+	case "sdk":
+		if defaults.Service != provider.ServiceGitHubCopilot {
+			return "", fmt.Errorf("--mode sdk is currently supported only for service github-copilot")
+		}
+		defaults.ProviderKind = provider.KindSidecar
+		defaults.ProviderMode = "sdk"
+		if strings.TrimSpace(defaults.UpstreamBaseURL) == "" {
+			defaults.UpstreamBaseURL = "http://127.0.0.1:4141"
+		}
+		if strings.TrimSpace(defaults.UpstreamDialect) == "" {
+			defaults.UpstreamDialect = "openai"
+		}
+		if len(defaults.ShimCommand) == 0 {
+			defaults.ShimCommand = []string{"/usr/local/bin/copilot-relay", "--listen", "127.0.0.1:4141"}
+		}
 	case "app-server":
 		if defaults.Service != provider.ServiceCodex {
 			return "", fmt.Errorf("--mode app-server is currently supported only for service codex")
@@ -533,7 +554,33 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 			return "", fmt.Errorf("--mode cli-adapter is not implemented for service %s", defaults.Service)
 		}
 	case "acp":
-		return "", fmt.Errorf("--mode acp is not implemented yet")
+		if defaults.Service != provider.ServiceGitHubCopilot && defaults.Service != provider.ServiceCursor {
+			return "", fmt.Errorf("--mode acp is currently supported only for service github-copilot or cursor")
+		}
+		defaults.ProviderKind = provider.KindCLIContainer
+		defaults.ProviderMode = "acp"
+		defaults.UpstreamBaseURL = ""
+		defaults.ShimCommand = nil
+		defaults.ShimCapabilities = []provider.Capability{
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
+		}
+		if defaults.Service == provider.ServiceGitHubCopilot {
+			defaults.ShimCapabilities = append(defaults.ShimCapabilities, provider.CapabilityCodeCompletion)
+		}
+		for i := range defaults.Models {
+			defaults.Models[i].Capabilities = []provider.Capability{
+				provider.CapabilityOpenAIChat,
+				provider.CapabilityAnthropicMessages,
+				provider.CapabilityGeminiGenerateContent,
+			}
+			if defaults.Service == provider.ServiceGitHubCopilot {
+				defaults.Models[i].Capabilities = append(defaults.Models[i].Capabilities, provider.CapabilityCodeCompletion)
+			}
+		}
 	case "ls-core-sidecar":
 		if defaults.Service != provider.ServiceAntigravity {
 			return "", fmt.Errorf("--mode ls-core-sidecar is currently supported only for service antigravity")
@@ -550,13 +597,23 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 			defaults.ShimCommand = setupProviderAntigravityRuntimeCommand()
 		}
 	default:
-		return "", fmt.Errorf("--mode must be one of app-server, http-direct, cli-adapter, acp, ls-core-sidecar")
+		return "", fmt.Errorf("--mode must be one of app-server, http-direct, cli-adapter, sdk, acp, ls-core-sidecar")
 	}
 	return mode, nil
 }
 
 func normalizeSetupProviderMode(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func setupProviderService(raw string) provider.Service {
+	service := strings.ToLower(strings.TrimSpace(raw))
+	switch service {
+	case "copilot":
+		return provider.ServiceGitHubCopilot
+	default:
+		return provider.Service(service)
+	}
 }
 
 func setupProviderAntigravityRuntimeCommand() []string {
@@ -672,6 +729,39 @@ func setupDefaultsForService(service provider.Service) (setupProviderDefaults, e
 				"FORCE_COLOR":                "1",
 			},
 		}, nil
+	case provider.ServiceCursor:
+		caps := []provider.Capability{
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+			provider.CapabilityStreamSSE,
+			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
+		}
+		return setupProviderDefaults{
+			Service:             service,
+			ImageName:           "pangaea/provider-cursor",
+			DefaultProviderType: "cursor-cli",
+			DefaultMode:         "acp",
+			ProviderKind:        provider.KindCLIContainer,
+			AuthFormat:          "cursor-auth-json-format",
+			AuthContainerPath:   "/var/lib/pangaea/home/cursor/.config/cursor/auth.json",
+			AuthSecretKey:       "auth.json",
+			AuthCandidates: []string{
+				"assets/.config/cursor/auth.json",
+				"assets/cursor/auth.json",
+				"~/.config/cursor/auth.json",
+			},
+			ProviderMode:     "acp",
+			UpstreamDialect:  "openai",
+			ShimProtocols:    []string{"openai", "anthropic", "gemini"},
+			ShimCapabilities: caps,
+			ExtraEnv: map[string]string{
+				"HOME":                     "/var/lib/pangaea/home/cursor",
+				"TMPDIR":                   "/var/lib/pangaea/tmp",
+				"PANGAEA_CURSOR_AGENT_EXE": "/home/pangaea/.local/bin/agent",
+			},
+		}, nil
 	case provider.ServiceAntigravity:
 		sidecarCaps := []provider.Capability{
 			provider.CapabilityAntigravitySidecar,
@@ -713,6 +803,44 @@ func setupDefaultsForService(service provider.Service) (setupProviderDefaults, e
 				"STATE_VSCDB_PATH":         "/var/lib/antigravity/state/User/globalStorage/state.vscdb",
 			},
 		}, nil
+	case provider.ServiceGitHubCopilot:
+		caps := []provider.Capability{
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+			provider.CapabilityCodeCompletion,
+			provider.CapabilityStreamSSE,
+			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
+		}
+		return setupProviderDefaults{
+			Service:             service,
+			ImageName:           "pangaea/provider-github-copilot-sidecar",
+			DefaultProviderType: "github-copilot-sidecar",
+			DefaultMode:         "sdk",
+			ProviderKind:        provider.KindSidecar,
+			AuthFormat:          "github-copilot-config-json-format",
+			AuthContainerPath:   "/var/lib/pangaea/home/copilot/.copilot/config.json",
+			AuthSecretKey:       "config.json",
+			AuthCandidates: []string{
+				"assets/.copilot/config.json",
+				"assets/copilot/config.json",
+				"~/.copilot/config.json",
+			},
+			ProviderMode:     "sdk",
+			UpstreamBaseURL:  "http://127.0.0.1:4141",
+			UpstreamDialect:  "openai",
+			ShimProtocols:    []string{"openai", "anthropic", "gemini"},
+			ShimCapabilities: caps,
+			ShimCommand:      []string{"/usr/local/bin/copilot-relay", "--listen", "127.0.0.1:4141"},
+			ExtraCapabilities: []provider.Capability{
+				provider.CapabilityCodeCompletion,
+			},
+			ExtraEnv: map[string]string{
+				"HOME":            "/var/lib/pangaea/home/copilot",
+				"XDG_CONFIG_HOME": "/var/lib/pangaea/home/copilot/.config",
+			},
+		}, nil
 	default:
 		return setupProviderDefaults{}, fmt.Errorf("unsupported --service %q", service)
 	}
@@ -731,6 +859,26 @@ func defaultSetupCapabilities(hasAuth bool) []provider.Capability {
 		capabilities = append(capabilities, provider.CapabilityAuthFile, provider.CapabilityAuthRefreshOneshot)
 	}
 	return capabilities
+}
+
+func setupProviderProtocols(defaults setupProviderDefaults) []string {
+	if len(defaults.ShimProtocols) > 0 {
+		return append([]string(nil), defaults.ShimProtocols...)
+	}
+	return []string{"openai", "anthropic", "gemini"}
+}
+
+func setupProviderCapabilities(defaults setupProviderDefaults, hasAuth bool) []provider.Capability {
+	if len(defaults.ShimCapabilities) > 0 {
+		capabilities := append([]provider.Capability(nil), defaults.ShimCapabilities...)
+		if hasAuth {
+			capabilities = append(capabilities, provider.CapabilityAuthFile, provider.CapabilityAuthRefreshOneshot)
+		}
+		capabilities = append(capabilities, defaults.ExtraCapabilities...)
+		return dedupeSetupCapabilities(capabilities)
+	}
+	capabilities := append(defaultSetupCapabilities(hasAuth), defaults.ExtraCapabilities...)
+	return dedupeSetupCapabilities(capabilities)
 }
 
 func dedupeSetupCapabilities(in []provider.Capability) []provider.Capability {
@@ -812,13 +960,15 @@ func persistSetupProviderRuntimeSettings(plan setupProviderPlan) error {
 }
 
 func randomSetupNodeID() (string, error) {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	const alphabet = "0123456789"
 	buf := make([]byte, 6)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	for i, b := range buf {
-		buf[i] = alphabet[int(b)%len(alphabet)]
+	max := big.NewInt(int64(len(alphabet)))
+	for i := range buf {
+		n, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		buf[i] = alphabet[n.Int64()]
 	}
 	return string(buf), nil
 }
@@ -1356,6 +1506,38 @@ fi
 chown -R 10001:10001 /var/lib/pangaea /work
 chmod 0700 /var/lib/pangaea/auth/claude /var/lib/pangaea/home/claude /var/lib/pangaea/tmp
 `)
+	case provider.ServiceCursor:
+		return strings.TrimSpace(`
+set -eu
+config_dir=/var/lib/pangaea/home/cursor/.config/cursor
+mkdir -p "${config_dir}" /var/lib/pangaea/tmp /var/lib/pangaea/runtime /work
+write_runtime_settings() {
+  runtime_settings="${PANGAEA_RUNTIME_SETTINGS_PATH:-/var/lib/pangaea/runtime/provider.env}"
+  runtime_dir="$(dirname "$runtime_settings")"
+  mkdir -p "$runtime_dir"
+  if [ ! -s "$runtime_settings" ]; then
+    {
+      printf 'PANGAEA_NODE_ID=%s\n' "${PANGAEA_NODE_ID:-}"
+      printf 'PANGAEA_HOST_NAME=%s\n' "${PANGAEA_HOST_NAME:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%s\n' "${PANGAEA_PROVIDER_TYPE:-}"
+      printf 'PANGAEA_PROVIDER_INSTANCE_ID=%s\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
+      printf 'PANGAEA_PROVIDER_MODE=%s\n' "${PANGAEA_PROVIDER_MODE:-}"
+      printf 'PANGAEA_SERVICE=%s\n' "${PANGAEA_SERVICE:-}"
+      printf 'PANGAEA_CONTAINER_KIND=%s\n' "${PANGAEA_CONTAINER_KIND:-}"
+      printf 'PANGAEA_CONTAINER_NAME=%s\n' "${PANGAEA_CONTAINER_NAME:-}"
+      printf 'PANGAEA_CONTAINER_ID=%s\n' "${PANGAEA_CONTAINER_ID:-}"
+    } > "$runtime_settings"
+    chmod 0600 "$runtime_settings" 2>/dev/null || true
+  fi
+}
+write_runtime_settings
+if [ -s /auth-src/auth.json ]; then
+  cp /auth-src/auth.json "${config_dir}/auth.json"
+  chmod 0600 "${config_dir}/auth.json"
+fi
+chown -R 10001:10001 /var/lib/pangaea /work
+chmod 0700 /var/lib/pangaea/home/cursor "${config_dir}" /var/lib/pangaea/tmp
+`)
 	case provider.ServiceAntigravity:
 		return strings.TrimSpace(`
 set -eu
@@ -1387,6 +1569,38 @@ if [ -s /auth-src/state.vscdb ]; then
 fi
 chown -R 10001:10001 /var/lib/antigravity/state /var/lib/pangaea /work
 chmod 0700 /var/lib/antigravity/state "${state_dir}" /var/lib/pangaea/home/antigravity
+`)
+	case provider.ServiceGitHubCopilot:
+		return strings.TrimSpace(`
+set -eu
+config_dir=/var/lib/pangaea/home/copilot/.copilot
+mkdir -p "${config_dir}" /var/lib/pangaea/tmp /var/lib/pangaea/runtime /work
+write_runtime_settings() {
+  runtime_settings="${PANGAEA_RUNTIME_SETTINGS_PATH:-/var/lib/pangaea/runtime/provider.env}"
+  runtime_dir="$(dirname "$runtime_settings")"
+  mkdir -p "$runtime_dir"
+  if [ ! -s "$runtime_settings" ]; then
+    {
+      printf 'PANGAEA_NODE_ID=%s\n' "${PANGAEA_NODE_ID:-}"
+      printf 'PANGAEA_HOST_NAME=%s\n' "${PANGAEA_HOST_NAME:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%s\n' "${PANGAEA_PROVIDER_TYPE:-}"
+      printf 'PANGAEA_PROVIDER_INSTANCE_ID=%s\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
+      printf 'PANGAEA_PROVIDER_MODE=%s\n' "${PANGAEA_PROVIDER_MODE:-}"
+      printf 'PANGAEA_SERVICE=%s\n' "${PANGAEA_SERVICE:-}"
+      printf 'PANGAEA_CONTAINER_KIND=%s\n' "${PANGAEA_CONTAINER_KIND:-}"
+      printf 'PANGAEA_CONTAINER_NAME=%s\n' "${PANGAEA_CONTAINER_NAME:-}"
+      printf 'PANGAEA_CONTAINER_ID=%s\n' "${PANGAEA_CONTAINER_ID:-}"
+    } > "$runtime_settings"
+    chmod 0600 "$runtime_settings" 2>/dev/null || true
+  fi
+}
+write_runtime_settings
+if [ -s /auth-src/config.json ]; then
+  cp /auth-src/config.json "${config_dir}/config.json"
+  chmod 0600 "${config_dir}/config.json"
+fi
+chown -R 10001:10001 /var/lib/pangaea /work
+chmod 0700 /var/lib/pangaea/home/copilot "${config_dir}" /var/lib/pangaea/tmp
 `)
 	default:
 		return strings.TrimSpace(`
@@ -1577,7 +1791,7 @@ func renderSetupProviderEnvMap(spec nodeagent.ProviderSpec, nodeID string, hostN
 		"PANGAEA_REFRESH_COOLDOWN":      spec.Refresh.Cooldown,
 		"PANGAEA_REFRESH_TIMEOUT":       spec.Refresh.Timeout,
 	}
-	if len(spec.Models) > 0 {
+	if len(spec.Models) > 0 && setupProviderShouldEmitDefaultModelEnv(spec) {
 		env["PANGAEA_MODEL"] = spec.Models[0].ID
 		if len(spec.Models[0].Aliases) > 0 {
 			env["PANGAEA_MODEL_ALIAS"] = spec.Models[0].Aliases[0]
@@ -1598,7 +1812,14 @@ func renderSetupProviderEnvMap(spec nodeagent.ProviderSpec, nodeID string, hostN
 	return env
 }
 
+func setupProviderShouldEmitDefaultModelEnv(spec nodeagent.ProviderSpec) bool {
+	return !(spec.Service == provider.ServiceGitHubCopilot && spec.ProviderMode == "sdk")
+}
+
 func setupProviderShouldEmitModelsEnv(spec nodeagent.ProviderSpec) bool {
+	if spec.Service == provider.ServiceGitHubCopilot && spec.ProviderMode == "sdk" {
+		return false
+	}
 	return !(spec.Service == provider.ServiceGemini && spec.ProviderMode == "http-direct")
 }
 

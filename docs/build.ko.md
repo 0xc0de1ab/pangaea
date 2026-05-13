@@ -95,36 +95,39 @@ build/<os-label>-<arch>/<variant>/
 현재 저장소의 base version:
 
 ```text
-v0.9.0-202604.1
+v0.9.0-202605.1
 ```
 
-빌드 시 Makefile이 `scripts/version.sh`를 통해 short Git SHA를 뒤에 붙여 다음 형태를 만듭니다.
+기본 빌드는 정확한 release version을 그대로 stamp합니다.
+
+```text
+vSEMVER-YYYYMM.seq
+```
+
+로컬 진단용 빌드에서 short Git SHA를 붙이고 싶으면
+`VERSION_APPEND_SHA=1`을 사용합니다.
 
 ```text
 vSEMVER-YYYYMM.seq.<commit-sha>
 ```
 
-예시:
-
-```text
-v0.9.0-202604.1.f9e994e562eb
-```
-
-기본 short SHA 길이는 12자입니다.
+SHA suffix를 켠 경우 기본 short SHA 길이는 12자입니다.
 
 관련 변수:
 
 - `VERSION_BASE`
 - `VERSION`
+- `VERSION_APPEND_SHA`
 - `GIT_SHA`
 - `SHA_LEN`
 
 예시:
 
 ```bash
-VERSION_BASE=v0.9.1-202604.2 make linux-amd64-release
-GIT_SHA=abcdef123456 make linux-amd64-release
-SHA_LEN=8 make linux-amd64-release
+VERSION_BASE=v0.9.1-202605.2 make linux-amd64-release
+VERSION_APPEND_SHA=1 GIT_SHA=abcdef123456 make linux-amd64-release
+VERSION_APPEND_SHA=1 SHA_LEN=8 make linux-amd64-release
+tools/bump_up.sh
 ```
 
 ## 테스트 및 정리 타깃
@@ -145,6 +148,21 @@ SHA_LEN=8 make linux-amd64-release
 make test
 make race
 make vet
+```
+
+## Provider 이미지 등록
+
+Gemini provider 이미지를 등록할 때 기본적으로 현재 release version과
+`latest` 두 tag만 push합니다.
+
+```bash
+make docker-release-provider-gemini
+```
+
+필요하면 registry 또는 repository를 override합니다.
+
+```bash
+REGISTRY=registry.example.com/example PROVIDER_GEMINI_REPO=pangaea/provider-gemini make docker-release-provider-gemini
 ```
 
 ## CI 빌드 동작
@@ -170,7 +188,7 @@ vSEMVER-YYYYMM.seq
 예시:
 
 ```text
-v0.9.0-202604.1
+v0.9.0-202605.1
 ```
 
 이 형식의 tag가 push되면 GitHub Actions가 다음을 수행합니다.
@@ -189,9 +207,9 @@ pangaeactl_<tag>_<os>-<arch>.zip
 
 예시:
 
-- `pangaeactl_v0.9.0-202604.1_linux-amd64.zip`
-- `pangaeactl_v0.9.0-202604.1_macos-arm64.zip`
-- `pangaeactl_v0.9.0-202604.1_windows-amd64.zip`
+- `pangaeactl_v0.9.0-202605.1_linux-amd64.zip`
+- `pangaeactl_v0.9.0-202605.1_macos-arm64.zip`
+- `pangaeactl_v0.9.0-202605.1_windows-amd64.zip`
 
 ## 운영 메모
 

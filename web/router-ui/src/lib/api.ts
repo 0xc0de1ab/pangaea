@@ -48,6 +48,11 @@ export type DashboardChatResult = {
   raw?: unknown;
 };
 
+export type DashboardChatRouteTarget = {
+  providerInstanceID?: string;
+  providerType?: string;
+};
+
 export class APIError extends Error {
   status: number;
   endpoint: string;
@@ -271,31 +276,33 @@ function streamPayloadError(payload: unknown) {
   return String(error);
 }
 
-async function bufferedChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token?: string, reasoningEffort?: string, upstreamMaxOutputTokens?: number): Promise<DashboardChatResult> {
+async function bufferedChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token?: string, reasoningEffort?: string, upstreamMaxOutputTokens?: number, routeTarget?: DashboardChatRouteTarget): Promise<DashboardChatResult> {
 	const maxTokens = maxTokensForChat(protocol, model, upstreamMaxOutputTokens);
   switch (protocol) {
     case "openai": {
-      const response = await request<{ choices?: Array<{ message?: { content?: string } }> }>("/v1/chat/completions", {
+      const response = await request<{ choices?: Array<{ message?: { content?: string } }> }>("/router/v1/compat/v1/chat/completions", {
         token,
         method: "POST",
+        headers: routeTargetHeaders(routeTarget),
         body: compactBody({ model, messages: openAIMessages(messages), max_tokens: maxTokens, stream: false, reasoning_effort: reasoningEffort }),
       });
       return { content: response.choices?.[0]?.message?.content ?? "", raw: response };
     }
     case "anthropic": {
-      const response = await request<{ content?: Array<{ type?: string; text?: string }> }>("/v1/messages", {
+      const response = await request<{ content?: Array<{ type?: string; text?: string }> }>("/router/v1/compat/v1/messages", {
         token,
         method: "POST",
-        headers: { "anthropic-version": "2023-06-01" },
+        headers: { ...routeTargetHeaders(routeTarget), "anthropic-version": "2023-06-01" },
         body: compactBody({ model, max_tokens: maxTokens, messages: anthropicMessages(messages), stream: false, reasoning_effort: reasoningEffort }),
       });
       return { content: extractAnthropicText(response), raw: response };
     }
     case "gemini": {
       const modelPath = encodeURIComponent(model);
-      const response = await requestWithFetchFallback<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }>(`/v1beta/models/${modelPath}:generateContent`, `/router/v1/compat/v1beta/models/${modelPath}:generateContent`, {
+      const response = await request<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }>(`/router/v1/compat/v1beta/models/${modelPath}:generateContent`, {
         token,
         method: "POST",
+        headers: routeTargetHeaders(routeTarget),
         body: compactBody({ contents: geminiContents(messages), reasoning_effort: reasoningEffort, generationConfig: reasoningEffort ? { reasoningEffort: reasoningEffort } : undefined }),
       });
       return { content: extractGeminiText(response), raw: response };
@@ -303,7 +310,7 @@ async function bufferedChat(protocol: DashboardChatProtocol, model: string, mess
   }
 }
 
-async function streamingChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token: string | undefined, onDelta: (delta: string) => void, reasoningEffort?: string, upstreamMaxOutputTokens?: number): Promise<DashboardChatResult> {
+async function streamingChat(protocol: DashboardChatProtocol, model: string, messages: DashboardChatMessage[], token: string | undefined, onDelta: (delta: string) => void, reasoningEffort?: string, upstreamMaxOutputTokens?: number, routeTarget?: DashboardChatRouteTarget): Promise<DashboardChatResult> {
 	let content = "";
 	const maxTokens = maxTokensForChat(protocol, model, upstreamMaxOutputTokens);
   const append = (delta: string) => {
@@ -313,17 +320,18 @@ async function streamingChat(protocol: DashboardChatProtocol, model: string, mes
   };
   switch (protocol) {
     case "openai":
-      await requestStream("/v1/chat/completions", {
+      await requestStream("/router/v1/compat/v1/chat/completions", {
         token,
         method: "POST",
+        headers: routeTargetHeaders(routeTarget),
         body: compactBody({ model, messages: openAIMessages(messages), max_tokens: maxTokens, stream: true, reasoning_effort: reasoningEffort }),
       }, (payload) => append(extractOpenAIStreamDelta(payload)));
       return { content };
     case "anthropic":
-      await requestStream("/v1/messages", {
+      await requestStream("/router/v1/compat/v1/messages", {
         token,
         method: "POST",
-        headers: { "anthropic-version": "2023-06-01" },
+        headers: { ...routeTargetHeaders(routeTarget), "anthropic-version": "2023-06-01" },
         body: compactBody({ model, max_tokens: maxTokens, messages: anthropicMessages(messages), stream: true, reasoning_effort: reasoningEffort }),
       }, (payload) => append(extractAnthropicStreamDelta(payload)));
       return { content };
@@ -331,10 +339,21 @@ async function streamingChat(protocol: DashboardChatProtocol, model: string, mes
       await requestGeminiStreamWithFallback(model, {
         token,
         method: "POST",
+        headers: routeTargetHeaders(routeTarget),
         body: compactBody({ contents: geminiContents(messages), reasoning_effort: reasoningEffort, generationConfig: reasoningEffort ? { reasoningEffort: reasoningEffort } : undefined }),
       }, (payload) => append(extractGeminiText(payload)));
       return { content };
   }
+}
+
+function routeTargetHeaders(routeTarget?: DashboardChatRouteTarget): Record<string, string> | undefined {
+  if (!routeTarget?.providerInstanceID && !routeTarget?.providerType) {
+    return undefined;
+  }
+  return compactBody({
+    "x-pangaea-provider-instance-id": routeTarget.providerInstanceID,
+    "x-pangaea-provider-type": routeTarget.providerType,
+  });
 }
 
 function maxTokensForChat(protocol: DashboardChatProtocol, model: string, upstreamMaxOutputTokens?: number): number | undefined {
@@ -350,14 +369,7 @@ function defaultAnthropicMaxTokens(_model: string) {
 
 async function requestGeminiStreamWithFallback(model: string, options: RequestOptions, onPayload: (payload: unknown) => void) {
   const modelPath = encodeURIComponent(model);
-  try {
-    await requestStream(`/v1beta/models/${modelPath}:streamGenerateContent?alt=sse`, options, onPayload);
-  } catch (err) {
-    if (!isFetchFailure(err)) {
-      throw err;
-    }
-    await requestStream(`/router/v1/compat/v1beta/models/${modelPath}:streamGenerateContent?alt=sse`, options, onPayload);
-  }
+  await requestStream(`/router/v1/compat/v1beta/models/${modelPath}:streamGenerateContent?alt=sse`, options, onPayload);
 }
 
 function extractAnthropicText(payload: { content?: Array<{ type?: string; text?: string }> }) {
@@ -494,6 +506,16 @@ export const api = {
       method: "DELETE",
       body: { request_ids: requestIDs },
     }),
+  deleteProviders: (providerInstanceIDs: string[], reason: string, token?: string) =>
+    request<{ deleted: number; results?: unknown[] }>("/router/v1/providers", {
+      token,
+      method: "DELETE",
+      body: {
+        provider_instance_ids: providerInstanceIDs,
+        reason,
+        confirm: true,
+      },
+    }),
   quotas: async (token?: string) => {
     const payload = await request<{ quotas?: QuotaSnapshot[] }>("/router/v1/quotas", { token });
     return payload.quotas ?? [];
@@ -503,7 +525,7 @@ export const api = {
     return payload.api_keys ?? [];
   },
   models: async (token?: string) => {
-    const payload = await request<{ data?: Array<{ id: string }>; models?: Array<{ name: string; displayName?: string; version?: string }> }>("/v1/models", { token });
+    const payload = await request<{ data?: Array<{ id: string }>; models?: Array<{ name: string; displayName?: string; version?: string }> }>("/router/v1/compat/v1/models", { token });
     const openAI = (payload.data ?? []).map((model) => ({ id: model.id, display: model.id, protocol: "openai" }));
     const gemini = (payload.models ?? []).map((model) => ({
       id: model.name.replace(/^models\//, ""),
@@ -513,16 +535,16 @@ export const api = {
     }));
     return [...openAI, ...gemini] satisfies PublicModel[];
   },
-  openAIModels: (token?: string) => request<{ object?: string; data?: Array<{ id: string; object?: string; created?: number; owned_by?: string }> }>("/v1/models", { token }),
+  openAIModels: (token?: string) => request<{ object?: string; data?: Array<{ id: string; object?: string; created?: number; owned_by?: string }> }>("/router/v1/compat/v1/models", { token }),
   anthropicModels: (token?: string) =>
-    request<{ data?: Array<{ id: string; type?: string; display_name?: string }>; first_id?: string; last_id?: string; has_more?: boolean }>("/v1/models", {
+    request<{ data?: Array<{ id: string; type?: string; display_name?: string }>; first_id?: string; last_id?: string; has_more?: boolean }>("/router/v1/compat/v1/models", {
       token,
       headers: { "anthropic-version": "2023-06-01", "x-api-dialect": "anthropic" },
     }),
   geminiModels: (token?: string) =>
-    request<{ models?: Array<{ name: string; displayName?: string; version?: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number; outputTokenLimit?: number }> }>("/v1beta/models", { token }),
+    request<{ models?: Array<{ name: string; displayName?: string; version?: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number; outputTokenLimit?: number }> }>("/router/v1/compat/v1beta/models", { token }),
   openAIChat: (model: string, token?: string) =>
-    request<unknown>("/v1/chat/completions", {
+    request<unknown>("/router/v1/compat/v1/chat/completions", {
       token,
       method: "POST",
       body: {
@@ -532,7 +554,7 @@ export const api = {
       },
     }),
   anthropicMessage: (model: string, token?: string) =>
-    request<unknown>("/v1/messages", {
+    request<unknown>("/router/v1/compat/v1/messages", {
       token,
       method: "POST",
       headers: { "anthropic-version": "2023-06-01" },
@@ -544,7 +566,7 @@ export const api = {
     }),
   geminiGenerateContent: (model: string, token?: string) => {
     const modelPath = encodeURIComponent(model);
-    return requestWithFetchFallback<unknown>(`/v1beta/models/${modelPath}:generateContent`, `/router/v1/compat/v1beta/models/${modelPath}:generateContent`, {
+    return request<unknown>(`/router/v1/compat/v1beta/models/${modelPath}:generateContent`, {
       token,
       method: "POST",
       body: {

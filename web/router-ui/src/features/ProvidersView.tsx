@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Activity, Box, Clipboard, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
+import { Activity, Box, Clipboard, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RefreshCw, Trash2 } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
@@ -13,12 +13,13 @@ import { api } from "../lib/api";
 import { providerAccountLabel, providerInstanceID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
 import { age, copyText, cx, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
 import { providerServiceEndpoints, serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
-import type { ProviderIdentity, ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
+import type { ProviderIdentity, ProviderModel, ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
 import dockerIcon from "../assets/icons/docker-mark-ocean-blue.svg";
 import kubernetesIcon from "../assets/icons/kubernetes.svg";
 
 export function ProvidersView({ data, queries, search, token, onAction, refresh }: DashboardViewProps) {
   const [selectedProviderID, setSelectedProviderID] = useState<string | null>(null);
+  const [selectedDeleteIDs, setSelectedDeleteIDs] = useState<Set<string>>(() => new Set());
   const [chatTarget, setChatTarget] = useState<ChatWorkbenchTarget | null>(null);
   const [dataTarget, setDataTarget] = useState<EndpointDataWorkbenchTarget | null>(null);
   const rows = useMemo(() => {
@@ -26,9 +27,9 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
       .sort((a, b) => `${a.identity.service}:${a.identity.host_name}:${providerAccountLabel(a)}:${providerInstanceID(a)}`.localeCompare(`${b.identity.service}:${b.identity.host_name}:${providerAccountLabel(b)}:${providerInstanceID(b)}`))
       .filter((provider) => hasText(provider, search));
   }, [data.providers, search]);
-  const control = sessionSet(data.controlSessions);
-  const dataSession = sessionSet(data.dataSessions);
-  const usage = providerUsageMap(data.usage);
+  const control = useMemo(() => sessionSet(data.controlSessions), [data.controlSessions]);
+  const dataSession = useMemo(() => sessionSet(data.dataSessions), [data.dataSessions]);
+  const usage = useMemo(() => providerUsageMap(data.usage), [data.usage]);
   const selected = useMemo(
     () => selectedProviderID ? data.providers.find((provider) => providerInstanceID(provider) === selectedProviderID) ?? null : null,
     [data.providers, selectedProviderID],
@@ -36,6 +37,19 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
   const selectedUsage = selected ? usage.get(providerInstanceID(selected)) : undefined;
   const selectedControlConnected = selected ? control.has(providerInstanceID(selected)) : false;
   const selectedDataConnected = selected ? dataSession.has(providerInstanceID(selected)) : false;
+  const disconnectedIDs = useMemo(() => {
+    const out = new Set<string>();
+    for (const provider of rows) {
+      const id = providerInstanceID(provider);
+      if (!control.has(id) && !dataSession.has(id)) {
+        out.add(id);
+      }
+    }
+    return out;
+  }, [control, dataSession, rows]);
+  const selectedDeleteCount = selectedDeleteIDs.size;
+  const deletableRows = rows.filter((row) => disconnectedIDs.has(providerInstanceID(row)));
+  const allVisibleDeletableSelected = deletableRows.length > 0 && deletableRows.every((row) => selectedDeleteIDs.has(providerInstanceID(row)));
   const detailChangeValues = useMemo(
     () => selected ? providerDetailChangeValues(selected, selectedUsage, selectedControlConnected, selectedDataConnected) : {},
     [selected, selectedUsage, selectedControlConnected, selectedDataConnected],
@@ -47,6 +61,60 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
       setSelectedProviderID(null);
     }
   }, [queries.providers.isFetching, selected, selectedProviderID]);
+
+  useEffect(() => {
+    setSelectedDeleteIDs((current) => {
+      const next = new Set([...current].filter((id) => disconnectedIDs.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [disconnectedIDs]);
+
+  function toggleDeleteSelected(providerID: string, checked: boolean) {
+    if (!disconnectedIDs.has(providerID)) return;
+    setSelectedDeleteIDs((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(providerID);
+      } else {
+        next.delete(providerID);
+      }
+      return next;
+    });
+  }
+
+  function toggleVisibleDeleteSelected(checked: boolean) {
+    setSelectedDeleteIDs((current) => {
+      const next = new Set(current);
+      for (const provider of deletableRows) {
+        const id = providerInstanceID(provider);
+        if (checked) {
+          next.add(id);
+        } else {
+          next.delete(id);
+        }
+      }
+      return next;
+    });
+  }
+
+  function deleteSelectedProviders() {
+    const ids = [...selectedDeleteIDs];
+    if (!ids.length) return;
+    onAction({
+      title: "Delete disconnected providers",
+      target: ids.length === 1 ? ids[0] : `${ids.length} providers`,
+      detail: "Selected disconnected provider registrations, usage snapshots, container snapshots, and auth sync records will be removed from router memory. A running provider will re-register if it reconnects.",
+      requireReason: true,
+      danger: true,
+      confirmLabel: "Delete providers",
+      execute: async (reason) => {
+        await api.deleteProviders(ids, reason, token);
+        setSelectedDeleteIDs(new Set());
+        setSelectedProviderID((id) => id && ids.includes(id) ? null : id);
+        refresh();
+      },
+    });
+  }
 
   function providerAction(provider: ProviderRegistration, kind: "drain" | "resume" | "refresh") {
     const id = providerInstanceID(provider);
@@ -76,20 +144,41 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
 
   const columns: DashboardColumn<ProviderRegistration>[] = [
     {
+      id: "select",
+      header: "Sel",
+      cell: (row) => {
+        const id = providerInstanceID(row);
+        const disconnected = disconnectedIDs.has(id);
+        return (
+          <input
+            type="checkbox"
+            aria-label={`Select ${id}`}
+            checked={selectedDeleteIDs.has(id)}
+            disabled={!disconnected}
+            title={disconnected ? "Select disconnected provider for deletion" : "Connected providers cannot be deleted"}
+            onChange={(event) => toggleDeleteSelected(id, event.currentTarget.checked)}
+            onClick={(event) => event.stopPropagation()}
+          />
+        );
+      },
+      width: "48px",
+      align: "center",
+    },
+    {
       id: "node",
       header: "Node",
       sortValue: (row) => row.identity.node_id,
       cell: (row) => (
-        <span className="id-cell" title={providerInstanceID(row)}>
+        <span className="id-cell provider-node-cell" title={providerInstanceID(row)}>
+          <ServiceLogoCell service={row.identity.service} />
           <span className="mono">{middleEllipsis(row.identity.node_id, 10, 6)}</span>
           <button className="mini-icon" type="button" aria-label="Copy node id" onClick={(event) => { event.stopPropagation(); copyText(row.identity.node_id); }}>
             <Clipboard aria-hidden="true" size={13} />
           </button>
         </span>
       ),
-      width: "128px",
+      width: "152px",
     },
-    { id: "service", header: "Svc", sortValue: (row) => row.identity.service, cell: (row) => <ServiceLogoCell service={row.identity.service} />, align: "center", width: "56px" },
     { id: "kind", header: "Kind", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
     {
       id: "apis",
@@ -152,10 +241,25 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
         subtitle="Grouped by service, host name, account, and provider instance"
         error={queries.providers.error}
         actions={
-          <button className="button secondary" type="button" onClick={refresh}>
-            <RefreshCw aria-hidden="true" size={15} />
-            Refresh
-          </button>
+          <>
+            <label className="trace-select-all">
+              <input
+                type="checkbox"
+                checked={allVisibleDeletableSelected}
+                disabled={deletableRows.length === 0}
+                onChange={(event) => toggleVisibleDeleteSelected(event.currentTarget.checked)}
+              />
+              <span>Select disconnected</span>
+            </label>
+            <button className="button danger" type="button" disabled={selectedDeleteCount === 0} onClick={deleteSelectedProviders}>
+              <Trash2 aria-hidden="true" size={15} />
+              Delete {selectedDeleteCount ? n(selectedDeleteCount) : ""}
+            </button>
+            <button className="button secondary" type="button" onClick={refresh}>
+              <RefreshCw aria-hidden="true" size={15} />
+              Refresh
+            </button>
+          </>
         }
       >
         <DataTable rows={rows} columns={columns} empty="No providers registered" getRowId={(row) => providerInstanceID(row)} onRowClick={(row) => setSelectedProviderID(providerInstanceID(row))} compact />
@@ -485,8 +589,9 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, chan
         </div>
         <div className={cx("tag-list", changed.has("models:list") && "provider-value-changed")}>
           {(provider.models ?? []).map((model) => (
-            <span className={model.kind === "group" || model.group_members?.length ? "tag mono model-tag-group" : "tag mono"} key={model.id}>
-              {model.kind === "group" || model.group_members?.length ? <span className="model-group-badge mini" title="Group model">G</span> : null}
+            <span className={isGroupProviderModel(provider.identity.service, model) || isAliasProviderModel(model) ? "tag mono model-tag-group" : "tag mono"} key={model.id}>
+              {isGroupProviderModel(provider.identity.service, model) ? <span className="model-group-badge mini" title="Group model">G</span> : null}
+              {isAliasProviderModel(model) ? <span className="model-alias-badge mini" title="Alias model">A</span> : null}
               {model.id}
             </span>
           ))}
@@ -522,6 +627,32 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, chan
       </div>
     </div>
   );
+}
+
+function isGroupProviderModel(service: string | undefined, model: ProviderModel) {
+  return model.kind === "group" || Boolean(model.group_members?.length) || isProviderAutoGroupModel(service, model.id);
+}
+
+function isAliasProviderModel(model: ProviderModel) {
+  return model.kind === "alias" || model.id === "antigravity-default";
+}
+
+function isProviderAutoGroupModel(service: string | undefined, modelID: string | undefined) {
+  if ((modelID ?? "").trim().toLowerCase() !== "auto") {
+    return false;
+  }
+  const key = (service ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  return [
+    "github-copilot",
+    "github-copilot-sidecar",
+    "github-copilot-acp",
+    "github-copilot-sdk",
+    "githubcopilot",
+    "copilot",
+    "copilot-sidecar",
+    "copilot-acp",
+    "copilot-sdk",
+  ].includes(key);
 }
 
 function DetailValue({ children, changed, changeKey, className }: { children: ReactNode; changed: Set<string>; changeKey: string; className?: string }) {

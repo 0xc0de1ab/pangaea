@@ -47,10 +47,11 @@ type RouteMatch struct {
 }
 
 type Candidate struct {
-	ProviderType string `json:"provider_type" yaml:"provider_type"`
-	Account      string `json:"account,omitempty" yaml:"account,omitempty"`
-	HostName     string `json:"host_name,omitempty" yaml:"host_name,omitempty"`
-	Weight       int    `json:"weight,omitempty" yaml:"weight,omitempty"`
+	ProviderType       string `json:"provider_type" yaml:"provider_type"`
+	ProviderInstanceID string `json:"provider_instance_id,omitempty" yaml:"provider_instance_id,omitempty"`
+	Account            string `json:"account,omitempty" yaml:"account,omitempty"`
+	HostName           string `json:"host_name,omitempty" yaml:"host_name,omitempty"`
+	Weight             int    `json:"weight,omitempty" yaml:"weight,omitempty"`
 }
 
 type Constraints struct {
@@ -65,13 +66,15 @@ type Constraints struct {
 }
 
 type RouteRequest struct {
-	TenantID   string            `json:"tenant_id,omitempty"`
-	UserID     string            `json:"user_id,omitempty"`
-	APIKeyID   string            `json:"api_key_id,omitempty"`
-	Model      string            `json:"model"`
-	APIDialect compat.APIDialect `json:"api_dialect"`
-	Stream     bool              `json:"stream,omitempty"`
-	Features   []string          `json:"features,omitempty"`
+	TenantID           string            `json:"tenant_id,omitempty"`
+	UserID             string            `json:"user_id,omitempty"`
+	APIKeyID           string            `json:"api_key_id,omitempty"`
+	ProviderInstanceID string            `json:"provider_instance_id,omitempty"`
+	ProviderType       string            `json:"provider_type,omitempty"`
+	Model              string            `json:"model"`
+	APIDialect         compat.APIDialect `json:"api_dialect"`
+	Stream             bool              `json:"stream,omitempty"`
+	Features           []string          `json:"features,omitempty"`
 }
 
 type RouteDecision struct {
@@ -183,6 +186,9 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 	if request.Stream {
 		required = appendCapability(required, provider.CapabilityStreamSSE)
 	}
+	if strings.TrimSpace(request.ProviderInstanceID) != "" {
+		return p.evaluatePinnedProvider(request, registrations, canonicalModels, canonicalModel, required)
+	}
 
 	route, ok := p.matchRoute(request)
 	if !ok {
@@ -271,6 +277,114 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 	decision.SelectedProvider = &selected
 	decision.Reason = "selected highest scoring candidate"
 	return decision
+}
+
+func (p RoutingPolicy) evaluatePinnedProvider(request RouteRequest, registrations []provider.Registration, canonicalModels []string, canonicalModel string, required []provider.Capability) RouteDecision {
+	providerInstanceID := strings.TrimSpace(request.ProviderInstanceID)
+	required = append(required, capabilitiesForDialect(request.APIDialect)...)
+	required = uniqueCapabilities(required)
+	constraints := Constraints{
+		AuthStatus:    []provider.AuthStatus{provider.AuthHealthy, provider.AuthRefreshSoon},
+		HealthState:   []provider.HealthStatus{provider.HealthReady},
+		MaxQueueDepth: 4,
+	}
+	decision := RouteDecision{
+		RouteID:              "provider:" + providerInstanceID,
+		ModelAlias:           request.Model,
+		CanonicalModel:       canonicalModel,
+		RequiredCapabilities: required,
+	}
+	scored := make([]scoredCandidate, 0, 1)
+	allRejections := make([]RouteRejection, 0)
+	foundProvider := false
+	for _, candidateCanonicalModel := range canonicalModels {
+		modelScored := make([]scoredCandidate, 0, 1)
+		modelRejections := make([]RouteRejection, 0)
+		for _, registration := range registrations {
+			if registration.Identity.ProviderInstanceID != providerInstanceID {
+				continue
+			}
+			foundProvider = true
+			if request.ProviderType != "" && registration.Identity.ProviderType != request.ProviderType {
+				modelRejections = append(modelRejections, RouteRejection{
+					ProviderInstanceID: registration.Identity.ProviderInstanceID,
+					ProviderType:       registration.Identity.ProviderType,
+					Reason:             "provider_type constraint not matched",
+				})
+				continue
+			}
+			candidate := Candidate{
+				ProviderType:       registration.Identity.ProviderType,
+				ProviderInstanceID: providerInstanceID,
+				Weight:             100,
+			}
+			score, weight, scoreReason, rejection := evaluateRegistration(candidate, constraints, required, request.Model, candidateCanonicalModel, registration)
+			if rejection != "" {
+				modelRejections = append(modelRejections, RouteRejection{
+					ProviderInstanceID: registration.Identity.ProviderInstanceID,
+					ProviderType:       registration.Identity.ProviderType,
+					Reason:             rejection,
+				})
+				continue
+			}
+			modelScored = append(modelScored, scoredCandidate{registration: registration, canonical: candidateCanonicalModel, score: score, weight: weight, reason: scoreReason})
+		}
+		if len(modelScored) > 0 {
+			scored = modelScored
+			canonicalModel = candidateCanonicalModel
+			decision.CanonicalModel = candidateCanonicalModel
+			decision.Rejections = modelRejections
+			break
+		}
+		allRejections = append(allRejections, modelRejections...)
+	}
+	if !foundProvider {
+		allRejections = append(allRejections, RouteRejection{
+			ProviderInstanceID: providerInstanceID,
+			ProviderType:       request.ProviderType,
+			Reason:             "pinned provider not connected",
+		})
+	}
+	if len(scored) == 0 {
+		decision.Rejections = allRejections
+		decision.Reason = ErrNoProvider.Error()
+		return decision
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].registration.Identity.ProviderInstanceID < scored[j].registration.Identity.ProviderInstanceID
+		}
+		return scored[i].score > scored[j].score
+	})
+	for _, candidate := range scored {
+		decision.FallbackChain = append(decision.FallbackChain, candidate.registration.Identity.ProviderInstanceID)
+		decision.Scores = append(decision.Scores, RouteCandidateScore{
+			ProviderInstanceID: candidate.registration.Identity.ProviderInstanceID,
+			ProviderType:       candidate.registration.Identity.ProviderType,
+			Score:              candidate.score,
+			Weight:             candidate.weight,
+			Reason:             candidate.reason,
+		})
+	}
+	selected := scored[0].registration
+	decision.Allowed = true
+	decision.Selected = selected.Identity.ProviderInstanceID
+	decision.SelectedProvider = &selected
+	decision.Reason = "selected pinned provider"
+	return decision
+}
+
+func capabilitiesForDialect(dialect compat.APIDialect) []provider.Capability {
+	switch dialect {
+	case compat.APIDialectOpenAI:
+		return []provider.Capability{provider.CapabilityOpenAIChat}
+	case compat.APIDialectAnthropic:
+		return []provider.Capability{provider.CapabilityAnthropicMessages}
+	case compat.APIDialectGemini:
+		return []provider.Capability{provider.CapabilityGeminiGenerateContent}
+	default:
+		return nil
+	}
 }
 
 func (p RoutingPolicy) matchRoute(request RouteRequest) (Route, bool) {
@@ -379,6 +493,9 @@ func modelMatchesAny(model provider.Model, names []string) bool {
 
 func candidateMatchesRegistration(candidate Candidate, registration provider.Registration) bool {
 	if candidate.ProviderType != registration.Identity.ProviderType {
+		return false
+	}
+	if candidate.ProviderInstanceID != "" && candidate.ProviderInstanceID != registration.Identity.ProviderInstanceID {
 		return false
 	}
 	if candidate.HostName != "" && candidate.HostName != registration.Identity.HostName {

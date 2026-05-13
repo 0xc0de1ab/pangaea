@@ -1070,7 +1070,8 @@ tr:last-child td {
   gap: 5px;
 }
 
-.model-group-badge.mini {
+.model-group-badge.mini,
+.model-alias-badge.mini {
   width: 15px;
   height: 15px;
   font-size: 9px;
@@ -1826,10 +1827,6 @@ tr:last-child td {
   width: 150px;
 }
 
-.workbench-table.models-table-no-quota {
-  min-width: 720px;
-}
-
 .model-alias-list,
 .capability-icons {
   display: flex;
@@ -1845,7 +1842,8 @@ tr:last-child td {
   gap: 6px;
 }
 
-.model-group-badge {
+.model-group-badge,
+.model-alias-badge {
   display: inline-flex;
   width: 18px;
   height: 18px;
@@ -1861,18 +1859,10 @@ tr:last-child td {
   line-height: 1;
 }
 
-.model-quota-cell {
-  display: grid;
-  grid-template-columns: minmax(54px, 1fr) auto;
-  align-items: center;
-  gap: 5px 8px;
-  min-width: 128px;
-}
-
-.model-quota-cell > span {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-size: 11px;
+.model-alias-badge {
+  border-color: rgba(124, 58, 237, 0.34);
+  background: #f5f3ff;
+  color: #6d28d9;
 }
 
 .model-alias-chip {
@@ -1915,6 +1905,13 @@ tr:last-child td {
   border-radius: 999px;
   background: #ffffff;
   color: var(--muted-strong);
+}
+
+.capability-icon .service-icon,
+.capability-icon .service-svg {
+  border: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .capability-icon.openai {

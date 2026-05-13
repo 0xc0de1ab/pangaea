@@ -109,6 +109,63 @@ func TestEngineDryRunUsesLiveProviderQueueDepth(t *testing.T) {
 	}
 }
 
+func TestEngineDryRunAllowsStaleRateLimitedProvider(t *testing.T) {
+	registry := provider.NewRegistry()
+	reg := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
+	reg.Health = provider.Health{
+		Status:    provider.HealthDegraded,
+		Reason:    "upstream rate limited",
+		CheckedAt: time.Now().Add(-2 * time.Minute),
+	}
+	if err := registry.Upsert(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	decision := engine.DryRun(RouteRequest{
+		Model:      "gpt-5-codex",
+		APIDialect: compat.APIDialectOpenAI,
+	})
+	if !decision.Allowed || decision.Selected != reg.Identity.ProviderInstanceID {
+		t.Fatalf("expected stale rate-limited provider to be routable, got %#v", decision)
+	}
+}
+
+func TestEngineProvidersRecoverStaleRateLimitedProvider(t *testing.T) {
+	registry := provider.NewRegistry()
+	reg := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
+	reg.Health = provider.Health{
+		Status:    provider.HealthDegraded,
+		Reason:    "upstream rate limited",
+		CheckedAt: time.Now().Add(-2 * time.Minute),
+	}
+	if err := registry.Upsert(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	providers := engine.Providers()
+	if len(providers) != 1 {
+		t.Fatalf("expected one provider, got %#v", providers)
+	}
+	if providers[0].Health.Status != provider.HealthReady || providers[0].Health.Reason != "" {
+		t.Fatalf("expected provider snapshot to recover stale rate-limit health, got %#v", providers[0].Health)
+	}
+	raw, ok := registry.Get(reg.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("missing raw provider")
+	}
+	if raw.Health.Status != provider.HealthDegraded || raw.Health.Reason != "upstream rate limited" {
+		t.Fatalf("provider snapshot recovery should not mutate registry, got %#v", raw.Health)
+	}
+}
+
 func TestEngineReserveRouteReservesQuota(t *testing.T) {
 	engine, ledger := testEngine(t)
 
@@ -604,6 +661,71 @@ func TestEngineInvokeMarksUpstreamRateLimitDegraded(t *testing.T) {
 	}
 	if updated.Health.Status != provider.HealthDegraded || updated.Health.Reason != "upstream rate limited" {
 		t.Fatalf("upstream rate limit did not degrade provider health: %#v", updated.Health)
+	}
+}
+
+func TestEngineInvokeDoesNotDegradeProviderForModelScopedCapacityError(t *testing.T) {
+	registry := provider.NewRegistry()
+	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
+	second := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
+	if err := registry.Upsert(first); err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	if err := registry.Upsert(second); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(upstreamErrorFallbackInvoker{
+		failProviderInstanceID: first.Identity.ProviderInstanceID,
+		err: &provider.UpstreamError{
+			StatusCode: 429,
+			Code:       "429",
+			Message:    "No capacity available for model gemini-2.5-pro on the server",
+		},
+	})
+
+	_, execution, err := engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_model_capacity_1",
+		RouteRequest: RouteRequest{
+			Model:      "gpt-5-codex",
+			APIDialect: compat.APIDialectOpenAI,
+			Stream:     true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Model:   "gemini-2.5-pro",
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	if execution.Decision.Selected != second.Identity.ProviderInstanceID {
+		t.Fatalf("expected fallback provider selected, got %#v", execution.Decision)
+	}
+	updated, ok := registry.Get(first.Identity.ProviderInstanceID)
+	if !ok {
+		t.Fatalf("missing first provider")
+	}
+	if updated.Health.Status != provider.HealthReady {
+		t.Fatalf("model-scoped capacity error degraded provider health: %#v", updated.Health)
+	}
+}
+
+func TestIsModelScopedCapacityErrorRecognizesGeminiQuotaMessage(t *testing.T) {
+	err := &provider.UpstreamError{
+		StatusCode: 429,
+		Code:       "429",
+		Message:    "You have exhausted your capacity on this model. Your quota will reset after 0s.",
+	}
+	if !isModelScopedCapacityError(err) {
+		t.Fatalf("expected Gemini per-model quota message to be model scoped")
 	}
 }
 

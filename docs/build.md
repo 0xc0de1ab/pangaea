@@ -95,36 +95,39 @@ Notes:
 The base repository version currently comes from:
 
 ```text
-v0.9.0-202604.1
+v0.9.0-202605.1
 ```
 
-At build time the Makefile appends a short Git SHA through `scripts/version.sh`, producing:
+By default the Makefile stamps the exact release version:
+
+```text
+vSEMVER-YYYYMM.seq
+```
+
+Set `VERSION_APPEND_SHA=1` to append a short Git SHA for local diagnostic
+builds:
 
 ```text
 vSEMVER-YYYYMM.seq.<commit-sha>
 ```
 
-Example:
-
-```text
-v0.9.0-202604.1.f9e994e562eb
-```
-
-The default short SHA length is 12 characters.
+The default short SHA length is 12 characters when SHA suffixing is enabled.
 
 Relevant variables:
 
 - `VERSION_BASE`
 - `VERSION`
+- `VERSION_APPEND_SHA`
 - `GIT_SHA`
 - `SHA_LEN`
 
 Examples:
 
 ```bash
-VERSION_BASE=v0.9.1-202604.2 make linux-amd64-release
-GIT_SHA=abcdef123456 make linux-amd64-release
-SHA_LEN=8 make linux-amd64-release
+VERSION_BASE=v0.9.1-202605.2 make linux-amd64-release
+VERSION_APPEND_SHA=1 GIT_SHA=abcdef123456 make linux-amd64-release
+VERSION_APPEND_SHA=1 SHA_LEN=8 make linux-amd64-release
+tools/bump_up.sh
 ```
 
 ## Test and Housekeeping Targets
@@ -145,6 +148,21 @@ Examples:
 make test
 make race
 make vet
+```
+
+## Provider Image Publishing
+
+Gemini provider image publishing pushes exactly two tags by default: the current
+release version and `latest`.
+
+```bash
+make docker-release-provider-gemini
+```
+
+Override the registry or repository when needed:
+
+```bash
+REGISTRY=registry.example.com/example PROVIDER_GEMINI_REPO=pangaea/provider-gemini make docker-release-provider-gemini
 ```
 
 ## CI Build Behavior
@@ -170,7 +188,7 @@ vSEMVER-YYYYMM.seq
 Example:
 
 ```text
-v0.9.0-202604.1
+v0.9.0-202605.1
 ```
 
 On matching tag push, GitHub Actions will:
@@ -189,9 +207,9 @@ pangaeactl_<tag>_<os>-<arch>.zip
 
 Examples:
 
-- `pangaeactl_v0.9.0-202604.1_linux-amd64.zip`
-- `pangaeactl_v0.9.0-202604.1_macos-arm64.zip`
-- `pangaeactl_v0.9.0-202604.1_windows-amd64.zip`
+- `pangaeactl_v0.9.0-202605.1_linux-amd64.zip`
+- `pangaeactl_v0.9.0-202605.1_macos-arm64.zip`
+- `pangaeactl_v0.9.0-202605.1_windows-amd64.zip`
 
 ## Notes for Operators
 

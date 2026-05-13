@@ -119,6 +119,60 @@ func TestProviderInvokeStreamUsesGeminiStreamJSON(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeStreamRetriesShortGeminiRateLimit(t *testing.T) {
+	runner := &attemptStreamingCommandRunner{
+		attempts: [][]string{
+			{
+				`{"type":"result","status":"error","error":{"code":"429","message":"You have exhausted your capacity on this model. Your quota will reset after 0s."}}`,
+			},
+			{
+				`{"type":"message","role":"assistant","content":"OK","delta":true}`,
+				`{"type":"result","status":"success","stats":{"total_tokens":3,"input_tokens":2,"output_tokens":1}}`,
+			},
+		},
+	}
+	p := newTestProvider(t, provider.ServiceGemini, runner)
+	request := testRequest(compat.APIDialectAnthropic, "gemini-2.5-flash-lite")
+	request.Stream = true
+	var events []compat.Event
+	response, err := p.InvokeStream(context.Background(), mustRegistration(t, p), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("stream attempts = %d, want 2", runner.calls)
+	}
+	if got := contentText(response.Message.Content); got != "OK" {
+		t.Fatalf("response text = %q, want OK", got)
+	}
+	if len(events) == 0 || events[0].Type != compat.EventMessageStart {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	health, err := p.Health()
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if health.Status != provider.HealthReady {
+		t.Fatalf("health = %#v, want ready", health)
+	}
+}
+
+func TestTransientRateLimitRetryDelayParsesGeminiRetryDelay(t *testing.T) {
+	delay, ok := transientRateLimitRetryDelay(&provider.UpstreamError{
+		StatusCode: 429,
+		Message:    `{"error":{"details":[{"metadata":{"quotaResetDelay":"1.544324971s"}},{"retryDelay":"1.544324971s"}]}}`,
+	})
+	if !ok {
+		t.Fatalf("expected retry delay")
+	}
+	if delay < time.Second || delay > 2200*time.Millisecond {
+		t.Fatalf("delay = %s, want around 2s", delay)
+	}
+}
+
 func TestCommandErrorFiltersGeminiAdvisories(t *testing.T) {
 	err := commandError([]string{"gemini"}, CommandResult{
 		Stderr: []byte("Warning: Basic terminal detected (TERM=dumb). Visual rendering will be limited.\nWarning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.\nRipgrep is not available. Falling back to GrepTool.\nError when talking to Gemini API\n"),
@@ -228,6 +282,32 @@ func (r *streamingCommandRunner) StreamCommand(_ context.Context, spec CommandSp
 	}
 	var stdout strings.Builder
 	for _, line := range r.lines {
+		stdout.WriteString(line)
+		stdout.WriteByte('\n')
+		if err := onStdoutLine([]byte(line)); err != nil {
+			return CommandResult{Stdout: []byte(stdout.String())}, err
+		}
+	}
+	return CommandResult{Stdout: []byte(stdout.String())}, nil
+}
+
+type attemptStreamingCommandRunner struct {
+	attempts [][]string
+	calls    int
+}
+
+func (r *attemptStreamingCommandRunner) RunCommand(context.Context, CommandSpec) (CommandResult, error) {
+	return CommandResult{}, errors.New("RunCommand should not be used for stream request")
+}
+
+func (r *attemptStreamingCommandRunner) StreamCommand(_ context.Context, _ CommandSpec, onStdoutLine CommandLineHandler) (CommandResult, error) {
+	index := r.calls
+	r.calls++
+	if index >= len(r.attempts) {
+		index = len(r.attempts) - 1
+	}
+	var stdout strings.Builder
+	for _, line := range r.attempts[index] {
 		stdout.WriteString(line)
 		stdout.WriteByte('\n')
 		if err := onStdoutLine([]byte(line)); err != nil {

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 GO    ?= go
 NPM   ?= npm
-VERSION_BASE ?= v0.9.0-202604.1
+VERSION_BASE ?= v0.9.0-202605.1
 VERSION ?= $(shell ./scripts/version.sh "$(VERSION_BASE)")
 
 # --- cross-build matrix ---------------------------------------------------
@@ -19,6 +19,9 @@ ANTIGRAVITY_RUNTIME_KIND_IMAGE ?= pangaea/antigravity-runtime:kind
 ROUTER_KIND_IMAGE ?= pangaea/router:kind
 PROVIDER_CODEX_KIND_IMAGE ?= pangaea/provider-codex:kind
 PROVIDER_GEMINI_KIND_IMAGE ?= pangaea/provider-gemini:kind
+REGISTRY ?= registry.example.com/example
+PROVIDER_GEMINI_REPO ?= pangaea/provider-gemini
+PROVIDER_GEMINI_RELEASE_IMAGE ?= $(REGISTRY)/$(PROVIDER_GEMINI_REPO):$(VERSION)
 OS_LIST        ?= linux darwin windows
 ARCH_LIST      ?= amd64 arm64
 BUILD_VARIANTS ?= debug release
@@ -74,7 +77,7 @@ token3 = $(word 3,$(subst -, ,$(1)))
 .PHONY: all clean help \
 	$(OS_LIST) $(ARCH_LIST) $(BUILD_VARIANTS) \
 	$(OS_ARCH_PAIRS) $(OS_VARIANT_PAIRS) $(ARCH_VARIANT_PAIRS) $(FULL_KEYS) \
-	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-provider-api-compatible docker-provider-antigravity-sidecar docker-provider-antigravity-runtime docker-providers \
+	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-release-provider-gemini docker-push-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-provider-api-compatible docker-provider-antigravity-sidecar docker-provider-antigravity-runtime docker-providers \
 	docker-router-kind kind-codex-e2e kind-gemini-e2e kind-antigravity-e2e
 
 all: $(FULL_TARGETS)
@@ -154,6 +157,15 @@ docker-provider-codex:
 docker-provider-gemini:
 	docker build -f providers/gemini/Dockerfile -t $(PROVIDER_GEMINI_IMAGE) --build-arg VERSION=$(VERSION) .
 
+docker-release-provider-gemini:
+	@test -n "$(REGISTRY)" || { echo "REGISTRY is required"; exit 1; }
+	docker build -f providers/gemini/Dockerfile -t $(PROVIDER_GEMINI_RELEASE_IMAGE) --build-arg VERSION=$(VERSION) .
+	docker tag $(PROVIDER_GEMINI_RELEASE_IMAGE) $(REGISTRY)/$(PROVIDER_GEMINI_REPO):latest
+	docker push $(PROVIDER_GEMINI_RELEASE_IMAGE)
+	docker push $(REGISTRY)/$(PROVIDER_GEMINI_REPO):latest
+
+docker-push-provider-gemini: docker-release-provider-gemini
+
 docker-provider-claude:
 	docker build -f providers/claude/Dockerfile -t $(PROVIDER_CLAUDE_IMAGE) --build-arg VERSION=$(VERSION) .
 
@@ -199,7 +211,7 @@ help:
 	@echo "Version: $(VERSION)"
 	@echo
 	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  router-ui  demo"
-	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-provider-claude  docker-provider-github-copilot-sidecar  docker-provider-api-compatible  docker-provider-antigravity-sidecar  docker-provider-antigravity-runtime  docker-providers"
+	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-release-provider-gemini  docker-provider-claude  docker-provider-github-copilot-sidecar  docker-provider-api-compatible  docker-provider-antigravity-sidecar  docker-provider-antigravity-runtime  docker-providers"
 	@echo "Kind e2e: docker-router-kind  kind-codex-e2e  kind-gemini-e2e  kind-antigravity-e2e"
 
 %:

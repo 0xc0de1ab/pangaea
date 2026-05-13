@@ -103,7 +103,7 @@ func newProviderShimRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.TargetVersion, "target-version", "", "target CLI/server version reported for this provider")
 	cmd.Flags().StringVar(&opts.Service, "service", "", "provider service family for --api-compatible, such as glm, minimax, deepseek")
 	cmd.Flags().StringVar(&opts.Account, "account", "", "operator-facing account label for --api-compatible")
-	cmd.Flags().StringVar(&opts.ProviderMode, "provider-mode", "", "provider adapter mode for --cli-container (http-direct|app-server|cli-adapter|acp|ls-core-sidecar)")
+	cmd.Flags().StringVar(&opts.ProviderMode, "provider-mode", "", "provider adapter mode (http-direct|app-server|cli-adapter|sdk|acp|ls-core-sidecar)")
 	cmd.Flags().StringVar(&opts.UpstreamBaseURL, "upstream-base-url", "", "upstream compatible API base URL for --api-compatible")
 	cmd.Flags().StringVar(&opts.UpstreamDialect, "upstream-dialect", "openai", "upstream API dialect for --api-compatible (openai|anthropic|gemini)")
 	cmd.Flags().StringVar(&opts.UpstreamAPIKey, "upstream-api-key", "", "upstream API key for --api-compatible")

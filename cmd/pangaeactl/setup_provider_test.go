@@ -163,6 +163,51 @@ func TestSetupProviderModeSelectsProviderMode(t *testing.T) {
 	if antigravity.Spec.Kind != provider.KindSidecar || antigravity.Spec.ProviderMode != "ls-core-sidecar" || antigravity.Spec.Upstream.BaseURL != "http://127.0.0.1:8080" {
 		t.Fatalf("unexpected antigravity spec: kind=%q provider_mode=%q upstream=%#v", antigravity.Spec.Kind, antigravity.Spec.ProviderMode, antigravity.Spec.Upstream)
 	}
+
+	copilotSDK, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:    "docker",
+		Mode:    "sdk",
+		Service: "github-copilot",
+		OutDir:  filepath.Join(dir, "copilot-sdk"),
+	})
+	if err != nil {
+		t.Fatalf("build copilot sdk setup provider plan: %v", err)
+	}
+	if copilotSDK.Spec.Kind != provider.KindSidecar || copilotSDK.Spec.ProviderMode != "sdk" || copilotSDK.Spec.Upstream.BaseURL != "http://127.0.0.1:4141" {
+		t.Fatalf("unexpected copilot sdk spec: kind=%q provider_mode=%q upstream=%#v", copilotSDK.Spec.Kind, copilotSDK.Spec.ProviderMode, copilotSDK.Spec.Upstream)
+	}
+	if got := strings.Join(copilotSDK.Spec.Shim.Command, " "); got != "/usr/local/bin/copilot-relay --listen 127.0.0.1:4141" {
+		t.Fatalf("unexpected copilot sdk command: %q", got)
+	}
+	if len(copilotSDK.Spec.Models) != 0 {
+		t.Fatalf("copilot sdk should discover models dynamically, got static models: %#v", copilotSDK.Spec.Models)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE} {
+		if !hasSetupCapability(copilotSDK.Spec.Shim.Capabilities, capability) {
+			t.Fatalf("copilot sdk capabilities %v missing %s", copilotSDK.Spec.Shim.Capabilities, capability)
+		}
+	}
+
+	copilotACP, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:    "docker",
+		Mode:    "acp",
+		Service: "github-copilot",
+		OutDir:  filepath.Join(dir, "copilot-acp"),
+	})
+	if err != nil {
+		t.Fatalf("build copilot acp setup provider plan: %v", err)
+	}
+	if copilotACP.Spec.Kind != provider.KindCLIContainer || copilotACP.Spec.ProviderMode != "acp" || copilotACP.Spec.Upstream.BaseURL != "" || len(copilotACP.Spec.Shim.Command) != 0 {
+		t.Fatalf("unexpected copilot acp spec: kind=%q provider_mode=%q upstream=%#v command=%v", copilotACP.Spec.Kind, copilotACP.Spec.ProviderMode, copilotACP.Spec.Upstream, copilotACP.Spec.Shim.Command)
+	}
+	if hasSetupCapability(copilotACP.Spec.Shim.Capabilities, provider.CapabilityStreamSSE) {
+		t.Fatalf("copilot acp should not advertise streaming until implemented: %v", copilotACP.Spec.Shim.Capabilities)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent} {
+		if !hasSetupCapability(copilotACP.Spec.Shim.Capabilities, capability) {
+			t.Fatalf("copilot acp capabilities %v missing %s", copilotACP.Spec.Shim.Capabilities, capability)
+		}
+	}
 }
 
 func TestBuildSetupProviderAntigravityKindManifestUsesRuntimeAndShimContainers(t *testing.T) {
@@ -347,8 +392,8 @@ func TestRunSetupProviderPersistsGeneratedNodeID(t *testing.T) {
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		t.Fatalf("decode runtime settings: %v", err)
 	}
-	if !validSetupNodeID(settings.NodeID) {
-		t.Fatalf("node id = %q, want six lower-case base36 chars", settings.NodeID)
+	if !setupNodeIDIsSixDigits(settings.NodeID) {
+		t.Fatalf("node id = %q, want six decimal digits", settings.NodeID)
 	}
 	if settings.Mode != "http-direct" || settings.Type != "kind" {
 		t.Fatalf("runtime settings mode/type = %q/%q, want http-direct/kind", settings.Mode, settings.Type)
@@ -357,7 +402,7 @@ func TestRunSetupProviderPersistsGeneratedNodeID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read first manifest: %v", err)
 	}
-	if !strings.Contains(string(firstManifest), "value: "+settings.NodeID) {
+	if !setupManifestContainsNodeID(firstManifest, settings.NodeID) {
 		t.Fatalf("first manifest missing persisted node id %q:\n%s", settings.NodeID, firstManifest)
 	}
 
@@ -374,7 +419,7 @@ func TestRunSetupProviderPersistsGeneratedNodeID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read second manifest: %v", err)
 	}
-	if !strings.Contains(string(secondManifest), "value: "+settings.NodeID) {
+	if !setupManifestContainsNodeID(secondManifest, settings.NodeID) {
 		t.Fatalf("second manifest did not reuse node id %q:\n%s", settings.NodeID, secondManifest)
 	}
 }
@@ -399,6 +444,108 @@ func TestBuildSetupProviderDerivesAccountOnlyFromAuthPath(t *testing.T) {
 	}
 	if plan.Spec.InstanceID != "gemini-operator-example.test" {
 		t.Fatalf("instance id = %q", plan.Spec.InstanceID)
+	}
+}
+
+func TestBuildSetupProviderCopilotDerivesAccountAndBootstrapsConfigJSON(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(authPath, copilotSetupConfigJSON("octocat"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:     "kind",
+		Service:  "github-copilot",
+		AuthPath: authPath,
+		OutDir:   filepath.Join(dir, "out"),
+	})
+	if err != nil {
+		t.Fatalf("build copilot setup provider plan: %v", err)
+	}
+	if plan.Spec.AccountHint != "octocat" {
+		t.Fatalf("account hint = %q, want octocat", plan.Spec.AccountHint)
+	}
+	if plan.Spec.InstanceID != "github-copilot-octocat" {
+		t.Fatalf("instance id = %q, want github-copilot-octocat", plan.Spec.InstanceID)
+	}
+	if plan.Spec.Auth.Format != "github-copilot-config-json-format" || !strings.HasSuffix(plan.Spec.Auth.ContainerPath, "/.copilot/config.json") {
+		t.Fatalf("unexpected copilot auth spec: %#v", plan.Spec.Auth)
+	}
+	manifest := string(plan.Artifacts[0].Content)
+	for _, want := range []string{
+		"bootstrap-github-copilot",
+		"config.json",
+		"github-copilot-config-json-format",
+		"/var/lib/pangaea/home/copilot/.copilot/config.json",
+		"PANGAEA_ACCOUNT_DISPLAY",
+		"value: octocat",
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("copilot manifest missing %q:\n%s", want, manifest)
+		}
+	}
+	if strings.Contains(manifest, "oauth_creds.json") {
+		t.Fatalf("copilot manifest should not use Gemini oauth bootstrap:\n%s", manifest)
+	}
+	if strings.Contains(manifest, "PANGAEA_MODEL") || strings.Contains(manifest, "PANGAEA_MODELS") {
+		t.Fatalf("copilot sdk manifest should discover models dynamically instead of injecting static model env:\n%s", manifest)
+	}
+}
+
+func TestBuildSetupProviderCursorDerivesAccountAndBootstrapsAuthJSON(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "cursor-agent")
+	if err := os.WriteFile(bin, []byte(cursorSetupAgentScript("dev@example.test", "Pro")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PANGAEA_CURSOR_AGENT_EXE", bin)
+	authPath := filepath.Join(dir, ".config", "cursor", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte(cursorSetupAuthJSON()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:     "kind",
+		Service:  "cursor",
+		Mode:     "acp",
+		AuthPath: authPath,
+		OutDir:   filepath.Join(dir, "out"),
+	})
+	if err != nil {
+		t.Fatalf("build cursor setup provider plan: %v", err)
+	}
+	if plan.Spec.AccountHint != "dev@example.test" {
+		t.Fatalf("account hint = %q, want dev@example.test", plan.Spec.AccountHint)
+	}
+	if plan.Spec.InstanceID != "cursor-dev-example.test" {
+		t.Fatalf("instance id = %q, want cursor-dev-example.test", plan.Spec.InstanceID)
+	}
+	if plan.Spec.Auth.Format != "cursor-auth-json-format" || !strings.HasSuffix(plan.Spec.Auth.ContainerPath, "/.config/cursor/auth.json") {
+		t.Fatalf("unexpected cursor auth spec: %#v", plan.Spec.Auth)
+	}
+	manifest := string(plan.Artifacts[0].Content)
+	for _, want := range []string{
+		"bootstrap-cursor",
+		"auth.json",
+		"cursor-auth-json-format",
+		"/var/lib/pangaea/home/cursor/.config/cursor/auth.json",
+		"PANGAEA_ACCOUNT_DISPLAY",
+		"value: dev@example.test",
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("cursor manifest missing %q:\n%s", want, manifest)
+		}
+	}
+	for _, forbidden := range []string{
+		"PANGAEA_MODEL",
+		"PANGAEA_MODELS",
+		"composer-2",
+	} {
+		if strings.Contains(manifest, forbidden) {
+			t.Fatalf("cursor manifest should not contain default model %q:\n%s", forbidden, manifest)
+		}
 	}
 }
 
@@ -431,6 +578,40 @@ func geminiSetupAuthJSON(t *testing.T, sub string, email string) []byte {
 	return []byte(`{"access_token":"secret-token","refresh_token":"refresh","expiry_date":1999999999999,"id_token":"` + header + "." + payload + `.sig"}`)
 }
 
+func copilotSetupAuthJSON(user string) []byte {
+	return []byte(`{"github.com:Iv23ctfURkiMfJ4xr5mv":{"user":"` + user + `","oauth_token":"gho_test_secret","githubAppId":"Iv23ctfURkiMfJ4xr5mv"}}`)
+}
+
+func copilotSetupConfigJSON(user string) []byte {
+	return []byte(`// User settings belong in settings.json.
+// This file is managed automatically.
+{
+  "lastLoggedInUser": {"host": "https://github.com", "login": "` + user + `"},
+  "loggedInUsers": [{"host": "https://github.com", "login": "` + user + `"}],
+  "copilotTokens": {
+    "https://github.com:` + user + `": "copilot_test_secret"
+  }
+}`)
+}
+
+func cursorSetupAuthJSON() string {
+	return `{"accessToken":"cursor-access-test","refreshToken":"cursor-refresh-test"}`
+}
+
+func cursorSetupAgentScript(email string, tier string) string {
+	return `#!/bin/sh
+if [ "$1" = "status" ]; then
+  printf '%s\n' '{"status":"authenticated","isAuthenticated":true,"userInfo":{"email":"` + email + `","userId":350474099}}'
+  exit 0
+fi
+if [ "$1" = "about" ]; then
+  printf '%s\n' '{"cliVersion":"2026.05.09-test","model":"Composer 2 Fast","subscriptionTier":"` + tier + `","userEmail":"` + email + `"}'
+  exit 0
+fi
+exit 2
+`
+}
+
 func hasSetupCapability(capabilities []provider.Capability, want provider.Capability) bool {
 	for _, capability := range capabilities {
 		if capability == want {
@@ -438,4 +619,21 @@ func hasSetupCapability(capabilities []provider.Capability, want provider.Capabi
 		}
 	}
 	return false
+}
+
+func setupNodeIDIsSixDigits(value string) bool {
+	if len(value) != 6 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func setupManifestContainsNodeID(manifest []byte, nodeID string) bool {
+	text := string(manifest)
+	return strings.Contains(text, "value: "+nodeID) || strings.Contains(text, `value: "`+nodeID+`"`)
 }

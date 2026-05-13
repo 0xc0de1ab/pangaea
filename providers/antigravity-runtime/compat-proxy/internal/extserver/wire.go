@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -161,17 +162,54 @@ func encodeUnifiedStateInitialUpdate(initialState []byte) []byte {
 
 func encodeCodeiumMetadata(apiKey string) []byte {
 	var out []byte
-	out = appendBytesField(out, 1, []byte("antigravity-compat-proxy"))
+	out = appendBytesField(out, 1, []byte(metadataEnv("ANTIGRAVITY_IDE_NAME", "antigravity")))
+	if ideVersion := metadataEnv("ANTIGRAVITY_IDE_VERSION", metadataEnv("PANGAEA_TARGET_VERSION", "")); ideVersion != "" {
+		out = appendBytesField(out, 7, []byte(ideVersion))
+	}
+	out = appendBytesField(out, 12, []byte(metadataEnv("ANTIGRAVITY_EXTENSION_NAME", "antigravity")))
+	if extensionPath := metadataEnv("ANTIGRAVITY_EXTENSION_PATH", "/opt/antigravity-server/extensions/antigravity"); extensionPath != "" {
+		out = appendBytesField(out, 17, []byte(extensionPath))
+	}
+	out = appendBytesField(out, 4, []byte(metadataLocale()))
+	if deviceFingerprint := strings.TrimSpace(os.Getenv("ANTIGRAVITY_DEVICE_FINGERPRINT")); deviceFingerprint != "" {
+		out = appendBytesField(out, 24, []byte(deviceFingerprint))
+	}
 	out = appendBytesField(out, 3, []byte(apiKey))
-	out = appendBytesField(out, 4, []byte("en"))
-	out = appendBoolField(out, 6, true)
-	out = appendBytesField(out, 7, []byte("headless"))
-	out = appendBytesField(out, 12, []byte("antigravity"))
+	if disableTelemetry := strings.TrimSpace(os.Getenv("ANTIGRAVITY_DISABLE_TELEMETRY")); disableTelemetry == "1" || strings.EqualFold(disableTelemetry, "true") {
+		out = appendBoolField(out, 6, true)
+	}
+	if userTierID := strings.TrimSpace(os.Getenv("ANTIGRAVITY_USER_TIER_ID")); userTierID != "" {
+		out = appendBytesField(out, 29, []byte(userTierID))
+	}
 	return out
 }
 
 func EncodeCodeiumMetadataForProcess(apiKey string) []byte {
 	return encodeCodeiumMetadata(apiKey)
+}
+
+func metadataEnv(key string, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func metadataLocale() string {
+	value := metadataEnv("ANTIGRAVITY_LOCALE", "")
+	if value == "" {
+		value = metadataEnv("LANGUAGE", "")
+	}
+	if value == "" {
+		value = metadataEnv("LANG", "")
+	}
+	value = strings.TrimSpace(strings.Split(value, ".")[0])
+	value = strings.TrimSpace(strings.Split(value, "_")[0])
+	if value == "" || strings.EqualFold(value, "C") {
+		return "en"
+	}
+	return value
 }
 
 func upsertInitialStateRow(initialState []byte, key string, newRow []byte, deleted bool) []byte {

@@ -20,6 +20,7 @@ const (
 	AuditEventProviderAuthRefresh  AuditEventType = "provider.auth_refresh"
 	AuditEventProviderDrain        AuditEventType = "provider.drain"
 	AuditEventProviderDrainRelease AuditEventType = "provider.drain_release"
+	AuditEventProviderDelete       AuditEventType = "provider.delete"
 	AuditEventRequestTraceDelete   AuditEventType = "request_trace.delete"
 )
 

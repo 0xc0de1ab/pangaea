@@ -14,10 +14,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,15 +30,21 @@ import (
 )
 
 const (
-	defaultBaseURL            = "https://cloudcode-pa.googleapis.com"
-	defaultUserAgent          = "GeminiCLI/0.41.2/gemini-3-pro-preview (linux; x64; terminal) google-api-nodejs-client/9.15.1"
-	defaultAPIClient          = "gl-node/24.14.0"
-	authRefreshThreshold      = 5 * time.Minute
-	usageSourceDirectHTTP     = "gemini-direct-http"
-	geminiVersionProbeTimeout = 2 * time.Second
+	defaultBaseURL                    = "https://cloudcode-pa.googleapis.com"
+	defaultUserAgent                  = "GeminiCLI/0.41.2/gemini-3-pro-preview (linux; x64; terminal) google-api-nodejs-client/9.15.1"
+	defaultAPIClient                  = "gl-node/24.14.0"
+	authRefreshThreshold              = 5 * time.Minute
+	transientRateLimitMaxAttempts     = 5
+	transientRateLimitMaxRetryDelay   = 5 * time.Second
+	transientRateLimitMinRetryDelay   = time.Second
+	transientRateLimitRetryDelaySlack = 500 * time.Millisecond
+	usageSourceDirectHTTP             = "gemini-direct-http"
+	geminiVersionProbeTimeout         = 2 * time.Second
 )
 
 var ErrConfig = errors.New("invalid gemini direct-http provider config")
+
+var retryDelayPattern = regexp.MustCompile(`(?i)(?:retryDelay|quotaResetDelay|retry after|reset after)[^0-9]{0,80}([0-9]+(?:\.[0-9]+)?\s*(?:ns|us|ms|s|m|h)?)`)
 
 type Options struct {
 	Registration   provider.Registration
@@ -172,7 +181,7 @@ func (p *Provider) Invoke(ctx context.Context, registration provider.Registratio
 	current := request
 	totalUsage := compat.Usage{}
 	for round := 0; ; round++ {
-		response, err := p.invokeOnce(ctx, current)
+		response, err := p.invokeOnceWithRetry(ctx, current)
 		if err != nil {
 			p.recordInvocationResult(totalUsage, err)
 			return compat.Response{}, err
@@ -198,6 +207,23 @@ func (p *Provider) Invoke(ctx context.Context, registration provider.Registratio
 		}
 		current = appendToolContinuation(current, response.Message, toolResults)
 	}
+}
+
+func (p *Provider) invokeOnceWithRetry(ctx context.Context, request compat.Request) (compat.Response, error) {
+	var response compat.Response
+	var err error
+	for attempt := 0; attempt < transientRateLimitMaxAttempts; attempt++ {
+		response, err = p.invokeOnce(ctx, request)
+		delay, ok := transientRateLimitRetryDelay(err)
+		if err == nil || !ok || attempt == transientRateLimitMaxAttempts-1 {
+			break
+		}
+		if waitErr := sleepRetryDelay(ctx, delay); waitErr != nil {
+			err = waitErr
+			break
+		}
+	}
+	return response, err
 }
 
 func (p *Provider) invokeOnce(ctx context.Context, request compat.Request) (compat.Response, error) {
@@ -235,7 +261,7 @@ func (p *Provider) InvokeStream(ctx context.Context, registration provider.Regis
 			toolEmitter = &toolStreamRoundEmitter{emit: emit}
 			roundEmit = toolEmitter.Emit
 		}
-		response, err := p.invokeStreamOnce(ctx, current, roundEmit)
+		response, err := p.invokeStreamOnceWithRetry(ctx, current, roundEmit)
 		if err != nil {
 			p.recordInvocationResult(totalUsage, err)
 			return compat.Response{}, err
@@ -263,6 +289,23 @@ func (p *Provider) InvokeStream(ctx context.Context, registration provider.Regis
 		}
 		current = appendToolContinuation(current, response.Message, toolResults)
 	}
+}
+
+func (p *Provider) invokeStreamOnceWithRetry(ctx context.Context, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	var response compat.Response
+	var err error
+	for attempt := 0; attempt < transientRateLimitMaxAttempts; attempt++ {
+		response, err = p.invokeStreamOnce(ctx, request, emit)
+		delay, ok := transientRateLimitRetryDelay(err)
+		if err == nil || len(response.Message.Content) != 0 || !ok || attempt == transientRateLimitMaxAttempts-1 {
+			break
+		}
+		if waitErr := sleepRetryDelay(ctx, delay); waitErr != nil {
+			err = waitErr
+			break
+		}
+	}
+	return response, err
 }
 
 func (p *Provider) invokeStreamOnce(ctx context.Context, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
@@ -771,6 +814,9 @@ func upstreamHTTPError(resp *http.Response, body []byte) error {
 		retryAfter = resp.Header.Get("retry-after")
 	}
 	statusCode, code = normalizeUpstreamStatus(statusCode, code, message)
+	if retryAfter == "" {
+		retryAfter = retryAfterFromText(message + "\n" + bodyText)
+	}
 	return &provider.UpstreamError{
 		StatusCode: statusCode,
 		Code:       code,
@@ -794,6 +840,86 @@ func upstreamErrorDetails(body []byte) (string, string) {
 		}
 	}
 	return firstString(payload, "message", "error", "detail"), firstString(payload, "code", "type", "status")
+}
+
+func transientRateLimitRetryDelay(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusTooManyRequests {
+		return 0, false
+	}
+	for _, candidate := range []string{upstream.RetryAfter, upstream.Message, upstream.Body} {
+		delay, ok := parseRetryDelay(candidate)
+		if !ok {
+			continue
+		}
+		if delay < 0 {
+			delay = 0
+		}
+		if delay <= transientRateLimitMaxRetryDelay {
+			if delay < transientRateLimitMinRetryDelay {
+				delay = transientRateLimitMinRetryDelay
+			}
+			return delay + transientRateLimitRetryDelaySlack, true
+		}
+	}
+	return 0, false
+}
+
+func retryAfterFromText(text string) string {
+	delay, ok := parseRetryDelay(text)
+	if !ok {
+		return ""
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	seconds := int64(math.Ceil(delay.Seconds()))
+	if seconds < 0 {
+		seconds = 0
+	}
+	return strconv.FormatInt(seconds, 10)
+}
+
+func parseRetryDelay(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	if delay, err := time.ParseDuration(strings.ReplaceAll(raw, " ", "")); err == nil {
+		return delay, true
+	}
+	match := retryDelayPattern.FindStringSubmatch(raw)
+	if len(match) < 2 {
+		return 0, false
+	}
+	token := strings.ReplaceAll(strings.TrimSpace(match[1]), " ", "")
+	if delay, err := time.ParseDuration(token); err == nil {
+		return delay, true
+	}
+	if seconds, err := strconv.ParseFloat(token, 64); err == nil {
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	return 0, false
+}
+
+func sleepRetryDelay(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func normalizeUpstreamStatus(statusCode int, code string, message string) (int, string) {

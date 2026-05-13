@@ -42,6 +42,15 @@ func TestResponseValidateRequiresAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestResponseValidateAllowsEmptyTextPart(t *testing.T) {
+	response := validResponse()
+	response.Message.Content = []ContentPart{{Type: ContentPartText, Text: ""}}
+
+	if err := response.Validate(); err != nil {
+		t.Fatalf("expected empty response text to be valid: %v", err)
+	}
+}
+
 func TestEventValidateRequiresDeltaPayload(t *testing.T) {
 	event := Event{Type: EventContentDelta}
 

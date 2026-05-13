@@ -265,9 +265,9 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	if dialect := providerDialect(spec); dialect != "" {
 		env["PANGAEA_UPSTREAM_DIALECT"] = dialect
 	}
-	if len(spec.Models) > 0 {
+	if len(spec.Models) > 0 && shouldEmitDefaultModelEnv(spec) {
 		env["PANGAEA_MODEL"] = spec.Models[0].ID
-		if models := providerModelEnv(spec.Models); models != "" {
+		if models := providerModelEnv(spec); models != "" {
 			env["PANGAEA_MODELS"] = models
 		}
 		if len(spec.Models[0].Aliases) > 0 {
@@ -361,9 +361,16 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 	return containerSpec, nil
 }
 
-func providerModelEnv(models []provider.Model) string {
-	items := make([]string, 0, len(models))
-	for _, model := range models {
+func shouldEmitDefaultModelEnv(spec ProviderSpec) bool {
+	return !(spec.Service == provider.ServiceGitHubCopilot && spec.ProviderMode == "sdk")
+}
+
+func providerModelEnv(spec ProviderSpec) string {
+	if spec.Service == provider.ServiceGitHubCopilot && spec.ProviderMode == "sdk" {
+		return ""
+	}
+	items := make([]string, 0, len(spec.Models))
+	for _, model := range spec.Models {
 		id := strings.TrimSpace(model.ID)
 		if id == "" {
 			continue

@@ -17,6 +17,8 @@ import (
 
 var ErrRouterNotReady = errors.New("router not ready")
 
+const staleRateLimitDegradedAfter = 30 * time.Second
+
 type Engine struct {
 	policy             RoutingPolicy
 	registry           *provider.Registry
@@ -183,13 +185,14 @@ func (e *Engine) Providers() []provider.Registration {
 	if e == nil || e.registry == nil {
 		return nil
 	}
-	return e.registry.List()
+	return recoverStaleRateLimitDegradations(e.registry.List(), time.Now().UTC())
 }
 
 func (e *Engine) routingRegistrations() []provider.Registration {
-	registrations := e.registry.List()
 	availability := e.availability
 	load, _ := e.invoker.(ProviderLoad)
+	now := time.Now().UTC()
+	registrations := recoverStaleRateLimitDegradations(e.registry.List(), now)
 	if availability == nil && load == nil {
 		return registrations
 	}
@@ -208,17 +211,42 @@ func (e *Engine) routingRegistrations() []provider.Registration {
 		if availability != nil && !availability.ProviderAvailable(providerInstanceID) {
 			registration.Health.Status = provider.HealthDown
 			registration.Health.Reason = "data session disconnected"
-			registration.Health.CheckedAt = time.Now().UTC()
+			registration.Health.CheckedAt = now
 		}
 		out[i] = registration
 	}
 	return out
 }
 
+func recoverStaleRateLimitDegradations(registrations []provider.Registration, now time.Time) []provider.Registration {
+	out := make([]provider.Registration, len(registrations))
+	for i, registration := range registrations {
+		out[i] = recoverStaleRateLimitDegradation(registration, now)
+	}
+	return out
+}
+
+func recoverStaleRateLimitDegradation(registration provider.Registration, now time.Time) provider.Registration {
+	if registration.Health.Status != provider.HealthDegraded {
+		return registration
+	}
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(registration.Health.Reason)), "upstream rate limited") {
+		return registration
+	}
+	if registration.Health.CheckedAt.IsZero() || now.Sub(registration.Health.CheckedAt) < staleRateLimitDegradedAfter {
+		return registration
+	}
+	registration.Health.Status = provider.HealthReady
+	registration.Health.Reason = ""
+	registration.Health.CheckedAt = now
+	return registration
+}
+
 func (e *Engine) UpsertProvider(registration provider.Registration) error {
 	if e == nil || e.registry == nil {
 		return ErrRouterNotReady
 	}
+	registration.Identity.Account = registration.Identity.Account.MergeMissingFrom(registration.Auth.Account)
 	return e.registry.Upsert(registration)
 }
 
@@ -235,7 +263,7 @@ func (e *Engine) UpdateProviderHeartbeat(providerInstanceID string, health provi
 	}
 	if auth.Status != "" {
 		registration.Auth = auth
-		registration.Identity.Account = accountWithFallback(registration.Identity.Account, auth.Account)
+		registration.Identity.Account = registration.Identity.Account.MergeMissingFrom(auth.Account)
 	}
 	if limits != (provider.LimitState{}) {
 		registration.Limits = limits
@@ -264,7 +292,7 @@ func (e *Engine) UpdateProviderAuth(providerInstanceID string, auth provider.Aut
 		}
 	}
 	registration.Auth = auth
-	registration.Identity.Account = accountWithFallback(registration.Identity.Account, auth.Account)
+	registration.Identity.Account = registration.Identity.Account.MergeMissingFrom(auth.Account)
 	return e.registry.Upsert(registration)
 }
 
@@ -303,7 +331,7 @@ func (e *Engine) UpdateProviderUsage(providerInstanceID string, usage provider.U
 		usage.ObservedAt = reportedAt
 	}
 	identity := registration.Identity
-	identity.Account = accountWithFallback(identity.Account, registration.Auth.Account)
+	identity.Account = identity.Account.MergeMissingFrom(registration.Auth.Account)
 	snapshot := ProviderUsageSnapshot{
 		ProviderInstanceID: identity.ProviderInstanceID,
 		ProviderType:       identity.ProviderType,
@@ -363,7 +391,11 @@ func (e *Engine) ReserveRoute(request RouteExecutionRequest) (RouteExecution, er
 	}
 	decision := e.DryRun(request.RouteRequest)
 	if !decision.Allowed {
-		return RouteExecution{Decision: decision}, ErrNoProvider
+		err := ErrNoProvider
+		if decision.Reason == ErrNoRoute.Error() {
+			err = ErrNoRoute
+		}
+		return RouteExecution{Decision: decision}, err
 	}
 	scope := request.QuotaScope
 	if scope.Model == "" {
@@ -662,6 +694,9 @@ func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID strin
 		registration.Health.Status = provider.HealthDown
 		registration.Health.Reason = "upstream auth failed"
 	case 429:
+		if isModelScopedCapacityError(upstream) {
+			return
+		}
 		registration.Health.Status = provider.HealthDegraded
 		registration.Health.Reason = "upstream rate limited"
 	case 400, 404:
@@ -672,4 +707,13 @@ func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID strin
 	}
 	registration.Health.CheckedAt = now
 	_ = e.registry.Upsert(registration)
+}
+
+func isModelScopedCapacityError(upstream *provider.UpstreamError) bool {
+	if upstream == nil || upstream.StatusCode != 429 {
+		return false
+	}
+	combined := strings.ToLower(strings.TrimSpace(upstream.Code + " " + upstream.Message + " " + upstream.Body))
+	return strings.Contains(combined, "no capacity available for model") ||
+		strings.Contains(combined, "capacity on this model")
 }

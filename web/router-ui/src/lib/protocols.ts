@@ -13,9 +13,9 @@ const protocolCapabilities: Record<ProviderProtocol, string[]> = {
 export function protocolLabel(protocol: ProviderProtocol) {
   switch (protocol) {
     case "openai":
-      return "ChatGPT";
+      return "OpenAI";
     case "anthropic":
-      return "Claude";
+      return "Anthropic";
     case "gemini":
       return "Gemini";
   }
@@ -42,8 +42,52 @@ export function providerModelsForProtocol(provider: ProviderRegistration, protoc
 }
 
 export function preferredModelForProtocol(provider: ProviderRegistration, protocol: ProviderProtocol) {
-  const model = providerModelsForProtocol(provider, protocol)[0];
-  return model?.aliases?.[0] || model?.id || "";
+  const model = preferredModelsForService(provider.identity.service, providerModelsForProtocol(provider, protocol))[0];
+  return model?.id || model?.aliases?.[0] || "";
+}
+
+function preferredModelsForService(service: string, models: ProviderModel[]) {
+  const key = service.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (key !== "gemini" && !key.startsWith("gemini-")) {
+    return models;
+  }
+  const hasConcrete = models.some((model) => model.kind !== "group");
+  if (!hasConcrete) {
+    return models;
+  }
+  return [...models].sort((a, b) => {
+    const groupRank = Number(a.kind === "group") - Number(b.kind === "group");
+    if (groupRank !== 0) {
+      return groupRank;
+    }
+    const familyRank = geminiModelFamilyRank(a) - geminiModelFamilyRank(b);
+    if (familyRank !== 0) {
+      return familyRank;
+    }
+    const quotaRank = quotaRemaining(b) - quotaRemaining(a);
+    if (quotaRank !== 0) {
+      return quotaRank;
+    }
+    return models.indexOf(a) - models.indexOf(b);
+  });
+}
+
+function quotaRemaining(model: ProviderModel) {
+  return model.quota?.remaining_pct ?? -1;
+}
+
+function geminiModelFamilyRank(model: ProviderModel) {
+  const id = model.id.toLowerCase();
+  if (id.includes("flash-lite")) {
+    return 0;
+  }
+  if (id.includes("flash")) {
+    return 1;
+  }
+  if (id.includes("pro")) {
+    return 3;
+  }
+  return 2;
 }
 
 function providerCapabilitySet(provider: ProviderRegistration) {

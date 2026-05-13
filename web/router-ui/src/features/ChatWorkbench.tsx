@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, AtSign, Check, Copy, FileText, Image as ImageIcon, RefreshCw, Send, Trash2, X } from "lucide-react";
 import { MarkdownContent } from "../components/MarkdownContent";
-import { ServiceIcon } from "../components/ServiceIcon";
+import { ProtocolIcon } from "../components/ServiceIcon";
 import { api, type DashboardChatContent, type DashboardChatContentPart, type DashboardChatMessage } from "../lib/api";
 import { providerAccountLabel, providerInstanceID } from "../lib/derive";
 import { copyText, cx, middleEllipsis } from "../lib/format";
@@ -122,6 +122,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
   const activeMaxOutputTokens = activeModelInfo?.max_output_tokens;
   const activeReasoningEffort = thinkingLevels.includes(reasoningEffort) ? reasoningEffort : "";
   const activePath = endpoint.protocol === "gemini" ? `/v1beta/models/${activeModel}:${activeMode === "stream" ? "streamGenerateContent" : "generateContent"}` : activeMode === "stream" ? endpoint.streamPath : endpoint.chatPath;
+  const routeTarget = { providerInstanceID: providerInstanceID(provider), providerType: provider.identity.provider_type };
 
   async function sendMessage() {
     const prompt = input.trim();
@@ -159,7 +160,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
     };
     try {
       if (activeMode === "stream") {
-        const result = await api.streamingChat(endpoint.protocol, activeModel, outbound, token, enqueueStreamDelta, activeReasoningEffort || undefined, activeMaxOutputTokens);
+        const result = await api.streamingChat(endpoint.protocol, activeModel, outbound, token, enqueueStreamDelta, activeReasoningEffort || undefined, activeMaxOutputTokens, routeTarget);
         if (streamFlushTimer !== null) {
           window.clearTimeout(streamFlushTimer);
           streamFlushTimer = null;
@@ -167,7 +168,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
         flushStreamDelta();
         setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: result.content || message.content, pending: false } : message));
       } else {
-        const result = await api.bufferedChat(endpoint.protocol, activeModel, outbound, token, activeReasoningEffort || undefined, activeMaxOutputTokens);
+        const result = await api.bufferedChat(endpoint.protocol, activeModel, outbound, token, activeReasoningEffort || undefined, activeMaxOutputTokens, routeTarget);
         setMessages((current) => current.map((message) => message.id === assistantID ? { ...message, content: result.content || "(empty response)", pending: false } : message));
       }
     } catch (err) {
@@ -260,7 +261,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
       >
         <div className="chat-header">
           <div className="chat-title-row">
-            <ServiceIcon service={endpoint.protocol} size={30} label={endpoint.protocolLabel} />
+            <ProtocolIcon protocol={endpoint.protocol} size={30} label={`${endpoint.protocolLabel} API via ${endpoint.label}`} />
             <div>
               <h2>{endpoint.label} Chat</h2>
               <p>
@@ -330,7 +331,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
                 {message.error ? (
                   <div className="inline-error endpoint-error">{message.error}</div>
                 ) : message.content ? (
-                  message.pending ? <div className="streaming-plain-text">{message.content}</div> : <MarkdownContent content={message.content} />
+                  <MarkdownContent content={message.content} deferHighlight={message.pending} />
                 ) : null}
               </div>
             </article>

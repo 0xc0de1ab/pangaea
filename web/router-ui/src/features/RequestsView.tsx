@@ -4,7 +4,7 @@ import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { Section } from "../components/Section";
-import { ServiceIcon } from "../components/ServiceIcon";
+import { ProtocolIcon, ServiceIcon } from "../components/ServiceIcon";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
 import { accountLabel, age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
@@ -183,11 +183,22 @@ export function RequestsView({ data, queries, search, token, onAction, refresh }
 
 function ProtocolCell({ value }: { value?: string }) {
   const label = traceProtocolLabel(value);
+  if (isProviderProtocol(value)) {
+    return (
+      <span className="trace-protocol-icon" title={label}>
+        <ProtocolIcon protocol={value} size={20} label={label} />
+      </span>
+    );
+  }
   return (
     <span className="trace-protocol-icon" title={label}>
       <ServiceIcon service={value || "unknown"} size={20} label={label} />
     </span>
   );
+}
+
+function isProviderProtocol(value?: string): value is ProviderProtocol {
+  return value === "openai" || value === "anthropic" || value === "gemini";
 }
 
 function traceProtocolLabel(value?: string) {

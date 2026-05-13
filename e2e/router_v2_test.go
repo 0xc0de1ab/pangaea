@@ -308,21 +308,6 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 			})
 			return
 		}
-		if r.URL.Path == "/v1/account" {
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"name":  "Sidecar Test",
-				"email": "antigravity@example.test",
-				"planStatus": map[string]any{
-					"planInfo": map[string]any{"planName": "Pro"},
-				},
-				"userTier": map[string]any{
-					"id":                      "g1-ultra-tier",
-					"name":                    "Google AI Ultra",
-					"upgradeSubscriptionText": "You are subscribed to the best plan.",
-				},
-			})
-			return
-		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}
@@ -431,6 +416,17 @@ func TestE2E_V2APICompatibleProviderShimOpenAI(t *testing.T) {
 
 func TestE2E_V2APICompatibleProviderShimAnthropicGLMAndMiniMAX(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/token_plan/remains" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model_remains": []map[string]any{{
+					"model_name":                   "minimax-m1",
+					"current_interval_total_count": 100,
+					"current_interval_usage_count": 10,
+				}},
+				"base_resp": map[string]any{"status_code": 0, "status_msg": "ok"},
+			})
+			return
+		}
 		if r.URL.Path != "/v1/messages" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}
@@ -529,16 +525,24 @@ func TestE2E_V2APICompatibleProviderShimAnthropicGLMAndMiniMAX(t *testing.T) {
 	if len(glmResponse.Content) != 1 || glmResponse.Content[0].Text != "glm-compatible: ok" || glmResponse.Usage.InputTokens+glmResponse.Usage.OutputTokens != 15 {
 		t.Fatalf("unexpected GLM response: %#v", glmResponse)
 	}
+	minimaxOpenAI := waitForV2OpenAIChatModel(t, client, server.URL, "minimax-default", "minimax provider openai", "req_e2e_v2_minimax_api_openai")
+	if len(minimaxOpenAI.Choices) != 1 || minimaxOpenAI.Choices[0].Message.Content != "minimax-compatible: ok" || minimaxOpenAI.Usage == nil || minimaxOpenAI.Usage.TotalTokens != 15 {
+		t.Fatalf("unexpected MiniMAX OpenAI response: %#v", minimaxOpenAI)
+	}
 	minimaxResponse := waitForV2AnthropicMessagesModel(t, client, server.URL, "minimax-default", "minimax provider hello", "req_e2e_v2_minimax_api")
 	if len(minimaxResponse.Content) != 1 || minimaxResponse.Content[0].Text != "minimax-compatible: ok" || minimaxResponse.Usage.InputTokens+minimaxResponse.Usage.OutputTokens != 15 {
 		t.Fatalf("unexpected MiniMAX response: %#v", minimaxResponse)
+	}
+	minimaxGemini := waitForV2GeminiGenerateContentModel(t, client, server.URL, "minimax-default", "minimax provider gemini", "req_e2e_v2_minimax_api_gemini")
+	if len(minimaxGemini.Candidates) != 1 || minimaxGemini.Candidates[0].Content.Parts[0].Text != "minimax-compatible: ok" || minimaxGemini.UsageMetadata == nil || minimaxGemini.UsageMetadata.TotalTokenCount != 15 {
+		t.Fatalf("unexpected MiniMAX Gemini response: %#v", minimaxGemini)
 	}
 	glmUsage := waitForV2ProviderUsage(t, client, server.URL, "glm-api-0001")
 	if glmUsage.HostName != "api-host" || glmUsage.Account.Display != "glm-api@example.test" || glmUsage.Usage.TotalTokens != 15 {
 		t.Fatalf("unexpected GLM usage: %#v", glmUsage)
 	}
 	minimaxUsage := waitForV2ProviderUsage(t, client, server.URL, "minimax-api-0001")
-	if minimaxUsage.HostName != "api-host" || minimaxUsage.Account.Display != "minimax-api@example.test" || minimaxUsage.Usage.TotalTokens != 15 {
+	if minimaxUsage.HostName != "api-host" || minimaxUsage.Account.Display != "minimax-api@example.test" || minimaxUsage.Usage.TotalTokens != 45 || minimaxUsage.Usage.Requests != 3 {
 		t.Fatalf("unexpected MiniMAX usage: %#v", minimaxUsage)
 	}
 }
@@ -577,6 +581,21 @@ func TestE2E_V2SidecarProviderShimAntigravityAndCopilot(t *testing.T) {
 					"id":                      "g1-ultra-tier",
 					"name":                    "Google AI Ultra",
 					"upgradeSubscriptionText": "You are subscribed to the best plan.",
+				},
+			})
+			return
+		}
+		if r.URL.Path == "/v1/auth/status" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"isAuthenticated": true,
+				"authType":        "user",
+				"host":            "https://github.com",
+				"login":           "copilot@example.test",
+				"statusMessage":   "copilot@example.test",
+				"subscription": map[string]any{
+					"tier":   "copilot_for_business_seat",
+					"name":   "Copilot Business",
+					"status": "active",
 				},
 			})
 			return
@@ -1371,16 +1390,29 @@ func waitForV2AnthropicMessagesStream(t *testing.T, client *http.Client, baseURL
 
 func waitForV2GeminiGenerateContent(t *testing.T, client *http.Client, baseURL string) compat.GeminiGenerateContentResponse {
 	t.Helper()
-	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"e2e gemini"}]}]}`)
+	return waitForV2GeminiGenerateContentModel(t, client, baseURL, "gemini-default", "e2e gemini", "req_e2e_v2_gemini")
+}
+
+func waitForV2GeminiGenerateContentModel(t *testing.T, client *http.Client, baseURL string, model string, content string, requestID string) compat.GeminiGenerateContentResponse {
+	t.Helper()
+	body, err := json.Marshal(compat.GeminiGenerateContentRequest{
+		Contents: []compat.GeminiContent{{
+			Role:  "user",
+			Parts: []compat.GeminiPart{{Text: content}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal Gemini request: %v", err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1beta/models/gemini-default:generateContent", bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1beta/models/"+model+":generateContent", bytes.NewReader(body))
 		if err != nil {
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("content-type", "application/json")
-		req.Header.Set("x-request-id", "req_e2e_v2_gemini")
+		req.Header.Set("x-request-id", requestID)
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -1675,6 +1707,18 @@ func apiCompatibleE2ERegistration(now time.Time) provider.Registration {
 
 func apiCompatibleAnthropicE2ERegistration(now time.Time, service provider.Service, providerType string, instanceID string, hostName string, accountDisplay string, modelID string, alias string) provider.Registration {
 	account := provider.Account{ID: "acct-" + providerType, Display: accountDisplay}
+	capabilities := []provider.Capability{
+		provider.CapabilityAnthropicMessages,
+		provider.CapabilityStreamSSE,
+		provider.CapabilityUsageRead,
+		provider.CapabilityModelsRead,
+		provider.CapabilityAuthAPIKey,
+	}
+	modelCapabilities := []provider.Capability{provider.CapabilityAnthropicMessages, provider.CapabilityStreamSSE}
+	if service == provider.ServiceMiniMAX {
+		capabilities = append(capabilities, provider.CapabilityOpenAIChat, provider.CapabilityGeminiGenerateContent)
+		modelCapabilities = append(modelCapabilities, provider.CapabilityOpenAIChat, provider.CapabilityGeminiGenerateContent)
+	}
 	return provider.Registration{
 		Identity: provider.ProviderIdentity{
 			ProviderType:       providerType,
@@ -1685,17 +1729,11 @@ func apiCompatibleAnthropicE2ERegistration(now time.Time, service provider.Servi
 			Kind:               provider.KindAPICompatible,
 			Account:            account,
 		},
-		Capabilities: []provider.Capability{
-			provider.CapabilityAnthropicMessages,
-			provider.CapabilityStreamSSE,
-			provider.CapabilityUsageRead,
-			provider.CapabilityModelsRead,
-			provider.CapabilityAuthAPIKey,
-		},
+		Capabilities: capabilities,
 		Models: []provider.Model{{
 			ID:           modelID,
 			Aliases:      []string{alias},
-			Capabilities: []provider.Capability{provider.CapabilityAnthropicMessages, provider.CapabilityStreamSSE},
+			Capabilities: modelCapabilities,
 		}},
 		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: now},
 		Auth:         provider.AuthState{Status: provider.AuthHealthy, Account: account},
@@ -1952,7 +1990,9 @@ model_aliases:
   minimax-default:
     canonical_model: minimax-m1
     required_capabilities:
+      - api.openai.chat
       - api.anthropic.messages
+      - api.gemini.generateContent
 routes:
   - id: glm-anthropic
     match:
@@ -1970,6 +2010,30 @@ routes:
     match:
       models: [minimax-default]
       api_dialects: [anthropic]
+    candidates:
+      - provider_type: minimax-api
+        account: minimax-api@example.test
+        host_name: api-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
+  - id: minimax-openai
+    match:
+      models: [minimax-default]
+      api_dialects: [openai]
+    candidates:
+      - provider_type: minimax-api
+        account: minimax-api@example.test
+        host_name: api-host
+        weight: 100
+    constraints:
+      auth_status: [healthy]
+      health_state: [ready]
+  - id: minimax-gemini
+    match:
+      models: [minimax-default]
+      api_dialects: [gemini]
     candidates:
       - provider_type: minimax-api
         account: minimax-api@example.test

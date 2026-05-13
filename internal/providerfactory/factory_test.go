@@ -12,6 +12,9 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
 	"github.com/0xc0de1ab/pangaea/pkg/formats/antigravitystate"
+	_ "github.com/0xc0de1ab/pangaea/pkg/formats/cursorapitoken"
+	_ "github.com/0xc0de1ab/pangaea/pkg/formats/cursorcliconfig"
+	_ "github.com/0xc0de1ab/pangaea/pkg/formats/githubcopilotapps"
 )
 
 func TestRegistryRejectsDuplicateDefinitions(t *testing.T) {
@@ -213,6 +216,89 @@ func TestCodexDirectHTTPCLIContainerDoesNotRequireUpstreamBaseURL(t *testing.T) 
 	}
 }
 
+func TestCursorACPCLIContainerAdapterHandled(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "tok")
+	if err := os.WriteFile(tokenPath, []byte("test-api-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := DefaultRegistry()
+	definition, ok := registry.Definition(provider.ServiceCursor)
+	if !ok {
+		t.Fatal("missing cursor definition")
+	}
+	apiProvider, handled, err := definition.BuildCLIContainerAdapter(nil, BuildContext{
+		Config: Config{
+			ProviderType:       "cursor-cli",
+			ProviderInstanceID: "cursor-cli",
+			NodeID:             "node-1",
+			HostName:           "host-1",
+			Service:            "cursor",
+			ProviderMode:       "acp",
+			UpstreamDialect:    "openai",
+			AuthPath:           tokenPath,
+			AuthFormat:         "cursor-api-token-plain-format",
+			Models:             "gpt-5",
+		},
+		Auth: provider.AuthState{Status: provider.AuthHealthy},
+	}, "cursor-acp")
+	if err != nil {
+		t.Fatalf("BuildCLIContainerAdapter: %v", err)
+	}
+	if !handled {
+		t.Fatal("cursor acp adapter was not handled")
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindCLIContainer {
+		t.Fatalf("kind = %q", registration.Identity.Kind)
+	}
+}
+
+func TestCursorDirectHTTPCLIContainerUsesEnvBaseURL(t *testing.T) {
+	t.Setenv("PANGAEA_CURSOR_DIRECT_BASE_URL", "http://127.0.0.1:9")
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "tok")
+	if err := os.WriteFile(tokenPath, []byte("test-api-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := DefaultRegistry()
+	definition, ok := registry.Definition(provider.ServiceCursor)
+	if !ok {
+		t.Fatal("missing cursor definition")
+	}
+	apiProvider, handled, err := definition.BuildCLIContainerAdapter(nil, BuildContext{
+		Config: Config{
+			ProviderType:       "cursor-cli",
+			ProviderInstanceID: "cursor-cli",
+			NodeID:             "node-1",
+			HostName:           "host-1",
+			Service:            "cursor",
+			ProviderMode:       "http-direct",
+			UpstreamDialect:    "openai",
+			AuthPath:           tokenPath,
+			AuthFormat:         "cursor-api-token-plain-format",
+			Models:             "gpt-5",
+		},
+		Auth: provider.AuthState{Status: provider.AuthHealthy},
+	}, "direct-http")
+	if err != nil {
+		t.Fatalf("BuildCLIContainerAdapter: %v", err)
+	}
+	if !handled {
+		t.Fatal("cursor http-direct adapter was not handled")
+	}
+	registration, err := apiProvider.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	if registration.Identity.Service != provider.ServiceCursor {
+		t.Fatalf("service = %q", registration.Identity.Service)
+	}
+}
+
 func prependFakeCodexVersion(t *testing.T, version string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -294,6 +380,116 @@ func TestBuildCLIContainerProviderWithoutAuthPathReportsNoLogin(t *testing.T) {
 	}
 }
 
+func TestBuildGitHubCopilotSidecarSDKProvider(t *testing.T) {
+	result, err := BuildSidecarProviderWithRefresh(Config{
+		ProviderType:       "github-copilot-sidecar",
+		ProviderInstanceID: "github-copilot-sidecar",
+		NodeID:             "node-1",
+		HostName:           "host-1",
+		Service:            "github-copilot",
+		ProviderMode:       "sdk",
+		UpstreamBaseURL:    "http://127.0.0.1:4141",
+		UpstreamDialect:    "openai",
+		ShimProtocols:      "openai",
+		Model:              "github-copilot-default",
+		ModelAlias:         "copilot-default",
+	})
+	if err != nil {
+		t.Fatalf("BuildSidecarProviderWithRefresh: %v", err)
+	}
+	registration, err := result.Provider.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindSidecar || registration.Identity.Service != provider.ServiceGitHubCopilot {
+		t.Fatalf("identity = %#v", registration.Identity)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE, provider.CapabilityUsageRead, provider.CapabilityModelsRead, provider.CapabilityCodeCompletion} {
+		if !hasFactoryCapability(registration.Capabilities, capability) {
+			t.Fatalf("capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+	if hasFactoryCapability(registration.Capabilities, provider.CapabilityAgentWorkspaceWrite) {
+		t.Fatalf("sdk provider should not advertise workspace write: %v", registration.Capabilities)
+	}
+}
+
+func TestBuildGitHubCopilotSidecarUsesDefaultAuthFormat(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(authPath, []byte(`// User settings belong in settings.json.
+{
+  "lastLoggedInUser": {
+    "host": "https://github.com",
+    "login": "octocat"
+  },
+  "copilotTokens": {
+    "https://github.com:octocat": "copilot_secret_tail"
+  }
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := BuildSidecarProviderWithRefresh(Config{
+		ProviderType:       "github-copilot-sidecar",
+		ProviderInstanceID: "github-copilot-sidecar",
+		NodeID:             "node-1",
+		HostName:           "host-1",
+		Service:            "github-copilot",
+		ProviderMode:       "sdk",
+		UpstreamBaseURL:    "http://127.0.0.1:4141",
+		UpstreamDialect:    "openai",
+		AuthPath:           authPath,
+		Model:              "github-copilot-default",
+		ModelAlias:         "copilot-default",
+	})
+	if err != nil {
+		t.Fatalf("BuildSidecarProviderWithRefresh: %v", err)
+	}
+	registration, err := result.Provider.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	if registration.Auth.Account.Display != "octocat" || registration.Identity.Account.Display != "octocat" {
+		t.Fatalf("account not derived from default auth format: identity=%#v auth=%#v", registration.Identity.Account, registration.Auth.Account)
+	}
+	if !hasFactoryCapability(registration.Capabilities, provider.CapabilityAuthFile) {
+		t.Fatalf("capabilities missing auth file: %v", registration.Capabilities)
+	}
+}
+
+func TestBuildGitHubCopilotACPProvider(t *testing.T) {
+	result, err := BuildCLIContainerProvider(context.Background(), Config{
+		ProviderType:       "github-copilot-acp",
+		ProviderInstanceID: "github-copilot-acp",
+		NodeID:             "node-1",
+		HostName:           "host-1",
+		Service:            "github-copilot",
+		ProviderMode:       "acp",
+		UpstreamDialect:    "openai",
+		ShimCapabilities:   "api.openai.chat,api.anthropic.messages,api.gemini.generateContent,code.completion,usage.read,models.read",
+		Model:              "github-copilot-default",
+		ModelAlias:         "copilot-default",
+	})
+	if err != nil {
+		t.Fatalf("BuildCLIContainerProvider: %v", err)
+	}
+	registration, err := result.Provider.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindCLIContainer || registration.Identity.Service != provider.ServiceGitHubCopilot {
+		t.Fatalf("identity = %#v", registration.Identity)
+	}
+	if hasFactoryCapability(registration.Capabilities, provider.CapabilityStreamSSE) {
+		t.Fatalf("acp provider should not advertise streaming until implemented: %v", registration.Capabilities)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent} {
+		if !hasFactoryCapability(registration.Capabilities, capability) {
+			t.Fatalf("acp capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+}
+
 func TestGeminiMCPServersJSONFromSettings(t *testing.T) {
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
 	if err := os.WriteFile(settingsPath, []byte(`{"selectedAuthType":"oauth-personal","mcpServers":{"pangaea-fixture":{"command":"node","args":["server.mjs"]}}}`), 0o600); err != nil {
@@ -322,6 +518,56 @@ func TestRegistrationModelsParsesMultipleModelAliases(t *testing.T) {
 	}
 	if models[0].MaxContextTokens != 1_048_576 {
 		t.Fatalf("gemini context = %d, want 1048576", models[0].MaxContextTokens)
+	}
+}
+
+func TestRegistrationModelsUsesMiniMAXM2Metadata(t *testing.T) {
+	models, err := registrationModels(Config{
+		Service: "minimax",
+		Models:  "MiniMax-M2.7=minimax-default",
+	}, []provider.Capability{provider.CapabilityAnthropicMessages}, nil)
+	if err != nil {
+		t.Fatalf("registration models: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("len(models) = %d, want 1: %#v", len(models), models)
+	}
+	if models[0].MaxContextTokens != 204_800 || models[0].MaxOutputTokens != 2_048 {
+		t.Fatalf("MiniMax-M2.7 metadata = context %d output %d, want 204800/2048", models[0].MaxContextTokens, models[0].MaxOutputTokens)
+	}
+}
+
+func TestBuildMiniMAXAPIProviderAdvertisesPublicDialects(t *testing.T) {
+	client, err := BuildAPICompatibleProvider(Config{
+		ProviderType:       "minimax-api",
+		ProviderInstanceID: "minimax-api",
+		NodeID:             "node-1",
+		HostName:           "host-1",
+		Service:            "minimax",
+		Account:            "minimax@example.test",
+		UpstreamBaseURL:    "https://api.minimax.io/anthropic",
+		UpstreamDialect:    "anthropic",
+		Model:              "MiniMax-M2.7",
+		ModelAlias:         "minimax-default",
+	})
+	if err != nil {
+		t.Fatalf("BuildAPICompatibleProvider: %v", err)
+	}
+	registration, err := client.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	for _, capability := range []provider.Capability{
+		provider.CapabilityOpenAIChat,
+		provider.CapabilityAnthropicMessages,
+		provider.CapabilityGeminiGenerateContent,
+	} {
+		if !hasFactoryCapability(registration.Capabilities, capability) {
+			t.Fatalf("MiniMAX advertised capabilities %v missing %s", registration.Capabilities, capability)
+		}
+		if len(registration.Models) != 1 || !hasFactoryCapability(registration.Models[0].Capabilities, capability) {
+			t.Fatalf("MiniMAX model capabilities %#v missing %s", registration.Models, capability)
+		}
 	}
 }
 

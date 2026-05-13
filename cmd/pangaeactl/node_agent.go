@@ -72,6 +72,7 @@ func newNodeAgentRunCmd() *cobra.Command {
 
 func runNodeAgent(ctx context.Context, opts nodeAgentRunOptions) error {
 	opts.RouterPeerToken = stringEnvDefault(opts.RouterPeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
+	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
 	if opts.RouterControlURL == "" {
 		return fmt.Errorf("--router-control is required")
 	}
@@ -212,6 +213,7 @@ func newNodeAgentReconcileProviderCmd() *cobra.Command {
 
 func runNodeAgentReconcileProvider(ctx context.Context, opts nodeAgentReconcileProviderOptions) error {
 	opts.RouterPeerToken = stringEnvDefault(opts.RouterPeerToken, "PANGAEA_ROUTER_PEER_TOKEN")
+	opts.StreamTokenKey = stringEnvDefaultWhenDefault(opts.StreamTokenKey, defaultStreamTokenKey, "PANGAEA_STREAM_TOKEN_KEY")
 	if opts.ConfigPath == "" {
 		return fmt.Errorf("--config is required")
 	}

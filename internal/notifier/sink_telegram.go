@@ -27,9 +27,8 @@ type TelegramSinkConfig struct {
 // TelegramSink is a Sink that routes per (profile, account) to chat IDs
 // and renders messages with HTML parse mode.
 type TelegramSink struct {
-	cfg      TelegramSinkConfig
-	client   *telegram.Client
-	periodic periodicState
+	cfg    TelegramSinkConfig
+	client *telegram.Client
 }
 
 // NewTelegramSink constructs a sink. Caller is responsible for setting
@@ -68,27 +67,6 @@ func (s *TelegramSink) NotifySessionBatch(ctx context.Context, events []TruthRec
 		}); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func (s *TelegramSink) NotifyPeriodic(ctx context.Context, records []ReportRecord) error {
-	groups := groupPeriodicRecords(records, s.routeFor)
-	for _, chatID := range sortedGroupKeys(groups) {
-		signature := periodicDigest(groups[chatID])
-		text := renderPeriodicTelegram(groups[chatID])
-		if s.periodic.unchanged(chatID, signature) {
-			continue
-		}
-		if err := s.client.SendMessage(ctx, telegram.SendMessageRequest{
-			ChatID:              chatID,
-			Text:                text,
-			ParseMode:           "HTML",
-			DisableNotification: s.cfg.DisableNotification,
-		}); err != nil {
-			return err
-		}
-		s.periodic.remember(chatID, signature)
 	}
 	return nil
 }

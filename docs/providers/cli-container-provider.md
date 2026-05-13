@@ -110,9 +110,12 @@ Local server must be private to container/shim network.
 - `cli-adapter`: run the provider CLI once per request or stream via a CLI
   output mode when available. This is implemented
   today for Claude and Gemini and does not require `upstream.base_url`.
+- `sdk`: GitHub Copilot-only mode that runs a local SDK-backed
+  OpenAI-compatible relay behind a sidecar shim.
+- `acp`: GitHub Copilot-only mode that invokes the Copilot CLI ACP server.
 
 No backward-compatible adapter aliases are accepted. Use `http-direct`,
-`app-server`, or `cli-adapter` explicitly.
+`app-server`, `cli-adapter`, `sdk`, or `acp` explicitly.
 
 ## Models
 
