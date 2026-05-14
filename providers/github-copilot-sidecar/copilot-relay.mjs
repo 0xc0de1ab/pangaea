@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -38,6 +40,89 @@ function getCopilotSDK() {
 function newCopilotClient(options) {
   const { CopilotClient } = getCopilotSDK();
   return new CopilotClient(options);
+}
+
+function stripWholeLineJSONComments(raw) {
+  return String(raw || "")
+    .split(/\n/)
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n")
+    .trim();
+}
+
+function readCopilotConfig(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const body = stripWholeLineJSONComments(raw);
+    return body ? JSON.parse(body) : {};
+  } catch {
+    return null;
+  }
+}
+
+function hasCopilotToken(config) {
+  if (!config || typeof config !== "object") return false;
+  for (const key of ["copilotTokens", "copilotToken"]) {
+    const tokens = config[key];
+    if (!tokens || typeof tokens !== "object") continue;
+    for (const value of Object.values(tokens)) {
+      if (typeof value === "string" && value.trim()) return true;
+    }
+  }
+  return false;
+}
+
+function copyCopilotConfig(src, dst) {
+  fs.mkdirSync(path.dirname(dst), { recursive: true, mode: 0o700 });
+  fs.copyFileSync(src, dst);
+  try {
+    fs.chmodSync(dst, 0o600);
+  } catch {
+    // chmod may fail on some bind mounts; the source file is still usable.
+  }
+}
+
+function defaultCopilotConfigPath() {
+  return path.join(process.env.HOME || os.homedir(), ".copilot", "config.json");
+}
+
+export function ensureCopilotAuthFile(options = {}) {
+  const sdkConfigPath = options.sdkConfigPath || process.env.PANGAEA_COPILOT_CONFIG_PATH || defaultCopilotConfigPath();
+  const sourcePath = options.sourcePath || process.env.PANGAEA_COPILOT_AUTH_SOURCE_PATH || process.env.PANGAEA_AUTH_PATH || sdkConfigPath;
+  const backupPath = options.backupPath || process.env.PANGAEA_COPILOT_AUTH_BACKUP_PATH || `${sdkConfigPath}.pangaea-auth-backup`;
+
+  const sdkConfig = readCopilotConfig(sdkConfigPath);
+  if (hasCopilotToken(sdkConfig)) {
+    if (backupPath && backupPath !== sdkConfigPath) {
+      copyCopilotConfig(sdkConfigPath, backupPath);
+    }
+    return false;
+  }
+
+  if (sourcePath && sourcePath !== sdkConfigPath && hasCopilotToken(readCopilotConfig(sourcePath))) {
+    copyCopilotConfig(sourcePath, sdkConfigPath);
+    if (backupPath && backupPath !== sourcePath && backupPath !== sdkConfigPath) {
+      copyCopilotConfig(sourcePath, backupPath);
+    }
+    return true;
+  }
+
+  if (backupPath && backupPath !== sdkConfigPath && hasCopilotToken(readCopilotConfig(backupPath))) {
+    copyCopilotConfig(backupPath, sdkConfigPath);
+    if (sourcePath && sourcePath !== sdkConfigPath && sourcePath !== backupPath) {
+      copyCopilotConfig(backupPath, sourcePath);
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function prepareCopilotAuth() {
+  if (ensureCopilotAuthFile()) {
+    authStatusCache = { expiresAt: 0, value: null };
+    modelsCache = { expiresAt: 0, value: null };
+  }
 }
 
 function approveAllPermissions(...args) {
@@ -133,6 +218,7 @@ let modelsCache = { expiresAt: 0, value: null };
 let modelsInflight = null;
 
 async function discoverSDKModels() {
+  prepareCopilotAuth();
   const client = newCopilotClient();
   try {
     await client.start();
@@ -334,6 +420,7 @@ function publicSubscriptionStatus(status) {
 }
 
 async function getAuthStatusCached() {
+  prepareCopilotAuth();
   const now = Date.now();
   if (authStatusCache.value && authStatusCache.expiresAt > now) {
     return authStatusCache.value;
@@ -369,6 +456,7 @@ async function handleChat(req, res) {
   const client = newCopilotClient();
   const id = `chatcmpl-${randomUUID()}`;
   try {
+    prepareCopilotAuth();
     await client.start();
     if (body.stream) {
       res.writeHead(200, {

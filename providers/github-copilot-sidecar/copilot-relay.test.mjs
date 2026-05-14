@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
+  ensureCopilotAuthFile,
   modelStatusFromSDKModels,
   openAIModelsFromSDKModels,
 } from "./copilot-relay.mjs";
@@ -59,4 +63,39 @@ test("maps Copilot SDK model metadata to Pangaea status details", () => {
   assert.equal(status["gpt-5"].supportsImages, true);
   assert.deepEqual(status["gpt-5"].supportedReasoningEfforts, ["low", "medium", "high"]);
   assert.equal(status["gpt-5"].defaultReasoningEffort, "medium");
+});
+
+test("restores Copilot SDK config when token fields disappear", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pangaea-copilot-auth-"));
+  const sdkConfigPath = path.join(dir, "home", ".copilot", "config.json");
+  const backupPath = `${sdkConfigPath}.pangaea-auth-backup`;
+  fs.mkdirSync(path.dirname(sdkConfigPath), { recursive: true });
+  fs.writeFileSync(sdkConfigPath, `// User settings belong in settings.json.
+// This file is managed automatically.
+{
+  "firstLaunchAt": "2026-05-14T15:07:22.302Z",
+  "copilotTokens": {
+    "https://github.com:octocat": "copilot_secret_tail"
+  },
+  "lastLoggedInUser": {
+    "host": "https://github.com",
+    "login": "octocat"
+  }
+}
+`);
+
+  assert.equal(ensureCopilotAuthFile({ sdkConfigPath, backupPath }), false);
+  assert.match(fs.readFileSync(backupPath, "utf8"), /copilotTokens/);
+
+  fs.writeFileSync(sdkConfigPath, `// User settings belong in settings.json.
+// This file is managed automatically.
+{
+  "firstLaunchAt": "2026-05-14T15:07:22.302Z"
+}
+`);
+
+  assert.equal(ensureCopilotAuthFile({ sdkConfigPath, backupPath }), true);
+  const restored = fs.readFileSync(sdkConfigPath, "utf8");
+  assert.match(restored, /copilotTokens/);
+  assert.match(restored, /octocat/);
 });
