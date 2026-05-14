@@ -45,7 +45,7 @@
 ## 3. Docker 구동 전략
 
 ### 3.1. 볼륨 마운트
-- 컨테이너 실행 시 호스트 머신에서 이미 인증된 `state.vscdb` 파일을 컨테이너 내부의 `/root/.antigravity-server/data/User/globalStorage/` 경로로 마운트합니다.
+- 컨테이너 실행 시 호스트 머신에서 이미 인증된 `state.vscdb` 파일을 컨테이너 내부의 `/var/lib/antigravity/home/.antigravity-server/data/User/globalStorage/` 경로로 마운트합니다.
 - 이를 통해 최초 실행 시 별도의 수동 로그인 과정 없이 즉시 서비스를 시작할 수 있습니다.
 
 ### 3.2. 멀티 프로세스 관리

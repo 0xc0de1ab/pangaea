@@ -54,17 +54,28 @@ RUN if [ -f /opt/antigravity-server/extensions/antigravity/bin/language_server_l
 
 # Copy our Go proxy
 COPY --from=builder /app/build/linux-amd64/release/antigravity-compat-proxy /usr/local/bin/
+RUN existing_user="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/passwd)" \
+    && if [ -n "${existing_user}" ]; then userdel "${existing_user}" 2>/dev/null || true; fi \
+    && existing_group="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/group)" \
+    && if [ -n "${existing_group}" ]; then groupdel "${existing_group}" 2>/dev/null || true; fi \
+    && groupadd -g 1000 pangaea \
+    && useradd -u 1000 -g 1000 -m -d /home/pangaea -s /usr/sbin/nologin pangaea \
+    && mkdir -p /var/lib/antigravity/home/.antigravity-server/data/User/globalStorage /run/pangaea /work \
+    && chown -R 1000:1000 /var/lib/antigravity /run/pangaea /work /home/pangaea
 
 # Set environment variables
 ENV ANTIGRAVITY_SERVER_DIR=/opt/antigravity-server
 # For WSL users, the host state.vscdb is usually at:
 # /mnt/c/Users/<USER>/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb
-ENV VSCDB_PATH=/root/.antigravity-server/data/User/globalStorage/state.vscdb
+ENV HOME=/home/pangaea
+ENV VSCDB_PATH=/var/lib/antigravity/home/.antigravity-server/data/User/globalStorage/state.vscdb
 ENV PATH="/opt/antigravity-server:${PATH}"
 ENV SERVER_PATH=/opt/antigravity-server/out/server-main.js
 ENV CORE_PATH=/opt/antigravity-server/extensions/antigravity/bin/language_server_linux_x64
 
 EXPOSE 8080
+
+USER pangaea:pangaea
 
 ENTRYPOINT ["antigravity-compat-proxy"]
 CMD ["serve", "--proxy-addr", ":8080"]

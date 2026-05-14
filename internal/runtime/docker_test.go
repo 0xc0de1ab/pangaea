@@ -50,7 +50,7 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 		t.Fatalf("write host auth: %v", err)
 	}
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-codex-primary --label pangaea.provider_type=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --env PANGAEA_PROVIDER_TYPE=codex-primary --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-codex-primary --label pangaea.provider_type=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --env PANGAEA_PROVIDER_TYPE=codex-primary --workdir /work --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=1000,gid=1000,mode=0700 --tmpfs /run/pangaea:uid=1000,gid=1000,mode=0700 --tmpfs /tmp:uid=1000,gid=1000,mode=1777 --tmpfs /work:uid=1000,gid=1000,mode=0700 --user 1000:1000 pangaea/provider-codex:test /usr/local/bin/provider-entrypoint": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{
@@ -76,7 +76,7 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 	if _, err := rt.Exec(context.Background(), id, ExecSpec{Command: []string{"true"}}); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
-	if err := rt.CopyTo(context.Background(), id, CopySpec{HostPath: hostAuthPath, ContainerPath: "/container/auth.json", OwnerUID: 10001, OwnerGID: 10001, FileMode: 0o600}); err != nil {
+	if err := rt.CopyTo(context.Background(), id, CopySpec{HostPath: hostAuthPath, ContainerPath: "/container/auth.json", OwnerUID: 1000, OwnerGID: 1000, FileMode: 0o600}); err != nil {
 		t.Fatalf("copy to: %v", err)
 	}
 	if err := rt.Stop(context.Background(), id, 2*time.Second); err != nil {
@@ -90,8 +90,8 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 		"docker create --name pangaea-codex-primary",
 		"docker start container-1",
 		"docker exec container-1 true",
-		"docker exec --user 10001:10001 container-1 mkdir -p /container",
-		"docker exec -i --user 10001:10001 container-1 sh -c cat > \"$1\" && chmod \"$2\" \"$1\" sh /container/auth.json 0600",
+		"docker exec --user 1000:1000 container-1 mkdir -p /container",
+		"docker exec -i --user 1000:1000 container-1 sh -c cat > \"$1\" && chmod \"$2\" \"$1\" sh /container/auth.json 0600",
 		"docker stop --time 2 container-1",
 		"docker rm --force --volumes container-1",
 	} {
@@ -107,7 +107,7 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 func TestDockerRuntimeCreateAddsBindMounts(t *testing.T) {
 	hostDir := filepath.Join(t.TempDir(), "provider-state")
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-codex-primary --label pangaea.provider_type=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --mount type=bind,source=" + hostDir + ",target=/var/lib/pangaea --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-codex:test": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-codex-primary --label pangaea.provider_type=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --mount type=bind,source=" + hostDir + ",target=/var/lib/pangaea --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /run/pangaea:uid=1000,gid=1000,mode=0700 --tmpfs /tmp:uid=1000,gid=1000,mode=1777 --tmpfs /work:uid=1000,gid=1000,mode=0700 --user 1000:1000 pangaea/provider-codex:test": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{
@@ -141,7 +141,7 @@ func TestDockerRuntimeCreateAddsBindMounts(t *testing.T) {
 
 func TestDockerRuntimeCreateAddsNetworkMode(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string]ExecResult{
-		"create --name pangaea-gemini-cli --label pangaea.provider_type=gemini-cli --label pangaea.provider_instance_id=gemini-cli-opi5 --network host --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /run/pangaea:uid=10001,gid=10001,mode=0700 --tmpfs /tmp:uid=10001,gid=10001,mode=1777 --tmpfs /work:uid=10001,gid=10001,mode=0700 --user 10001:10001 pangaea/provider-gemini:opi5": {ExitCode: 0, Stdout: []byte("container-1\n")},
+		"create --name pangaea-gemini-cli --label pangaea.provider_type=gemini-cli --label pangaea.provider_instance_id=gemini-cli-opi5 --network host --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=1000,gid=1000,mode=0700 --tmpfs /run/pangaea:uid=1000,gid=1000,mode=0700 --tmpfs /tmp:uid=1000,gid=1000,mode=1777 --tmpfs /work:uid=1000,gid=1000,mode=0700 --user 1000:1000 pangaea/provider-gemini:opi5": {ExitCode: 0, Stdout: []byte("container-1\n")},
 	}}
 	rt := &DockerRuntime{Binary: "docker", Runner: runner}
 	spec := ContainerSpec{
@@ -172,7 +172,7 @@ func TestDockerCopyArchiveAppliesDestinationMetadata(t *testing.T) {
 	archive, err := dockerCopyArchive(CopySpec{
 		HostPath:      hostAuthPath,
 		ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
-		OwnerUID:      10001,
+		OwnerUID:      1000,
 		OwnerGID:      10002,
 		FileMode:      0o600,
 	})
@@ -184,7 +184,7 @@ func TestDockerCopyArchiveAppliesDestinationMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read tar header: %v", err)
 	}
-	if header.Name != "auth.json" || header.Mode != 0o600 || header.Uid != 10001 || header.Gid != 10002 {
+	if header.Name != "auth.json" || header.Mode != 0o600 || header.Uid != 1000 || header.Gid != 10002 {
 		t.Fatalf("unexpected tar header: %#v", header)
 	}
 	data, err := io.ReadAll(tr)

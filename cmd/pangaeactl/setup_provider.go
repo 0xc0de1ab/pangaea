@@ -390,7 +390,7 @@ func setupProviderStorageContainerPaths(service provider.Service) []string {
 
 func setupProviderAuthSync(service provider.Service) nodeagent.AuthSyncSpec {
 	spec := nodeagent.AuthSyncSpec{ContainerToHost: true, HostToContainer: "reconcile"}
-	if service == provider.ServiceAntigravity {
+	if service == provider.ServiceAntigravity || service == provider.ServiceGitHubCopilot {
 		spec.ContainerToHost = false
 	}
 	return spec
@@ -1206,8 +1206,16 @@ func renderSetupProviderKubernetesManifest(setupType string, opts setupProviderO
 		}
 		objects = append(objects, secret)
 		initVolumeMounts = append([]any{map[string]any{"name": "provider-auth", "mountPath": "/auth-src", "readOnly": true}}, initVolumeMounts...)
-		volumes = append([]any{map[string]any{"name": "provider-auth", "secret": map[string]any{"secretName": secretName, "defaultMode": 0400}}}, volumes...)
+		volumes = append([]any{map[string]any{"name": "provider-auth", "secret": map[string]any{"secretName": secretName, "defaultMode": 0440}}}, volumes...)
 	}
+	volumes = append(volumes,
+		map[string]any{"name": "provider-tmp", "emptyDir": map[string]any{}},
+		map[string]any{"name": "provider-run", "emptyDir": map[string]any{}},
+	)
+	initVolumeMounts = append(initVolumeMounts,
+		map[string]any{"name": "provider-tmp", "mountPath": "/tmp"},
+		map[string]any{"name": "provider-run", "mountPath": "/run/pangaea"},
+	)
 	deployment := map[string]any{
 		"apiVersion": "apps/v1",
 		"kind":       "Deployment",
@@ -1224,15 +1232,14 @@ func renderSetupProviderKubernetesManifest(setupType string, opts setupProviderO
 			"template": map[string]any{
 				"metadata": map[string]any{"labels": labels},
 				"spec": map[string]any{
+					"securityContext": setupProviderKubernetesPodSecurityContext(),
 					"initContainers": []any{map[string]any{
-						"name":    "bootstrap-" + string(spec.Service),
-						"image":   "alpine:3.22",
-						"command": []string{"sh", "-c", setupProviderBootstrapScript(spec.Service)},
-						"env":     setupProviderKubernetesBootstrapEnv(spec, nodeID, setupProviderRuntimeKind(setupType), opts),
-						"securityContext": map[string]any{
-							"runAsUser": 0,
-						},
-						"volumeMounts": initVolumeMounts,
+						"name":            "bootstrap-" + string(spec.Service),
+						"image":           "alpine:3.22",
+						"command":         []string{"sh", "-c", setupProviderBootstrapScript(spec.Service)},
+						"env":             setupProviderKubernetesBootstrapEnv(spec, nodeID, setupProviderRuntimeKind(setupType), opts),
+						"securityContext": setupProviderKubernetesContainerSecurityContext(true),
+						"volumeMounts":    initVolumeMounts,
 					}},
 					"containers": []any{map[string]any{
 						"name":            "shim",
@@ -1240,9 +1247,12 @@ func renderSetupProviderKubernetesManifest(setupType string, opts setupProviderO
 						"imagePullPolicy": setupProviderKubernetesPullPolicy(opts.ImagePullPolicy, setupType),
 						"args":            spec.Shim.Command,
 						"env":             setupProviderKubernetesEnv(spec, nodeID, setupProviderRuntimeKind(setupType), opts),
+						"securityContext": setupProviderKubernetesContainerSecurityContext(true),
 						"volumeMounts": []any{
 							map[string]any{"name": "provider-state", "mountPath": "/var/lib/pangaea"},
 							map[string]any{"name": "provider-work", "mountPath": "/work"},
+							map[string]any{"name": "provider-tmp", "mountPath": "/tmp"},
+							map[string]any{"name": "provider-run", "mountPath": "/run/pangaea"},
 						},
 					}},
 					"volumes": volumes,
@@ -1341,18 +1351,19 @@ func renderSetupProviderAntigravityKubernetesManifest(setupType string, opts set
 			"template": map[string]any{
 				"metadata": map[string]any{"labels": labels},
 				"spec": map[string]any{
+					"securityContext": setupProviderKubernetesPodSecurityContext(),
 					"initContainers": []any{map[string]any{
-						"name":    "bootstrap-antigravity",
-						"image":   "alpine:3.22",
-						"command": []string{"sh", "-c", setupProviderBootstrapScript(provider.ServiceAntigravity)},
-						"env":     setupProviderKubernetesBootstrapEnv(spec, nodeID, setupProviderRuntimeKind(setupType), opts),
-						"securityContext": map[string]any{
-							"runAsUser": 0,
-						},
+						"name":            "bootstrap-antigravity",
+						"image":           "alpine:3.22",
+						"command":         []string{"sh", "-c", setupProviderBootstrapScript(provider.ServiceAntigravity)},
+						"env":             setupProviderKubernetesBootstrapEnv(spec, nodeID, setupProviderRuntimeKind(setupType), opts),
+						"securityContext": setupProviderKubernetesContainerSecurityContext(true),
 						"volumeMounts": []any{
 							map[string]any{"name": "antigravity-auth-secret", "mountPath": "/auth-src", "readOnly": true},
 							map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/antigravity/state"},
 							map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/pangaea"},
+							map[string]any{"name": "antigravity-tmp", "mountPath": "/tmp"},
+							map[string]any{"name": "antigravity-run", "mountPath": "/run/pangaea"},
 						},
 					}},
 					"containers": []any{
@@ -1371,14 +1382,17 @@ exec antigravity-compat-proxy serve \
 								map[string]any{"name": "OPENAI_API_KEY", "valueFrom": valueFromRuntimeSecret("openai-key")},
 								map[string]any{"name": "ANTHROPIC_API_KEY", "valueFrom": valueFromRuntimeSecret("anthropic-key")},
 								map[string]any{"name": "GOOGLE_API_KEY", "valueFrom": valueFromRuntimeSecret("gemini-key")},
-								map[string]any{"name": "ANTIGRAVITY_GEMINI_DIR", "value": "/root/.antigravity-server"},
+								map[string]any{"name": "ANTIGRAVITY_GEMINI_DIR", "value": "/var/lib/antigravity/home/.antigravity-server"},
 								map[string]any{"name": "ANTIGRAVITY_APP_DATA_DIR", "value": "data"},
 								map[string]any{"name": "ANTIGRAVITY_STREAM_CAPTURE_PATH", "value": "/var/lib/antigravity/state/stream-captures/ag-stream-capture.jsonl"},
 							},
-							"ports": []any{map[string]any{"name": "http", "containerPort": 8080}},
+							"ports":           []any{map[string]any{"name": "http", "containerPort": 8080}},
+							"securityContext": setupProviderKubernetesContainerSecurityContext(true),
 							"volumeMounts": []any{
 								map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/antigravity/state"},
-								map[string]any{"name": "antigravity-state", "mountPath": "/root/.antigravity-server/data"},
+								map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/antigravity/home/.antigravity-server/data"},
+								map[string]any{"name": "antigravity-tmp", "mountPath": "/tmp"},
+								map[string]any{"name": "antigravity-run", "mountPath": "/run/pangaea"},
 							},
 							"readinessProbe": map[string]any{
 								"httpGet":          map[string]any{"path": "/v1/health", "port": "http"},
@@ -1396,15 +1410,20 @@ exec antigravity-compat-proxy serve \
 							"image":           spec.Image,
 							"imagePullPolicy": setupProviderKubernetesPullPolicy(opts.ImagePullPolicy, setupType),
 							"env":             shimEnv,
+							"securityContext": setupProviderKubernetesContainerSecurityContext(true),
 							"volumeMounts": []any{
 								map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/antigravity/state"},
 								map[string]any{"name": "antigravity-state", "mountPath": "/var/lib/pangaea"},
+								map[string]any{"name": "antigravity-tmp", "mountPath": "/tmp"},
+								map[string]any{"name": "antigravity-run", "mountPath": "/run/pangaea"},
 							},
 						},
 					},
 					"volumes": []any{
-						map[string]any{"name": "antigravity-auth-secret", "secret": map[string]any{"secretName": authSecretName, "optional": true, "defaultMode": 0400}},
+						map[string]any{"name": "antigravity-auth-secret", "secret": map[string]any{"secretName": authSecretName, "optional": true, "defaultMode": 0440}},
 						stateVolume,
+						map[string]any{"name": "antigravity-tmp", "emptyDir": map[string]any{}},
+						map[string]any{"name": "antigravity-run", "emptyDir": map[string]any{}},
 					},
 				},
 			},
@@ -1472,7 +1491,7 @@ if [ -s /auth-src/auth.json ]; then
   cp /auth-src/auth.json /var/lib/pangaea/auth/codex/auth.json
   chmod 0600 /var/lib/pangaea/auth/codex/auth.json
 fi
-chown -R 10001:10001 /var/lib/pangaea /work
+chown -R 1000:1000 /var/lib/pangaea /work 2>/dev/null || true
 chmod 0700 /var/lib/pangaea/auth/codex /var/lib/pangaea/home/codex /var/lib/pangaea/tmp
 `)
 	case provider.ServiceClaude:
@@ -1503,7 +1522,7 @@ if [ -s /auth-src/.credentials.json ]; then
   cp /auth-src/.credentials.json /var/lib/pangaea/auth/claude/.credentials.json
   chmod 0600 /var/lib/pangaea/auth/claude/.credentials.json
 fi
-chown -R 10001:10001 /var/lib/pangaea /work
+chown -R 1000:1000 /var/lib/pangaea /work 2>/dev/null || true
 chmod 0700 /var/lib/pangaea/auth/claude /var/lib/pangaea/home/claude /var/lib/pangaea/tmp
 `)
 	case provider.ServiceCursor:
@@ -1535,7 +1554,7 @@ if [ -s /auth-src/auth.json ]; then
   cp /auth-src/auth.json "${config_dir}/auth.json"
   chmod 0600 "${config_dir}/auth.json"
 fi
-chown -R 10001:10001 /var/lib/pangaea /work
+chown -R 1000:1000 /var/lib/pangaea /work 2>/dev/null || true
 chmod 0700 /var/lib/pangaea/home/cursor "${config_dir}" /var/lib/pangaea/tmp
 `)
 	case provider.ServiceAntigravity:
@@ -1567,7 +1586,7 @@ if [ -s /auth-src/state.vscdb ]; then
   cp /auth-src/state.vscdb "${state_dir}/state.vscdb"
   chmod 0600 "${state_dir}/state.vscdb"
 fi
-chown -R 10001:10001 /var/lib/antigravity/state /var/lib/pangaea /work
+chown -R 1000:1000 /var/lib/antigravity/state /var/lib/pangaea /work 2>/dev/null || true
 chmod 0700 /var/lib/antigravity/state "${state_dir}" /var/lib/pangaea/home/antigravity
 `)
 	case provider.ServiceGitHubCopilot:
@@ -1599,7 +1618,7 @@ if [ -s /auth-src/config.json ]; then
   cp /auth-src/config.json "${config_dir}/config.json"
   chmod 0600 "${config_dir}/config.json"
 fi
-chown -R 10001:10001 /var/lib/pangaea /work
+chown -R 1000:1000 /var/lib/pangaea /work 2>/dev/null || true
 chmod 0700 /var/lib/pangaea/home/copilot "${config_dir}" /var/lib/pangaea/tmp
 `)
 	default:
@@ -1635,7 +1654,7 @@ if [ -s /auth-src/settings.json ]; then
 else
   printf '%s\n' '{"selectedAuthType":"oauth-personal","security":{"auth":{"selectedType":"oauth-personal"}}}' > /var/lib/pangaea/home/gemini/.gemini/settings.json
 fi
-chown -R 10001:10001 /var/lib/pangaea /work
+chown -R 1000:1000 /var/lib/pangaea /work 2>/dev/null || true
 chmod 0700 /var/lib/pangaea/home/gemini /var/lib/pangaea/home/gemini/.gemini /var/lib/pangaea/tmp
 chmod 0600 /var/lib/pangaea/home/gemini/.gemini/settings.json
 `)
@@ -1740,6 +1759,28 @@ func setupProviderKubernetesPullPolicy(policy string, setupType string) string {
 			return "IfNotPresent"
 		}
 		return "IfNotPresent"
+	}
+}
+
+func setupProviderKubernetesPodSecurityContext() map[string]any {
+	return map[string]any{
+		"runAsNonRoot":        true,
+		"runAsUser":           1000,
+		"runAsGroup":          1000,
+		"fsGroup":             1000,
+		"fsGroupChangePolicy": "OnRootMismatch",
+		"seccompProfile":      map[string]any{"type": "RuntimeDefault"},
+	}
+}
+
+func setupProviderKubernetesContainerSecurityContext(readOnlyRootFS bool) map[string]any {
+	return map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                1000,
+		"runAsGroup":               1000,
+		"allowPrivilegeEscalation": false,
+		"readOnlyRootFilesystem":   readOnlyRootFS,
+		"capabilities":             map[string]any{"drop": []string{"ALL"}},
 	}
 }
 

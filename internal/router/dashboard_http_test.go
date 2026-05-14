@@ -1,6 +1,7 @@
 package router
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,6 +103,47 @@ func TestDashboardUIRequiresGoogleSessionWhenOAuthEnabled(t *testing.T) {
 	if rec.Code == http.StatusFound {
 		t.Fatalf("dashboard assets should not be redirected to login")
 	}
+}
+
+func TestDashboardUIAssetsDoNotUseImmutableCache(t *testing.T) {
+	handler := NewHTTPHandler(HTTPOptions{})
+	asset := firstEmbeddedDashboardAsset(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/router/ui/"+asset, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for %s, got %d body=%s", asset, rec.Code, rec.Body.String())
+	}
+	cacheControl := strings.ToLower(rec.Header().Get("cache-control"))
+	if !strings.Contains(cacheControl, "no-cache") || !strings.Contains(cacheControl, "must-revalidate") {
+		t.Fatalf("expected dashboard assets to require revalidation, got Cache-Control=%q", rec.Header().Get("cache-control"))
+	}
+	if strings.Contains(cacheControl, "immutable") || strings.Contains(cacheControl, "max-age=31536000") {
+		t.Fatalf("dashboard assets must not use long immutable cache, got Cache-Control=%q", rec.Header().Get("cache-control"))
+	}
+}
+
+func firstEmbeddedDashboardAsset(t *testing.T) string {
+	t.Helper()
+	var asset string
+	err := fs.WalkDir(embeddedRouterDashboardFS, "assets", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if asset == "" && !d.IsDir() {
+			asset = path
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk embedded dashboard assets: %v", err)
+	}
+	if asset == "" {
+		t.Fatalf("embedded dashboard asset not found")
+	}
+	return asset
 }
 
 func dashboardUIBlocksFraming(header http.Header) bool {

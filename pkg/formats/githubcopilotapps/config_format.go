@@ -35,6 +35,7 @@ type configShape struct {
 	LastLoggedInUser configUser        `json:"lastLoggedInUser"`
 	LoggedInUsers    []configUser      `json:"loggedInUsers"`
 	CopilotTokens    map[string]string `json:"copilotTokens"`
+	CopilotToken     map[string]string `json:"copilotToken"`
 }
 
 type configSnapshot struct {
@@ -67,7 +68,7 @@ func (ConfigFormat) Parse(raw []byte) (formats.Snapshot, error) {
 		return nil, common.Wrap(err, common.ErrParseFailed, "decode github-copilot-config-json-format")
 	}
 	primaryUser := firstConfigUser(file.LastLoggedInUser, file.LoggedInUsers)
-	token, tokenKey := selectConfigToken(file.CopilotTokens, primaryUser)
+	token, tokenKey := selectConfigToken(configTokens(file), primaryUser)
 	if strings.TrimSpace(token) == "" {
 		return nil, common.Wrap(nil, common.ErrParseFailed, "missing github copilot token")
 	}
@@ -190,6 +191,25 @@ func firstConfigUser(last configUser, users []configUser) configUser {
 		}
 	}
 	return configUser{}
+}
+
+func configTokens(file configShape) map[string]string {
+	if len(file.CopilotTokens) == 0 {
+		return file.CopilotToken
+	}
+	if len(file.CopilotToken) == 0 {
+		return file.CopilotTokens
+	}
+	merged := make(map[string]string, len(file.CopilotTokens)+len(file.CopilotToken))
+	for key, token := range file.CopilotTokens {
+		merged[key] = token
+	}
+	for key, token := range file.CopilotToken {
+		if strings.TrimSpace(merged[key]) == "" {
+			merged[key] = token
+		}
+	}
+	return merged
 }
 
 func selectConfigToken(tokens map[string]string, user configUser) (string, string) {

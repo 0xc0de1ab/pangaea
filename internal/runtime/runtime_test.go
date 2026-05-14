@@ -222,8 +222,8 @@ func validContainerSpec() ContainerSpec {
 		AuthCopy: &CopySpec{
 			HostPath:      "/srv/pangaea/auth/codex/primary/auth.json",
 			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
-			OwnerUID:      10001,
-			OwnerGID:      10001,
+			OwnerUID:      1000,
+			OwnerGID:      1000,
 			FileMode:      0o600,
 		},
 		Security: DefaultSecurityProfile(),

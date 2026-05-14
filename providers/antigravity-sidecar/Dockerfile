@@ -58,10 +58,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     xdg-utils \
   && rm -rf /var/lib/apt/lists/* \
-  && groupadd -g 10001 pangaea \
-  && useradd -m -u 10001 -g 10001 -d /home/pangaea -s /usr/sbin/nologin pangaea \
+  && existing_user="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/passwd)" \
+  && if [ -n "${existing_user}" ]; then userdel "${existing_user}" 2>/dev/null || true; fi \
+  && existing_group="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/group)" \
+  && if [ -n "${existing_group}" ]; then groupdel "${existing_group}" 2>/dev/null || true; fi \
+  && groupadd -g 1000 pangaea \
+  && useradd -m -u 1000 -g 1000 -d /home/pangaea -s /usr/sbin/nologin pangaea \
   && mkdir -p /var/lib/pangaea/home/antigravity /var/lib/antigravity/state/User/globalStorage /run/pangaea /work /opt/antigravity-server \
-  && chown -R 10001:10001 /var/lib/pangaea /var/lib/antigravity /run/pangaea /work /home/pangaea /opt/antigravity-server
+  && chown -R 1000:1000 /var/lib/pangaea /var/lib/antigravity /run/pangaea /work /home/pangaea /opt/antigravity-server
 
 COPY providers/antigravity-runtime/server-bundle/ /opt/antigravity-server/
 COPY --from=build /out/pangaeactl /usr/local/bin/pangaeactl
@@ -89,6 +93,6 @@ ENV HOME=/var/lib/pangaea/home/antigravity \
     PANGAEA_MODEL_ALIAS=antigravity-default \
     PATH="/opt/antigravity-server:${PATH}"
 
-USER 10001:10001
+USER pangaea:pangaea
 WORKDIR /work
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/provider-entrypoint"]

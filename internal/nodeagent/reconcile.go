@@ -1,9 +1,11 @@
 package nodeagent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/control"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/runtime"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 const defaultContainerStopTimeout = 30 * time.Second
@@ -77,13 +80,19 @@ func ReconcileProviderContainerWithOptions(ctx context.Context, rt runtime.Runti
 			}
 			if containerSpec.AuthCopy != nil {
 				if spec.Auth.Sync.ContainerToHost {
-					if err := rt.CopyFrom(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
+					if err := copyAuthFromContainerIfValid(ctx, rt, status.ID, *containerSpec.AuthCopy, spec.Auth.Format); err != nil {
 						return ReconcileResult{}, err
 					}
 				}
 				if shouldSyncHostToContainerOnReconcile(spec.Auth.Sync.HostToContainer) {
-					if err := rt.CopyTo(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
+					copied, err := copyAuthToHostMountIfPossible(*containerSpec.AuthCopy, containerSpec.Mounts)
+					if err != nil {
 						return ReconcileResult{}, err
+					}
+					if !copied {
+						if err := rt.CopyTo(ctx, status.ID, *containerSpec.AuthCopy); err != nil {
+							return ReconcileResult{}, err
+						}
 					}
 				}
 			}
@@ -124,10 +133,17 @@ func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerS
 	if err != nil {
 		return ReconcileResult{}, err
 	}
+	authCopiedToHostMount := false
+	if containerSpec.AuthCopy != nil {
+		authCopiedToHostMount, err = copyAuthToHostMountIfPossible(*containerSpec.AuthCopy, containerSpec.Mounts)
+		if err != nil {
+			return ReconcileResult{}, err
+		}
+	}
 	if err := rt.Start(ctx, containerID); err != nil {
 		return ReconcileResult{}, err
 	}
-	if containerSpec.AuthCopy != nil {
+	if containerSpec.AuthCopy != nil && !authCopiedToHostMount {
 		if err := rt.CopyTo(ctx, containerID, *containerSpec.AuthCopy); err != nil {
 			return ReconcileResult{}, err
 		}
@@ -147,6 +163,161 @@ func createProviderContainer(ctx context.Context, rt runtime.Runtime, containerS
 	}
 	populateContainerStats(ctx, rt, containerID, &report)
 	return ReconcileResult{ContainerID: containerID, Spec: containerSpec, Report: report}, nil
+}
+
+func copyAuthToHostMountIfPossible(spec runtime.CopySpec, mounts []runtime.MountSpec) (bool, error) {
+	hostPath, mount, ok := hostPathForMountedContainerPath(spec.ContainerPath, mounts)
+	if !ok {
+		return false, nil
+	}
+	data, err := os.ReadFile(spec.HostPath)
+	if err != nil {
+		return false, err
+	}
+	mode := spec.FileMode.Perm()
+	if mode == 0 {
+		if info, statErr := os.Stat(spec.HostPath); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+	}
+	if mode == 0 {
+		mode = 0o600
+	}
+	if err := os.MkdirAll(filepath.Dir(hostPath), 0o700); err != nil {
+		return false, err
+	}
+	uid, gid := copySpecOwner(spec, mount)
+	if err := chownIfRequested(filepath.Dir(hostPath), uid, gid); err != nil {
+		return false, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(hostPath), ".pangaea-auth-*")
+	if err != nil {
+		return false, err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return false, err
+	}
+	if err := chownIfRequested(tmpPath, uid, gid); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmpPath, hostPath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func hostPathForMountedContainerPath(containerPath string, mounts []runtime.MountSpec) (string, runtime.MountSpec, bool) {
+	containerPath = filepath.Clean(strings.TrimSpace(containerPath))
+	if containerPath == "." || !filepath.IsAbs(containerPath) {
+		return "", runtime.MountSpec{}, false
+	}
+	var best runtime.MountSpec
+	bestRel := ""
+	for _, mount := range mounts {
+		if strings.ToLower(strings.TrimSpace(mount.Type)) != "bind" || !mount.Directory || strings.TrimSpace(mount.Source) == "" {
+			continue
+		}
+		target := filepath.Clean(strings.TrimSpace(mount.Target))
+		if target == "." || !filepath.IsAbs(target) {
+			continue
+		}
+		rel, err := filepath.Rel(target, containerPath)
+		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			continue
+		}
+		if best.Target == "" || len(target) > len(filepath.Clean(best.Target)) {
+			best = mount
+			bestRel = rel
+		}
+	}
+	if best.Target == "" {
+		return "", runtime.MountSpec{}, false
+	}
+	return filepath.Join(best.Source, bestRel), best, true
+}
+
+func copySpecOwner(spec runtime.CopySpec, mount runtime.MountSpec) (int, int) {
+	uid := spec.OwnerUID
+	if uid <= 0 {
+		uid = mount.OwnerUID
+	}
+	gid := spec.OwnerGID
+	if gid <= 0 {
+		gid = mount.OwnerGID
+	}
+	return uid, gid
+}
+
+func chownIfRequested(path string, uid int, gid int) error {
+	if uid <= 0 && gid <= 0 {
+		return nil
+	}
+	if uid <= 0 {
+		uid = -1
+	}
+	if gid <= 0 {
+		gid = -1
+	}
+	if err := os.Chown(path, uid, gid); err != nil && !os.IsPermission(err) {
+		return err
+	}
+	return nil
+}
+
+func copyAuthFromContainerIfValid(ctx context.Context, rt runtime.Runtime, id runtime.ContainerID, spec runtime.CopySpec, formatName string) error {
+	formatName = strings.TrimSpace(formatName)
+	if formatName == "" {
+		return rt.CopyFrom(ctx, id, spec)
+	}
+	format, ok := formats.Get(formatName)
+	if !ok {
+		return rt.CopyFrom(ctx, id, spec)
+	}
+	dir := filepath.Dir(spec.HostPath)
+	tmp, err := os.CreateTemp(dir, ".pangaea-auth-copy-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	tmpSpec := spec
+	tmpSpec.HostPath = tmpPath
+	if err := rt.CopyFrom(ctx, id, tmpSpec); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	if _, err := format.Parse(raw); err != nil {
+		return nil
+	}
+	if spec.FileMode != 0 {
+		if err := os.Chmod(tmpPath, spec.FileMode.Perm()); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(tmpPath, spec.HostPath); err != nil {
+		return err
+	}
+	return nil
 }
 
 func shouldRecreateExistingContainer(status runtime.ContainerStatus, spec runtime.ContainerSpec) bool {

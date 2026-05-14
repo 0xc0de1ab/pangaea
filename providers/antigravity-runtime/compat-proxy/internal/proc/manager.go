@@ -108,7 +108,7 @@ func (pm *ProcessManager) Start() error {
 
 	geminiDir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_GEMINI_DIR"))
 	if geminiDir == "" {
-		geminiDir = "/root/.antigravity-server"
+		geminiDir = "/var/lib/antigravity/home/.antigravity-server"
 	}
 	appDataDir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_APP_DATA_DIR"))
 	if appDataDir == "" {

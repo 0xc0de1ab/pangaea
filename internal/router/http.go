@@ -28,6 +28,16 @@ type HTTPOptions struct {
 	AdminAuth  AdminAuthOptions
 }
 
+type RouterHTTPPrincipal struct {
+	Email     string
+	Name      string
+	Role      RouterUserRole
+	APIKey    security.APIKeyPrincipal
+	Session   GoogleOAuthSession
+	AuthKind  string
+	Anonymous bool
+}
+
 const (
 	traceRequestIDContextKey = "pangaea_trace_request_id"
 	maxTraceHTTPBodyBytes    = 256 << 10
@@ -87,11 +97,13 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	})
 	r.GET("/router", redirectToEmbeddedRouterDashboard)
 	r.GET("/router/", redirectToEmbeddedRouterDashboard)
-	routerDashboard := serveEmbeddedRouterDashboardWithAuth(opts.AdminAuth)
+	routerDashboard := serveEmbeddedRouterDashboardWithAuth(opts.AdminAuth, opts.Engine)
 	r.GET("/router/ui", routerDashboard)
 	r.GET("/router/ui/*path", routerDashboard)
-	registerGoogleOAuthRoutes(r, opts.AdminAuth)
-	r.Use(routerAdminAuthMiddleware(opts.APIKeys, opts.AdminAuth))
+	registerGoogleOAuthRoutes(r, opts.AdminAuth, opts.Engine)
+	registerRouterUserRoutes(r, opts)
+	registerNamedRouteCompatRoutes(r, opts)
+	r.Use(routerAdminAuthMiddleware(opts.APIKeys, opts.AdminAuth, opts.Engine))
 	r.Use(traceHTTPExchangeMiddleware(opts.Engine))
 	r.GET("/v1/models", func(c *gin.Context) {
 		if _, ok := authenticatePublicRequest(c, opts.APIKeys); !ok {
@@ -844,6 +856,402 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 	return r
 }
 
+func registerRouterUserRoutes(r *gin.Engine, opts HTTPOptions) {
+	r.GET("/router/v1/users/me", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"user": routerUserFromPrincipal(principal)})
+	})
+	r.GET("/router/v1/users", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		if !principal.Role.IsAdmin() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "admin role is required"})
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"users": engine.ListUsers()})
+	})
+	r.POST("/router/v1/users", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		if !principal.Role.IsAdmin() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "admin role is required"})
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request RouterUserUpsertRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		user, err := engine.UpsertUser(request)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, user)
+	})
+	r.PUT("/router/v1/users/:email", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		if !principal.Role.IsAdmin() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "admin role is required"})
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request RouterUserUpsertRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		request.Email = c.Param("email")
+		user, err := engine.UpsertUser(request)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, user)
+	})
+	r.DELETE("/router/v1/users/:email", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		if !principal.Role.IsAdmin() {
+			c.JSON(http.StatusForbidden, gin.H{"error": "admin role is required"})
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		if !engine.DeleteUser(c.Param("email")) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	r.GET("/router/v1/routing-rules", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		rules := routingRulesVisibleTo(engine.ListRoutingRules(), principal)
+		c.JSON(http.StatusOK, gin.H{"rules": rules})
+	})
+	r.POST("/router/v1/routing-rules", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var rule RoutingRule
+		if err := c.ShouldBindJSON(&rule); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		rule, ok = normalizeRuleForPrincipal(c, rule, principal)
+		if !ok {
+			return
+		}
+		created, err := engine.UpsertRoutingRule(rule)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, created)
+	})
+	r.PUT("/router/v1/routing-rules/:id", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		existing, found := engine.GetRoutingRule(c.Param("id"))
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "routing rule not found"})
+			return
+		}
+		if !principalCanEditRoutingRule(principal, existing) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "routing rule is not editable by this user"})
+			return
+		}
+		var rule RoutingRule
+		if err := c.ShouldBindJSON(&rule); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if strings.TrimSpace(rule.Name) == "" {
+			rule.Name = existing.Name
+		}
+		rule.CreatedAt = existing.CreatedAt
+		rule, ok = normalizeRuleForPrincipal(c, rule, principal)
+		if !ok {
+			return
+		}
+		if rule.ID != existing.ID {
+			engine.DeleteRoutingRule(existing.ID)
+		}
+		updated, err := engine.UpsertRoutingRule(rule)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, updated)
+	})
+	r.DELETE("/router/v1/routing-rules/:id", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		rule, found := engine.GetRoutingRule(c.Param("id"))
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "routing rule not found"})
+			return
+		}
+		if !principalCanEditRoutingRule(principal, rule) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "routing rule is not editable by this user"})
+			return
+		}
+		engine.DeleteRoutingRule(rule.ID)
+		c.Status(http.StatusNoContent)
+	})
+	r.POST("/router/v1/routing-rules/dry-run", func(c *gin.Context) {
+		principal, ok := authenticateRouterUserRequest(c, opts.APIKeys, opts.AdminAuth, opts.Engine)
+		if !ok {
+			return
+		}
+		engine, ok := requireEngine(c, opts.Engine)
+		if !ok {
+			return
+		}
+		var request RoutingRuleDryRunRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if request.Rule != nil {
+			rule, ok := normalizeRuleForPrincipal(c, *request.Rule, principal)
+			if !ok {
+				return
+			}
+			request.Rule = &rule
+		} else if request.RuleID != "" {
+			rule, found := engine.GetRoutingRule(request.RuleID)
+			if !found {
+				c.JSON(http.StatusNotFound, gin.H{"error": "routing rule not found"})
+				return
+			}
+			if !principalCanReadRoutingRule(principal, rule) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "routing rule is not visible to this user"})
+				return
+			}
+		} else if request.Name != "" {
+			request.OwnerEmail = firstNonEmpty(request.OwnerEmail, principal.Email)
+		}
+		response := engine.DryRunRoutingRule(request)
+		status := http.StatusOK
+		if !response.Decision.Allowed {
+			status = http.StatusConflict
+		}
+		c.JSON(status, response)
+	})
+}
+
+func registerNamedRouteCompatRoutes(r *gin.Engine, opts HTTPOptions) {
+	group := r.Group("/route/:user/:rule")
+	group.Use(traceHTTPExchangeMiddleware(opts.Engine))
+	group.GET("/v1/models", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleOpenAIOrAnthropicModels(c, opts)
+	})
+	group.GET("/v1beta/models", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleGeminiModelsList(c, opts)
+	})
+	group.GET("/v1beta/models/*modelName", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleGeminiModelGet(c, opts)
+	})
+	group.POST("/v1/chat/completions", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleOpenAIChatCompletions(c, opts, func(openaiRequest compat.OpenAIChatRequest) RouteRequest {
+			routeRequest := namedRouteRequest(c, principal, openaiRequest.Model, compat.APIDialectOpenAI, openaiRequest.Stream)
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
+	})
+	group.POST("/v1/messages", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleAnthropicMessages(c, opts, func(anthropicRequest compat.AnthropicMessagesRequest) RouteRequest {
+			routeRequest := namedRouteRequest(c, principal, anthropicRequest.Model, compat.APIDialectAnthropic, anthropicRequest.Stream)
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
+	})
+	group.POST("/v1beta/models/*modelAction", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleGeminiGenerateContent(c, opts, func(model string, stream bool) RouteRequest {
+			routeRequest := namedRouteRequest(c, principal, model, compat.APIDialectGemini, stream)
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
+	})
+	group.POST("/v1/models/*modelAction", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleGeminiGenerateContent(c, opts, func(model string, stream bool) RouteRequest {
+			routeRequest := namedRouteRequest(c, principal, model, compat.APIDialectGemini, stream)
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
+	})
+}
+
+func authorizeNamedRoutePrincipal(c *gin.Context, principal security.APIKeyPrincipal) bool {
+	if principal.ID == "" {
+		return true
+	}
+	routeUser := normalizeUserEmail(c.Param("user"))
+	if routeUser == "" || routeUser == "public" || strings.EqualFold(routeUser, principal.UserID) {
+		return true
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "api key user does not match route user"})
+	return false
+}
+
+func namedRouteRequest(c *gin.Context, principal security.APIKeyPrincipal, model string, dialect compat.APIDialect, stream bool) RouteRequest {
+	routeUser := normalizeUserEmail(c.Param("user"))
+	routeRule := strings.TrimSpace(c.Param("rule"))
+	routeRequest := applyPublicPrincipal(principal, RouteRequest{
+		TenantID:         c.GetHeader("x-pangaea-tenant-id"),
+		UserID:           firstNonEmpty(routeUser, c.GetHeader("x-pangaea-user-id")),
+		APIKeyID:         c.GetHeader("x-pangaea-api-key-id"),
+		RoutingRuleName:  routeRule,
+		RoutingRuleOwner: routeUser,
+		Model:            model,
+		APIDialect:       dialect,
+		Stream:           stream,
+	})
+	return routeRequest
+}
+
+func routerUserFromPrincipal(principal RouterHTTPPrincipal) RouterUser {
+	return RouterUser{
+		ID:      principal.Email,
+		Email:   principal.Email,
+		Name:    principal.Name,
+		Role:    principal.Role,
+		Enabled: true,
+	}
+}
+
+func routingRulesVisibleTo(rules []RoutingRule, principal RouterHTTPPrincipal) []RoutingRule {
+	out := make([]RoutingRule, 0, len(rules))
+	for _, rule := range rules {
+		if principalCanReadRoutingRule(principal, rule) {
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+func normalizeRuleForPrincipal(c *gin.Context, rule RoutingRule, principal RouterHTTPPrincipal) (RoutingRule, bool) {
+	rule.Scope = normalizeRoutingRuleScope(rule.Scope)
+	if rule.Scope == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid routing rule scope"})
+		return RoutingRule{}, false
+	}
+	if principal.Role.IsAdmin() {
+		if rule.Scope == RoutingRuleScopeUser {
+			rule.OwnerEmail = normalizeUserEmail(rule.OwnerEmail)
+			if rule.OwnerEmail == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "owner_email is required for user routing rules"})
+				return RoutingRule{}, false
+			}
+		}
+		return rule, true
+	}
+	if rule.Scope == RoutingRuleScopePublic {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only admins can edit public routing rules"})
+		return RoutingRule{}, false
+	}
+	if principal.Email == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "authenticated user email is required"})
+		return RoutingRule{}, false
+	}
+	rule.Scope = RoutingRuleScopeUser
+	rule.OwnerEmail = principal.Email
+	return rule, true
+}
+
+func principalCanReadRoutingRule(principal RouterHTTPPrincipal, rule RoutingRule) bool {
+	if rule.Scope == RoutingRuleScopePublic || principal.Role.IsAdmin() {
+		return true
+	}
+	return normalizeUserEmail(rule.OwnerEmail) == principal.Email
+}
+
+func principalCanEditRoutingRule(principal RouterHTTPPrincipal, rule RoutingRule) bool {
+	if principal.Role.IsAdmin() {
+		return true
+	}
+	return rule.Scope == RoutingRuleScopeUser && normalizeUserEmail(rule.OwnerEmail) == principal.Email
+}
+
 func handleOpenAIChatCompletions(c *gin.Context, opts HTTPOptions, buildRouteRequest func(compat.OpenAIChatRequest) RouteRequest) {
 	engine, ok := requireEngine(c, opts.Engine)
 	if !ok {
@@ -1026,14 +1434,14 @@ func applyRouteRequestProviderHeaders(c *gin.Context, routeRequest *RouteRequest
 	}
 }
 
-func routerAdminAuthMiddleware(store *security.APIKeyStore, auth AdminAuthOptions) gin.HandlerFunc {
+func routerAdminAuthMiddleware(store *security.APIKeyStore, auth AdminAuthOptions, engine *Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if !strings.HasPrefix(path, "/router/v1/") || path == "/router/v1/control/ws" || path == "/router/v1/data/ws" {
 			c.Next()
 			return
 		}
-		principal, session, ok := authenticateRouterAdminRequest(c, store, auth)
+		principal, session, ok := authenticateRouterAdminRequest(c, store, auth, engine)
 		if !ok {
 			c.Abort()
 			return
@@ -2204,59 +2612,86 @@ func authenticatePublicRequest(c *gin.Context, store *security.APIKeyStore) (sec
 	return principal, true
 }
 
-func authenticateRouterAdminRequest(c *gin.Context, store *security.APIKeyStore, auth AdminAuthOptions) (security.APIKeyPrincipal, GoogleOAuthSession, bool) {
-	switch auth.Mode {
-	case routerAdminAuthModeOpen:
-		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, true
-	case routerAdminAuthModeGoogle:
-		principal, session, ok := authenticateRouterAdminGoogle(c, auth.GoogleOAuth)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid google oauth session"})
-		}
-		return principal, session, ok
-	case routerAdminAuthModeBoth:
-		if principal, session, ok := authenticateRouterAdminGoogle(c, auth.GoogleOAuth); ok {
-			return principal, session, true
-		}
-		return authenticateRouterAdminBearer(c, store, false)
-	case routerAdminAuthModeBearer:
-		fallthrough
-	default:
-		return authenticateRouterAdminBearer(c, store, true)
-	}
-}
-
-func authenticateRouterAdminGoogle(c *gin.Context, oauth GoogleOAuthOptions) (security.APIKeyPrincipal, GoogleOAuthSession, bool) {
-	session, ok := authenticateGoogleOAuthSession(c, oauth)
+func authenticateRouterAdminRequest(c *gin.Context, store *security.APIKeyStore, auth AdminAuthOptions, engine *Engine) (security.APIKeyPrincipal, GoogleOAuthSession, bool) {
+	principal, ok := authenticateRouterUserRequest(c, store, auth, engine)
 	if !ok {
 		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
 	}
-	return security.APIKeyPrincipal{}, session, true
+	if !principal.Role.IsAdmin() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin role is required"})
+		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+	}
+	return principal.APIKey, principal.Session, true
 }
 
-func authenticateRouterAdminBearer(c *gin.Context, store *security.APIKeyStore, allowOpen bool) (security.APIKeyPrincipal, GoogleOAuthSession, bool) {
+func authenticateRouterUserRequest(c *gin.Context, store *security.APIKeyStore, auth AdminAuthOptions, engine *Engine) (RouterHTTPPrincipal, bool) {
+	switch auth.Mode {
+	case routerAdminAuthModeOpen:
+		return RouterHTTPPrincipal{Role: RouterUserRoleAdmin, AuthKind: routerAdminAuthModeOpen, Anonymous: true}, true
+	case routerAdminAuthModeGoogle:
+		principal, ok := authenticateRouterGoogle(c, auth.GoogleOAuth, engine)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid google oauth session"})
+		}
+		return principal, ok
+	case routerAdminAuthModeBoth:
+		if principal, ok := authenticateRouterGoogle(c, auth.GoogleOAuth, engine); ok {
+			return principal, true
+		}
+		return authenticateRouterBearer(c, store, false)
+	case routerAdminAuthModeBearer:
+		fallthrough
+	default:
+		return authenticateRouterBearer(c, store, true)
+	}
+}
+
+func authenticateRouterGoogle(c *gin.Context, oauth GoogleOAuthOptions, engine *Engine) (RouterHTTPPrincipal, bool) {
+	session, ok := authenticateGoogleOAuthSession(c, oauth, engine)
+	if !ok {
+		return RouterHTTPPrincipal{}, false
+	}
+	role := normalizeRouterUserRole(RouterUserRole(session.Role))
+	if role == "" {
+		role = RouterUserRoleUser
+	}
+	return RouterHTTPPrincipal{
+		Email:    normalizeUserEmail(session.Email),
+		Name:     strings.TrimSpace(session.Name),
+		Role:     role,
+		Session:  session,
+		AuthKind: routerAdminAuthModeGoogle,
+	}, true
+}
+
+func authenticateRouterBearer(c *gin.Context, store *security.APIKeyStore, allowOpen bool) (RouterHTTPPrincipal, bool) {
 	if store == nil || store.Len() == 0 {
 		if allowOpen {
-			return security.APIKeyPrincipal{}, GoogleOAuthSession{}, true
+			return RouterHTTPPrincipal{Role: RouterUserRoleAdmin, AuthKind: routerAdminAuthModeOpen, Anonymous: true}, true
 		}
 		if bearerToken(c.GetHeader("authorization")) == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing admin session or bearer token"})
-			return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+			return RouterHTTPPrincipal{}, false
 		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "admin bearer auth is not configured"})
-		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+		return RouterHTTPPrincipal{}, false
 	}
 	raw := bearerToken(c.GetHeader("authorization"))
 	if raw == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
-		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+		return RouterHTTPPrincipal{}, false
 	}
 	principal, ok := store.Authenticate(raw)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
-		return security.APIKeyPrincipal{}, GoogleOAuthSession{}, false
+		return RouterHTTPPrincipal{}, false
 	}
-	return principal, GoogleOAuthSession{}, true
+	return RouterHTTPPrincipal{
+		Email:    normalizeUserEmail(principal.UserID),
+		Role:     RouterUserRoleAdmin,
+		APIKey:   principal,
+		AuthKind: routerAdminAuthModeBearer,
+	}, true
 }
 
 func downloadFilename(filename string) string {

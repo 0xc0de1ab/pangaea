@@ -11,10 +11,14 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}"
 FROM alpine:3.22
 
 RUN apk add --no-cache bash ca-certificates tini \
-  && addgroup -g 10001 pangaea \
-  && adduser -D -u 10001 -G pangaea -h /home/pangaea pangaea \
+  && existing_user="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/passwd)" \
+  && if [ -n "${existing_user}" ]; then deluser "${existing_user}" 2>/dev/null || true; fi \
+  && existing_group="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/group)" \
+  && if [ -n "${existing_group}" ]; then delgroup "${existing_group}" 2>/dev/null || true; fi \
+  && addgroup -g 1000 pangaea \
+  && adduser -D -u 1000 -G pangaea -h /home/pangaea pangaea \
   && mkdir -p /run/pangaea /work \
-  && chown -R 10001:10001 /run/pangaea /work /home/pangaea
+  && chown -R 1000:1000 /run/pangaea /work /home/pangaea
 
 COPY --from=build /out/pangaeactl /usr/local/bin/pangaeactl
 COPY providers/api-compatible/provider-entrypoint.sh /usr/local/bin/provider-entrypoint
@@ -24,6 +28,6 @@ ENV PANGAEA_SHIM_MODE=api-compatible \
     PANGAEA_SERVICE=openai \
     PANGAEA_UPSTREAM_DIALECT=openai
 
-USER 10001:10001
+USER pangaea:pangaea
 WORKDIR /work
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/provider-entrypoint"]

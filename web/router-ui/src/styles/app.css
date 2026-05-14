@@ -558,9 +558,26 @@ tr:last-child td {
   gap: 2px;
 }
 
-.cell-stack span {
+.cell-stack span,
+.stacked-cell span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.stacked-cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stacked-cell strong,
+.stacked-cell span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.danger-text {
+  color: var(--danger);
 }
 
 .id-cell,
@@ -610,13 +627,16 @@ tr:last-child td {
 }
 
 .host-cell {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
   min-width: 0;
   align-items: center;
   gap: 6px;
 }
 
 .host-name {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -624,6 +644,7 @@ tr:last-child td {
 
 .container-indicator {
   display: inline-flex;
+  margin-left: auto;
   width: 23px;
   height: 23px;
   flex: 0 0 auto;
@@ -895,12 +916,126 @@ tr:last-child td {
 }
 
 .dry-run-form,
-.admin-form {
+.admin-form,
+.user-form {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) 160px max-content max-content;
   align-items: end;
   gap: 10px;
   margin-bottom: 10px;
+}
+
+.user-form {
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.8fr) 130px max-content max-content max-content;
+}
+
+.route-editor-grid {
+  align-items: start;
+}
+
+.route-rule-form,
+.route-dry-run-form {
+  display: grid;
+  gap: 10px;
+}
+
+.route-rule-fields,
+.filter-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.filter-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.filter-chain {
+  display: grid;
+  gap: 9px;
+}
+
+.filter-card {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, #ffffff, #fbfcfd);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.filter-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
+}
+
+.filter-card:active {
+  transform: scale(0.995);
+}
+
+.filter-card-head,
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-card-head strong {
+  margin-right: auto;
+}
+
+.route-dry-run-form {
+  grid-template-columns: minmax(180px, 1fr) 140px max-content max-content;
+  align-items: end;
+}
+
+.route-stepper {
+  display: grid;
+  gap: 8px;
+}
+
+.route-step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.route-step.active {
+  border-color: var(--interactive);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), 0 8px 20px rgba(37, 99, 235, 0.08);
+  transform: translateX(2px);
+}
+
+.route-step.selected {
+  background: #f1fbf7;
+}
+
+.route-step-index {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.route-step p {
+  margin: 2px 0;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.route-step small {
+  color: var(--muted);
 }
 
 .decision-panel {
@@ -1204,11 +1339,11 @@ tr:last-child td {
 
 .chat-workbench {
   position: absolute;
-  bottom: 0;
-  left: 0;
+  bottom: 1rem;
+  left: 1rem;
   display: grid;
   grid-template-rows: auto auto 3px minmax(0, 1fr) auto auto;
-  width: min(960px, 100vw);
+  width: min(960px, calc(100vw - 2rem));
   height: 66.666vh;
   height: 66.666dvh;
   border-right: 1px solid var(--border);
@@ -2061,6 +2196,14 @@ tr:last-child td {
 .markdown-body h5,
 .markdown-body h6 { font-size: 14px; }
 
+.markdown-body [data-streamdown="strong"] {
+  font-weight: 700;
+}
+
+.markdown-body [data-streamdown="emphasis"] {
+  font-style: italic;
+}
+
 .markdown-body ul,
 .markdown-body ol {
   display: grid;
@@ -2068,8 +2211,29 @@ tr:last-child td {
   padding-left: 22px;
 }
 
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin-top: 5px;
+}
+
+.markdown-body ul ul {
+  list-style-type: circle;
+}
+
+.markdown-body ul ul ul {
+  list-style-type: square;
+}
+
 .markdown-body li {
   padding-left: 2px;
+}
+
+.markdown-body li > p {
+  margin: 0;
+}
+
+.markdown-body pre {
+  margin: 0;
 }
 
 .markdown-table-frame {
@@ -2137,20 +2301,28 @@ tr:last-child td {
 
 .markdown-code .hljs-keyword,
 .markdown-code .hljs-selector-tag,
+.markdown-code .hljs-selector-id,
+.markdown-code .hljs-selector-class,
+.markdown-code .hljs-selector-attr,
+.markdown-code .hljs-selector-pseudo,
 .markdown-code .hljs-literal {
   color: #7dd3fc;
 }
 
 .markdown-code .hljs-built_in,
 .markdown-code .hljs-type,
+.markdown-code .hljs-title,
 .markdown-code .hljs-title.class_,
-.markdown-code .hljs-title.function_ {
+.markdown-code .hljs-title.function_,
+.markdown-code .hljs-function,
+.markdown-code .hljs-params {
   color: #93c5fd;
 }
 
 .markdown-code .hljs-string,
 .markdown-code .hljs-regexp,
-.markdown-code .hljs-symbol {
+.markdown-code .hljs-symbol,
+.markdown-code .hljs-link {
   color: #86efac;
 }
 
@@ -2158,7 +2330,9 @@ tr:last-child td {
 .markdown-code .hljs-attr,
 .markdown-code .hljs-attribute,
 .markdown-code .hljs-variable,
-.markdown-code .hljs-template-variable {
+.markdown-code .hljs-template-variable,
+.markdown-code .hljs-property,
+.markdown-code .hljs-variable.language_ {
   color: #fbbf24;
 }
 
@@ -2169,8 +2343,18 @@ tr:last-child td {
 }
 
 .markdown-code .hljs-meta,
-.markdown-code .hljs-doctag {
+.markdown-code .hljs-doctag,
+.markdown-code .hljs-tag,
+.markdown-code .hljs-name {
   color: #c4b5fd;
+}
+
+.markdown-code .hljs-emphasis {
+  font-style: italic;
+}
+
+.markdown-code .hljs-strong {
+  font-weight: 700;
 }
 
 .markdown-code .hljs-deletion {
@@ -2179,6 +2363,78 @@ tr:last-child td {
 
 .markdown-code .hljs-addition {
   color: #a7f3d0;
+}
+
+.markdown-body [data-streamdown="code-block"] {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.markdown-body [data-streamdown="code-block-header"] {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  color: #94a3b8;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.markdown-body [data-streamdown="code-block-header"] span {
+  color: inherit;
+}
+
+.markdown-body [data-streamdown="code-block-body"] {
+  overflow-x: auto;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: calc(var(--radius) - 2px);
+  background: #111827;
+  color: #e2e8f0;
+  font-size: 12px;
+}
+
+.markdown-body [data-streamdown="code-block-body"] pre {
+  margin: 0;
+  background: transparent;
+}
+
+.markdown-body [data-streamdown="code-block-body"] code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: inherit;
+  line-height: 1.62;
+  white-space: pre;
+}
+
+.markdown-body [data-streamdown="code-block-body"] code > span {
+  display: block;
+  min-height: 1.62em;
+}
+
+.markdown-body [data-streamdown="code-block-body"] code > span > span {
+  display: inline;
+}
+
+.markdown-body [data-streamdown="code-block-body"] span {
+  color: var(--sdm-c, var(--shiki-dark, var(--shiki-light, inherit))) !important;
+  background: var(--sdm-tbg, var(--shiki-dark-bg, var(--shiki-light-bg, transparent)));
+}
+
+.markdown-body [data-streamdown="code-block-body"] span[style*="--sdm-c"],
+.markdown-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"],
+.markdown-body [data-streamdown="code-block-body"] span[style*="--shiki-light"] {
+  color: var(--sdm-c, var(--shiki-dark, var(--shiki-light, inherit))) !important;
 }
 
 .markdown-code-lang {
@@ -2487,11 +2743,15 @@ tr:last-child td {
   .metric-grid,
   .health-strip,
   .dry-run-form,
+  .route-rule-fields,
+  .filter-fields,
+  .route-dry-run-form,
+  .user-form,
   .admin-form,
   .endpoint-row,
-    .usage-summary-strip,
-    .chat-toolbar,
-    .chat-composer {
+  .usage-summary-strip,
+  .chat-toolbar,
+  .chat-composer {
     grid-template-columns: 1fr;
   }
 
@@ -2513,6 +2773,8 @@ tr:last-child td {
   }
 
   .chat-workbench {
+    bottom: 0;
+    left: 0;
     width: 100vw;
     height: calc(100vh - 12px);
     height: calc(100dvh - 12px);

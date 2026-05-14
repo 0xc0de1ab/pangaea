@@ -14,6 +14,8 @@ import type {
   PublicModel,
   QuotaSnapshot,
   RequestTrace,
+  RouterUser,
+  RoutingRule,
   SessionSnapshot,
 } from "../lib/types";
 
@@ -33,6 +35,8 @@ export type DashboardQueries = {
   quotas: UseQueryResult<QuotaSnapshot[], Error>;
   apiKeys: UseQueryResult<APIKeyPrincipal[], Error>;
   models: UseQueryResult<PublicModel[], Error>;
+  users: UseQueryResult<RouterUser[], Error>;
+  routingRules: UseQueryResult<RoutingRule[], Error>;
 };
 
 export type DashboardViewProps = {

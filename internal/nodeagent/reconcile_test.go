@@ -2,24 +2,28 @@ package nodeagent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/runtime"
+	_ "github.com/0xc0de1ab/pangaea/pkg/formats/githubcopilotapps"
 )
 
 type fakeContainerRuntime struct {
-	pulled     runtime.ImageRef
-	created    runtime.ContainerSpec
-	copied     *runtime.CopySpec
-	copiedFrom *runtime.CopySpec
-	started    runtime.ContainerID
-	stopped    runtime.ContainerID
-	removed    runtime.ContainerID
-	stats      runtime.Stats
-	calls      []string
+	pulled          runtime.ImageRef
+	created         runtime.ContainerSpec
+	copied          *runtime.CopySpec
+	copiedFrom      *runtime.CopySpec
+	copyFromContent []byte
+	started         runtime.ContainerID
+	stopped         runtime.ContainerID
+	removed         runtime.ContainerID
+	stats           runtime.Stats
+	calls           []string
 }
 
 func (r *fakeContainerRuntime) Info(context.Context) (runtime.RuntimeInfo, error) {
@@ -63,6 +67,14 @@ func (r *fakeContainerRuntime) CopyTo(_ context.Context, _ runtime.ContainerID, 
 func (r *fakeContainerRuntime) CopyFrom(_ context.Context, _ runtime.ContainerID, spec runtime.CopySpec) error {
 	r.calls = append(r.calls, "copy-from")
 	r.copiedFrom = &spec
+	if r.copyFromContent != nil {
+		if err := os.MkdirAll(filepath.Dir(spec.HostPath), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(spec.HostPath, r.copyFromContent, 0o600); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -93,8 +105,8 @@ func (r *fakeExistingContainerRuntime) FindByLabels(context.Context, map[string]
 }
 
 func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing.T) {
-	uid := 10001
-	gid := 10001
+	uid := 1000
+	gid := 1000
 	spec, err := ContainerSpecFromProviderSpec(ProviderSpec{
 		ProviderType: "codex-primary",
 		InstanceID:   "codex-primary-a1",
@@ -187,7 +199,7 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 			t.Fatalf("env[%s] = %q, want %q in %#v", key, spec.Env[key], want, spec.Env)
 		}
 	}
-	if spec.AuthCopy == nil || spec.AuthCopy.OwnerUID != 10001 || spec.AuthCopy.FileMode != 0o600 {
+	if spec.AuthCopy == nil || spec.AuthCopy.OwnerUID != 1000 || spec.AuthCopy.FileMode != 0o600 {
 		t.Fatalf("unexpected auth copy: %#v", spec.AuthCopy)
 	}
 	if !spec.Security.RunAsNonRoot || !spec.Security.ReadOnlyRootFS {
@@ -332,7 +344,7 @@ func TestContainerSpecFromProviderSpecAddsPersistentStorageMounts(t *testing.T) 
 		if mount.Type != "bind" || !mount.Directory {
 			t.Fatalf("unexpected mount: %#v", mount)
 		}
-		if mount.OwnerUID != 10001 || mount.OwnerGID != 10001 || mount.DirectoryMode != 0o700 {
+		if mount.OwnerUID != 1000 || mount.OwnerGID != 1000 || mount.DirectoryMode != 0o700 {
 			t.Fatalf("persistent mount should be prepared for provider uid/gid: %#v", mount)
 		}
 		if want := wantMounts[mount.Target]; mount.Source != want {
@@ -350,7 +362,7 @@ func TestContainerSpecFromProviderSpecAddsPersistentStorageMounts(t *testing.T) 
 }
 
 func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T) {
-	uid := 10001
+	uid := 1000
 	rt := &fakeContainerRuntime{stats: runtime.Stats{CPUPercent: 12.5, MemoryBytes: 64 * 1024 * 1024, MemoryPeakBytes: 96 * 1024 * 1024, OOMCount: 1}}
 	result, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
 		ProviderType: "gemini-secondary",
@@ -381,6 +393,64 @@ func TestReconcileProviderContainerPullsCreatesCopiesAuthAndStarts(t *testing.T)
 	}
 	if result.Report.Resources.CPUPercent != 12.5 || result.Report.Resources.MemoryBytes != 64*1024*1024 || result.Report.Resources.OOMCount != 1 {
 		t.Fatalf("unexpected reconcile resources: %#v", result.Report.Resources)
+	}
+}
+
+func TestReconcileProviderContainerCopiesAuthToPersistentHostMountBeforeStart(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "host", "config.json")
+	authRaw := []byte(`{"copilotTokens":{"https://github.com:octocat":"copilot_secret"}}`)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, authRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "state")
+	rt := &fakeContainerRuntime{}
+	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ProviderType:    "github-copilot-sidecar",
+		InstanceID:      "github-copilot-octocat",
+		Kind:            provider.KindSidecar,
+		Image:           "pangaea/provider-github-copilot-sidecar:test",
+		ImagePullPolicy: "never",
+		Service:         provider.ServiceGitHubCopilot,
+		Auth: AuthSpec{
+			Mode:          "file",
+			HostPath:      authPath,
+			ContainerPath: "/var/lib/pangaea/home/copilot/.copilot/config.json",
+			FileMode:      "0600",
+		},
+		Storage: StorageSpec{
+			Mode:           "persistent",
+			HostPath:       statePath,
+			ContainerPaths: []string{"/var/lib/pangaea", "/work"},
+		},
+		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "130258", "rpi5")
+	if err != nil {
+		t.Fatalf("reconcile provider container: %v", err)
+	}
+	if got, want := strings.Join(rt.calls, ","), "create,start"; got != want {
+		t.Fatalf("runtime call order = %s, want %s", got, want)
+	}
+	if rt.copied != nil {
+		t.Fatalf("persistent auth should be copied through host bind mount, got runtime copy %#v", rt.copied)
+	}
+	copiedPath := filepath.Join(statePath, "var-lib-pangaea", "home", "copilot", ".copilot", "config.json")
+	got, err := os.ReadFile(copiedPath)
+	if err != nil {
+		t.Fatalf("read copied auth: %v", err)
+	}
+	if string(got) != string(authRaw) {
+		t.Fatalf("copied auth = %s, want %s", got, authRaw)
+	}
+	info, err := os.Stat(copiedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("copied auth mode = %v, want 0600", info.Mode().Perm())
 	}
 }
 
@@ -532,6 +602,69 @@ func TestReconcileExistingContainerSyncsAuthByPolicy(t *testing.T) {
 	}
 	if rt.copied == nil || rt.copiedFrom == nil {
 		t.Fatalf("expected bidirectional auth sync by policy: copied=%#v copiedFrom=%#v", rt.copied, rt.copiedFrom)
+	}
+	if got, want := strings.Join(rt.calls, ","), "copy-from,copy"; got != want {
+		t.Fatalf("sync call order = %s, want %s", got, want)
+	}
+}
+
+func TestReconcileExistingContainerSkipsInvalidContainerAuthBeforeHostSync(t *testing.T) {
+	dir := t.TempDir()
+	hostPath := filepath.Join(dir, "config.json")
+	validHost := []byte(`// User settings belong in settings.json.
+{
+  "lastLoggedInUser": {"host": "https://github.com", "login": "octocat"},
+  "copilotTokens": {"https://github.com:octocat": "copilot_secret"}
+}`)
+	if err := os.WriteFile(hostPath, validHost, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := &fakeExistingContainerRuntime{
+		fakeContainerRuntime: fakeContainerRuntime{
+			copyFromContent: []byte(`// User settings belong in settings.json.
+{"firstLaunchAt":"2026-05-14T00:00:00.000Z"}`),
+		},
+		status: runtime.ContainerStatus{
+			ID:    "container-existing",
+			Image: "pangaea/provider-github-copilot-sidecar:test",
+			State: "running",
+		},
+		found: true,
+	}
+	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ProviderType: "github-copilot-sidecar",
+		InstanceID:   "github-copilot-octocat",
+		Kind:         provider.KindSidecar,
+		Image:        "pangaea/provider-github-copilot-sidecar:test",
+		Service:      provider.ServiceGitHubCopilot,
+		Auth: AuthSpec{
+			Mode:          "file",
+			Format:        "github-copilot-config-json-format",
+			HostPath:      hostPath,
+			ContainerPath: "/var/lib/pangaea/home/copilot/.copilot/config.json",
+			FileMode:      "0600",
+			Sync: AuthSyncSpec{
+				ContainerToHost: true,
+				HostToContainer: "reconcile",
+			},
+		},
+		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a1", "rpi5")
+	if err != nil {
+		t.Fatalf("reconcile existing provider container: %v", err)
+	}
+	got, err := os.ReadFile(hostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(validHost) {
+		t.Fatalf("invalid container auth overwrote host auth:\n%s", got)
+	}
+	if rt.copied == nil || rt.copied.HostPath != hostPath {
+		t.Fatalf("expected valid host auth to be copied back to container, copied=%#v", rt.copied)
+	}
+	if rt.copiedFrom == nil || rt.copiedFrom.HostPath == hostPath {
+		t.Fatalf("container auth should be staged before validation, copiedFrom=%#v", rt.copiedFrom)
 	}
 	if got, want := strings.Join(rt.calls, ","), "copy-from,copy"; got != want {
 		t.Fatalf("sync call order = %s, want %s", got, want)

@@ -780,6 +780,53 @@ func TestEngineInvokeDoesNotDegradeProviderForUpstreamClientModelError(t *testin
 	}
 }
 
+func TestEngineRoutingRuleSkipsProviderWithExhaustedModelQuota(t *testing.T) {
+	registry := provider.NewRegistry()
+	exhausted := registration("codex-exhausted", "codex-cli", "exhausted@example.test", 10, 0)
+	exhausted.Models = []provider.Model{{
+		ID:           "gpt-5-codex",
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		Quota:        &provider.ModelQuota{RemainingPct: 0},
+	}}
+	available := registration("codex-available", "codex-cli", "available@example.test", 10, 0)
+	available.Models = []provider.Model{{
+		ID:           "gpt-5-codex",
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		Quota:        &provider.ModelQuota{RemainingPct: 25},
+	}}
+	if err := registry.Upsert(exhausted); err != nil {
+		t.Fatalf("upsert exhausted: %v", err)
+	}
+	if err := registry.Upsert(available); err != nil {
+		t.Fatalf("upsert available: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	if _, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:       "quota-aware",
+		Scope:      RoutingRuleScopeUser,
+		OwnerEmail: "user@example.test",
+		Filters:    []RoutingFilter{{Type: "criteria", Label: "Codex", Criteria: RoutingFilterCriteria{Services: []provider.Service{provider.ServiceCodex}}}},
+	}); err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	decision := engine.DryRun(RouteRequest{
+		UserID:          "user@example.test",
+		RoutingRuleName: "quota-aware",
+		Model:           "gpt-5-codex",
+		APIDialect:      compat.APIDialectOpenAI,
+	})
+	if !decision.Allowed || decision.Selected != "codex-available" {
+		t.Fatalf("expected available provider selected, got %#v", decision)
+	}
+	if len(decision.Rejections) == 0 || !strings.Contains(decision.Rejections[0].Reason, "quota exhausted") {
+		t.Fatalf("expected exhausted provider rejection, got %#v", decision.Rejections)
+	}
+}
+
 func testEngine(t *testing.T) (*Engine, *quota.Ledger) {
 	t.Helper()
 	registry := provider.NewRegistry()

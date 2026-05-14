@@ -100,6 +100,46 @@ func TestParseDerivesCopilotAccountFromConfigJSON(t *testing.T) {
 	}
 }
 
+func TestParseDerivesCopilotAccountFromSingularConfigToken(t *testing.T) {
+	raw := []byte(`// User settings belong in settings.json.
+// This file is managed automatically.
+{
+  "lastLoggedInUser": {"host": "https://github.com", "login": "octocat"},
+  "loggedInUsers": [
+    {"host": "https://github.com", "login": "octocat"}
+  ],
+  "copilotToken": {
+    "https://github.com:octocat": "gho_secret_tail"
+  }
+}`)
+	format := ConfigFormat{}
+	snap, err := format.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	account, err := format.Account(context.Background(), snap, "")
+	if err != nil {
+		t.Fatalf("account: %v", err)
+	}
+	if account != "octocat" {
+		t.Fatalf("account = %q, want octocat", account)
+	}
+	result, err := format.Validate(context.Background(), snap, formats.ValidateOpts{})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if result.Status != formats.StatusOK {
+		t.Fatalf("status = %q, want ok", result.Status)
+	}
+	summary := format.Redact(snap)
+	if summary.TokenTail4 != "tail" {
+		t.Fatalf("token tail = %q, want tail", summary.TokenTail4)
+	}
+	if summary.Extra["user"] != "octocat" || summary.Extra["host"] != "https://github.com" {
+		t.Fatalf("summary extra = %#v", summary.Extra)
+	}
+}
+
 func TestConfigFormatFallsBackToTokenKeyUser(t *testing.T) {
 	raw := []byte(`{"copilotTokens":{"https://github.com:ghost":"copilot_test_secret"}}`)
 	format := ConfigFormat{}

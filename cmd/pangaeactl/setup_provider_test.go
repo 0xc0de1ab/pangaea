@@ -240,10 +240,20 @@ func TestBuildSetupProviderAntigravityKindManifestUsesRuntimeAndShimContainers(t
 		"PANGAEA_AUTH_FORMAT",
 		"antigravity-state-vscdb-format",
 		"state.vscdb",
+		"runAsNonRoot: true",
+		"runAsUser: 1000",
+		"runAsGroup: 1000",
+		"fsGroup: 1000",
+		"allowPrivilegeEscalation: false",
+		"readOnlyRootFilesystem: true",
+		"defaultMode: 288",
 	} {
 		if !strings.Contains(manifest, want) {
 			t.Fatalf("antigravity manifest missing %q:\n%s", want, manifest)
 		}
+	}
+	if strings.Contains(manifest, "runAsUser: 0") || strings.Contains(manifest, "/root/.antigravity-server") {
+		t.Fatalf("antigravity manifest must be rootless and avoid /root paths:\n%s", manifest)
 	}
 }
 
@@ -471,6 +481,12 @@ func TestBuildSetupProviderCopilotDerivesAccountAndBootstrapsConfigJSON(t *testi
 	if plan.Spec.Auth.Format != "github-copilot-config-json-format" || !strings.HasSuffix(plan.Spec.Auth.ContainerPath, "/.copilot/config.json") {
 		t.Fatalf("unexpected copilot auth spec: %#v", plan.Spec.Auth)
 	}
+	if plan.Spec.Auth.Sync.ContainerToHost {
+		t.Fatalf("copilot config auth must not sync container-to-host by default: %#v", plan.Spec.Auth.Sync)
+	}
+	if plan.Spec.Auth.Sync.HostToContainer != "reconcile" {
+		t.Fatalf("copilot config auth should sync host-to-container on reconcile: %#v", plan.Spec.Auth.Sync)
+	}
 	manifest := string(plan.Artifacts[0].Content)
 	for _, want := range []string{
 		"bootstrap-github-copilot",
@@ -479,10 +495,20 @@ func TestBuildSetupProviderCopilotDerivesAccountAndBootstrapsConfigJSON(t *testi
 		"/var/lib/pangaea/home/copilot/.copilot/config.json",
 		"PANGAEA_ACCOUNT_DISPLAY",
 		"value: octocat",
+		"runAsNonRoot: true",
+		"runAsUser: 1000",
+		"runAsGroup: 1000",
+		"fsGroup: 1000",
+		"allowPrivilegeEscalation: false",
+		"readOnlyRootFilesystem: true",
+		"defaultMode: 288",
 	} {
 		if !strings.Contains(manifest, want) {
 			t.Fatalf("copilot manifest missing %q:\n%s", want, manifest)
 		}
+	}
+	if strings.Contains(manifest, "runAsUser: 0") {
+		t.Fatalf("copilot manifest must not run any container as root:\n%s", manifest)
 	}
 	if strings.Contains(manifest, "oauth_creds.json") {
 		t.Fatalf("copilot manifest should not use Gemini oauth bootstrap:\n%s", manifest)

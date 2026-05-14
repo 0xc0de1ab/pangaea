@@ -15,10 +15,14 @@ ARG CLAUDE_NPM_VERSION=latest
 
 RUN apk add --no-cache bash ca-certificates git openssh-client tini \
   && npm install -g "${CLAUDE_NPM_PACKAGE}@${CLAUDE_NPM_VERSION}" \
-  && addgroup -g 10001 pangaea \
-  && adduser -D -u 10001 -G pangaea -h /home/pangaea pangaea \
+  && existing_user="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/passwd)" \
+  && if [ -n "${existing_user}" ]; then deluser "${existing_user}" 2>/dev/null || true; fi \
+  && existing_group="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/group)" \
+  && if [ -n "${existing_group}" ]; then delgroup "${existing_group}" 2>/dev/null || true; fi \
+  && addgroup -g 1000 pangaea \
+  && adduser -D -u 1000 -G pangaea -h /home/pangaea pangaea \
   && mkdir -p /var/lib/pangaea/auth/claude /run/pangaea /work \
-  && chown -R 10001:10001 /var/lib/pangaea /run/pangaea /work /home/pangaea
+  && chown -R 1000:1000 /var/lib/pangaea /run/pangaea /work /home/pangaea
 
 COPY --from=build /out/pangaeactl /usr/local/bin/pangaeactl
 COPY providers/claude/provider-entrypoint.sh /usr/local/bin/provider-entrypoint
@@ -32,6 +36,6 @@ ENV CLAUDE_CONFIG_DIR=/var/lib/pangaea/auth/claude \
     PANGAEA_MODEL=claude-default \
     PANGAEA_MODEL_ALIAS=claude-default
 
-USER 10001:10001
+USER pangaea:pangaea
 WORKDIR /work
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/provider-entrypoint"]

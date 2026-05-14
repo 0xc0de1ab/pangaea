@@ -15,10 +15,14 @@ ARG GEMINI_NPM_VERSION=latest
 
 RUN apk add --no-cache bash ca-certificates git openssh-client procps ripgrep tini \
   && npm install -g "${GEMINI_NPM_PACKAGE}@${GEMINI_NPM_VERSION}" \
-  && addgroup -g 10001 pangaea \
-  && adduser -D -u 10001 -G pangaea -h /home/pangaea pangaea \
+  && existing_user="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/passwd)" \
+  && if [ -n "${existing_user}" ]; then deluser "${existing_user}" 2>/dev/null || true; fi \
+  && existing_group="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/group)" \
+  && if [ -n "${existing_group}" ]; then delgroup "${existing_group}" 2>/dev/null || true; fi \
+  && addgroup -g 1000 pangaea \
+  && adduser -D -u 1000 -G pangaea -h /home/pangaea pangaea \
   && mkdir -p /var/lib/pangaea/home/gemini/.gemini /run/pangaea /work \
-  && chown -R 10001:10001 /var/lib/pangaea /run/pangaea /work /home/pangaea
+  && chown -R 1000:1000 /var/lib/pangaea /run/pangaea /work /home/pangaea
 
 COPY --from=build /out/pangaeactl /usr/local/bin/pangaeactl
 COPY providers/gemini/provider-entrypoint.sh /usr/local/bin/provider-entrypoint
@@ -36,6 +40,6 @@ ENV HOME=/var/lib/pangaea/home/gemini \
     PANGAEA_MODEL=auto-gemini-3 \
     PANGAEA_MODEL_ALIAS=gemini-default
 
-USER 10001:10001
+USER pangaea:pangaea
 WORKDIR /work
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/provider-entrypoint"]

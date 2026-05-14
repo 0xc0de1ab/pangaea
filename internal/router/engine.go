@@ -42,6 +42,10 @@ type Engine struct {
 	notifierStatuses   map[string]NotifierStatus
 	notifierHistory    []NotifierDelivery
 	notifierSeq        uint64
+	usersMu            sync.RWMutex
+	users              map[string]RouterUser
+	rulesMu            sync.RWMutex
+	routingRules       map[string]RoutingRule
 	nodeMu             sync.RWMutex
 	nodes              map[string]NodeSnapshot
 	containers         map[string]ContainerSnapshot
@@ -107,6 +111,8 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 		authRecords:        make(map[string]AuthRecord),
 		authRaw:            make(map[string][]byte),
 		notifierStatuses:   make(map[string]NotifierStatus),
+		users:              make(map[string]RouterUser),
+		routingRules:       make(map[string]RoutingRule),
 		nodes:              make(map[string]NodeSnapshot),
 		containers:         make(map[string]ContainerSnapshot),
 		controlSessions:    make(map[string]*controlSession),
@@ -130,7 +136,42 @@ func (e *Engine) DryRun(request RouteRequest) RouteDecision {
 	if e == nil || e.registry == nil {
 		return RouteDecision{Reason: ErrRouterNotReady.Error()}
 	}
+	if strings.TrimSpace(request.RoutingRuleID) != "" || strings.TrimSpace(request.RoutingRuleName) != "" {
+		if rule, ok := e.resolveRoutingRuleForRequest(request); ok {
+			decision, _ := e.evaluateRoutingRule(rule, request)
+			return decision
+		}
+		return RouteDecision{
+			Allowed:    false,
+			RouteID:    request.RoutingRuleID,
+			Reason:     ErrNoRoute.Error(),
+			ModelAlias: request.Model,
+			Rejections: []RouteRejection{{Reason: "routing rule not found"}},
+		}
+	}
 	return e.policy.Evaluate(request, e.routingRegistrations())
+}
+
+func (e *Engine) resolveRoutingRuleForRequest(request RouteRequest) (RoutingRule, bool) {
+	if e == nil {
+		return RoutingRule{}, false
+	}
+	if id := strings.TrimSpace(request.RoutingRuleID); id != "" {
+		if rule, ok := e.GetRoutingRule(id); ok {
+			return rule, true
+		}
+	}
+	name := strings.TrimSpace(request.RoutingRuleName)
+	if name == "" {
+		return RoutingRule{}, false
+	}
+	owner := firstNonEmpty(request.RoutingRuleOwner, request.UserID)
+	if owner != "" {
+		if rule, ok := e.FindRoutingRule(RoutingRuleScopeUser, owner, name); ok {
+			return rule, true
+		}
+	}
+	return e.FindRoutingRule(RoutingRuleScopePublic, "", name)
 }
 
 func (e *Engine) Models() []ModelInfo {

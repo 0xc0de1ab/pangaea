@@ -13,6 +13,8 @@ type StateSnapshot struct {
 	SavedAt             time.Time              `json:"saved_at"`
 	Traces              []RequestTrace         `json:"traces,omitempty"`
 	Quotas              []quota.SnapshotRecord `json:"quotas,omitempty"`
+	Users               []RouterUser           `json:"users,omitempty"`
+	RoutingRules        []RoutingRule          `json:"routing_rules,omitempty"`
 	Notifiers           []NotifierStatus       `json:"notifiers,omitempty"`
 	NotificationHistory []NotifierDelivery     `json:"notification_history,omitempty"`
 }
@@ -26,6 +28,8 @@ func (e *Engine) SnapshotState(now time.Time) StateSnapshot {
 		SavedAt:             now.UTC(),
 		Traces:              e.requestTracesInRecordOrder(defaultRequestTraceLimit),
 		Quotas:              e.ledgerSnapshots(),
+		Users:               e.ListUsers(),
+		RoutingRules:        e.ListRoutingRules(),
 		Notifiers:           e.NotifierStatuses(),
 		NotificationHistory: e.notifierDeliveriesInRecordOrder(maxNotifierHistory),
 	}
@@ -52,6 +56,34 @@ func (e *Engine) RestoreState(snapshot StateSnapshot) {
 			e.traces[trace.RequestID] = trace
 		}
 		e.traceMu.Unlock()
+	}
+	if len(snapshot.Users) > 0 {
+		e.usersMu.Lock()
+		e.users = make(map[string]RouterUser, len(snapshot.Users))
+		for _, user := range snapshot.Users {
+			email := normalizeUserEmail(user.Email)
+			if email == "" {
+				continue
+			}
+			user.Email = email
+			if user.ID == "" {
+				user.ID = email
+			}
+			e.users[email] = user
+		}
+		e.usersMu.Unlock()
+	}
+	if len(snapshot.RoutingRules) > 0 {
+		e.rulesMu.Lock()
+		e.routingRules = make(map[string]RoutingRule, len(snapshot.RoutingRules))
+		for _, rule := range snapshot.RoutingRules {
+			normalized, err := normalizeRoutingRule(rule)
+			if err != nil {
+				continue
+			}
+			e.routingRules[normalized.ID] = normalized
+		}
+		e.rulesMu.Unlock()
 	}
 	if len(snapshot.Notifiers) > 0 || len(snapshot.NotificationHistory) > 0 {
 		e.notifierMu.Lock()

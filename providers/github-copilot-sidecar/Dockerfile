@@ -21,10 +21,14 @@ RUN apt-get update \
   && npm install -g "${COPILOT_NPM_PACKAGE}@${COPILOT_NPM_VERSION}" \
   && mkdir -p /opt/copilot-relay \
   && npm install --prefix /opt/copilot-relay "${COPILOT_SDK_NPM_PACKAGE}@${COPILOT_SDK_NPM_VERSION}" \
-  && groupadd -g 10001 pangaea \
-  && useradd -m -u 10001 -g 10001 -d /home/pangaea -s /usr/sbin/nologin pangaea \
+  && existing_user="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/passwd)" \
+  && if [ -n "${existing_user}" ]; then userdel "${existing_user}" 2>/dev/null || true; fi \
+  && existing_group="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/group)" \
+  && if [ -n "${existing_group}" ]; then groupdel "${existing_group}" 2>/dev/null || true; fi \
+  && groupadd -g 1000 pangaea \
+  && useradd -m -u 1000 -g 1000 -d /home/pangaea -s /usr/sbin/nologin pangaea \
   && mkdir -p /var/lib/pangaea/home/copilot /run/pangaea /work \
-  && chown -R 10001:10001 /var/lib/pangaea /run/pangaea /work /home/pangaea
+  && chown -R 1000:1000 /var/lib/pangaea /run/pangaea /work /home/pangaea
 
 COPY --from=build /out/pangaeactl /usr/local/bin/pangaeactl
 COPY providers/github-copilot-sidecar/provider-entrypoint.sh /usr/local/bin/provider-entrypoint
@@ -41,6 +45,6 @@ ENV HOME=/var/lib/pangaea/home/copilot \
     PANGAEA_UPSTREAM_BASE_URL=http://127.0.0.1:4141 \
     PANGAEA_AUTH_FORMAT=github-copilot-config-json-format
 
-USER 10001:10001
+USER pangaea:pangaea
 WORKDIR /work
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/provider-entrypoint"]

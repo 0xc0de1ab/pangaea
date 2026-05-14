@@ -14,6 +14,7 @@ import {
   Search,
   Shield,
   Signal,
+  Users,
 } from "lucide-react";
 import { ActionModal, type ConfirmAction } from "../components/ActionModal";
 import { StatusBadge } from "../components/StatusBadge";
@@ -27,18 +28,20 @@ import { ProvidersView } from "../features/ProvidersView";
 import { RequestsView } from "../features/RequestsView";
 import { AdminView } from "../features/AdminView";
 import { AuthView } from "../features/AuthView";
+import { UsersView } from "../features/UsersView";
 import pangaeaIcon from "../assets/images/pangaea.128x128.png";
 
 const navItems = [
   { to: "/", label: "Overview", icon: Activity },
   { to: "/routes", label: "Routes", icon: RouteIcon },
+  { to: "/users", label: "Users", icon: Users },
   { to: "/providers", label: "Providers", icon: Boxes },
   { to: "/auth", label: "Auth", icon: KeyRound },
   { to: "/requests", label: "Requests", icon: Signal },
   { to: "/admin", label: "Admin", icon: Shield },
 ];
 
-function useDashboardQueries(token: string | undefined, authVersion: number, enabled: boolean): DashboardQueries {
+function useDashboardQueries(token: string | undefined, authVersion: number, enabled: boolean, canManageUsers: boolean): DashboardQueries {
   const authedKey = authVersion;
   const common = {
     enabled,
@@ -117,6 +120,19 @@ function useDashboardQueries(token: string | undefined, authVersion: number, ena
       queryFn: () => api.apiKeys(token),
       ...common,
     }),
+    users: useQuery({
+      queryKey: ["users", authedKey],
+      queryFn: () => api.users(token),
+      ...common,
+      enabled: enabled && canManageUsers,
+      retry: false,
+    }),
+    routingRules: useQuery({
+      queryKey: ["routing-rules", authedKey],
+      queryFn: () => api.routingRules(token),
+      ...common,
+      retry: false,
+    }),
     models: useQuery({
       queryKey: ["models", authedKey],
       queryFn: () => api.models(token),
@@ -144,6 +160,8 @@ function dataFromQueries(queries: DashboardQueries): DashboardData {
     quotas: queries.quotas.data ?? [],
     apiKeys: queries.apiKeys.data ?? [],
     models: queries.models.data ?? [],
+    users: queries.users.data ?? [],
+    routingRules: queries.routingRules.data ?? [],
   };
 }
 
@@ -178,11 +196,13 @@ export default function App() {
   });
   const oauthEnabled = session.data?.google_oauth?.enabled ?? false;
   const oauthUser = session.data?.authenticated ? session.data.user : undefined;
+  const userRole = oauthUser?.role || (adminToken ? "admin" : oauthEnabled ? "" : "admin");
+  const canManageUsers = userRole === "admin";
   const sessionKnown = session.data !== undefined || session.isError;
   const oauthLoginRequired = sessionKnown && oauthEnabled && !oauthUser;
 
   const adminQueriesEnabled = !oauthLoginRequired && (Boolean(adminToken) || (sessionKnown && (!oauthEnabled || Boolean(oauthUser))));
-  const queries = useDashboardQueries(adminToken || undefined, authVersion, adminQueriesEnabled);
+  const queries = useDashboardQueries(adminToken || undefined, authVersion, adminQueriesEnabled, canManageUsers);
   const data = useMemo(() => dataFromQueries(queries), [queries]);
   const errorCount = queryErrorCount(queries);
   const isFetching = Object.values(queries).some((query) => query.isFetching);
@@ -247,7 +267,7 @@ export default function App() {
           </div>
         </div>
         <nav className="rail-nav">
-          {navItems.map((item) => {
+          {navItems.filter((item) => item.to !== "/users" || canManageUsers).map((item) => {
             const Icon = item.icon;
             return (
               <NavLink key={item.to} to={item.to} end={item.to === "/"}>
@@ -352,6 +372,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Overview {...viewProps} />} />
             <Route path="/routes" element={<RoutesView {...viewProps} />} />
+            <Route path="/users" element={<UsersView {...viewProps} />} />
             <Route path="/providers" element={<ProvidersView {...viewProps} />} />
             <Route path="/auth" element={<AuthView {...viewProps} />} />
             <Route path="/requests" element={<RequestsView {...viewProps} />} />

@@ -249,6 +249,9 @@ export type RouteRequest = {
   tenant_id?: string;
   user_id?: string;
   api_key_id?: string;
+  routing_rule_id?: string;
+  routing_rule_name?: string;
+  routing_rule_owner?: string;
   provider_instance_id?: string;
   provider_type?: string;
   model: string;
@@ -260,6 +263,7 @@ export type RouteRequest = {
 export type RouteDecision = {
   allowed: boolean;
   route_id?: string;
+  routing_rule_id?: string;
   model_alias?: string;
   canonical_model?: string;
   selected?: string;
@@ -288,8 +292,72 @@ export type RouterOAuthUser = {
   email_verified?: boolean;
   name?: string;
   picture?: string;
+  role?: "admin" | "user" | string;
   iat?: number;
   exp?: number;
+};
+
+export type RouterUser = {
+  id: string;
+  email: string;
+  name?: string;
+  role: "admin" | "user" | string;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type RoutingRuleScope = "public" | "user" | string;
+
+export type RoutingFilterCriteria = {
+  provider_types?: string[];
+  provider_instance_ids?: string[];
+  services?: string[];
+  models?: string[];
+  accounts?: string[];
+  host_names?: string[];
+  node_ids?: string[];
+  api_dialects?: string[];
+  capabilities?: string[];
+  health_status?: string[];
+  auth_status?: string[];
+};
+
+export type RoutingFilter = {
+  id?: string;
+  type: string;
+  label?: string;
+  criteria?: RoutingFilterCriteria;
+};
+
+export type RoutingRule = {
+  id: string;
+  name: string;
+  scope: RoutingRuleScope;
+  owner_email?: string;
+  description?: string;
+  filters: RoutingFilter[];
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type RoutingRuleStep = {
+  filter_id?: string;
+  filter_type: string;
+  label?: string;
+  matched?: string[];
+  rejected?: Array<{
+    provider_instance_id?: string;
+    provider_type?: string;
+    reason: string;
+  }>;
+  selected?: string;
+  reason?: string;
+};
+
+export type RoutingRuleDryRunResponse = {
+  decision: RouteDecision;
+  steps?: RoutingRuleStep[];
 };
 
 export type RouterSession = {
@@ -459,6 +527,8 @@ export type DashboardData = {
   quotas: QuotaSnapshot[];
   apiKeys: APIKeyPrincipal[];
   models: PublicModel[];
+  users: RouterUser[];
+  routingRules: RoutingRule[];
 };
 
 export type Incident = {

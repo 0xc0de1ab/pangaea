@@ -23,8 +23,12 @@ RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates tini git \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -g 10001 pangaea \
-	&& useradd -m -u 10001 -g pangaea -d /home/pangaea pangaea \
+RUN existing_user="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/passwd)" \
+	&& if [ -n "${existing_user}" ]; then userdel "${existing_user}" 2>/dev/null || true; fi \
+	&& existing_group="$(awk -F: '$3 == 1000 {print $1; exit}' /etc/group)" \
+	&& if [ -n "${existing_group}" ]; then groupdel "${existing_group}" 2>/dev/null || true; fi \
+	&& groupadd -g 1000 pangaea \
+	&& useradd -m -u 1000 -g 1000 -d /home/pangaea -s /usr/sbin/nologin pangaea \
 	&& mkdir -p /var/lib/pangaea/auth/cursor /var/lib/pangaea/home/cursor /run/pangaea /work \
 	&& chown -R pangaea:pangaea /var/lib/pangaea /run/pangaea /work /home/pangaea
 

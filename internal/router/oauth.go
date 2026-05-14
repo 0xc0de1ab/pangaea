@@ -66,6 +66,7 @@ type GoogleOAuthSession struct {
 	EmailVerified bool   `json:"email_verified"`
 	Name          string `json:"name,omitempty"`
 	Picture       string `json:"picture,omitempty"`
+	Role          string `json:"role,omitempty"`
 	IssuedAt      int64  `json:"iat"`
 	ExpiresAt     int64  `json:"exp"`
 }
@@ -164,9 +165,6 @@ func validateAdminAuthOptions(opts AdminAuthOptions) error {
 	if opts.GoogleOAuth.SessionSecret == "" {
 		return fmt.Errorf("google oauth session secret is required")
 	}
-	if len(opts.GoogleOAuth.AllowedEmails) == 0 && len(opts.GoogleOAuth.AllowedDomains) == 0 {
-		return fmt.Errorf("at least one google oauth allowed email or domain is required")
-	}
 	return nil
 }
 
@@ -176,10 +174,10 @@ func ValidateAdminAuthOptions(opts AdminAuthOptions) error {
 	return validateAdminAuthOptions(opts)
 }
 
-func registerGoogleOAuthRoutes(r *gin.Engine, opts AdminAuthOptions) {
+func registerGoogleOAuthRoutes(r *gin.Engine, opts AdminAuthOptions, engine *Engine) {
 	oauth := normalizeGoogleOAuthOptions(opts.GoogleOAuth)
 	r.GET("/router/v1/session", func(c *gin.Context) {
-		session, ok := authenticateGoogleOAuthSession(c, oauth)
+		session, ok := authenticateGoogleOAuthSession(c, oauth, engine)
 		if ok {
 			c.JSON(http.StatusOK, gin.H{
 				"authenticated": true,
@@ -267,7 +265,7 @@ func registerGoogleOAuthRoutes(r *gin.Engine, opts AdminAuthOptions) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 			return
 		}
-		session, err := sessionFromGoogleTokenInfo(oauth, info)
+		session, err := sessionFromGoogleTokenInfo(oauth, info, engine)
 		if err != nil {
 			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 			return
@@ -366,7 +364,7 @@ func fetchGoogleOAuthTokenInfo(ctx context.Context, opts GoogleOAuthOptions, idT
 	return info, nil
 }
 
-func sessionFromGoogleTokenInfo(opts GoogleOAuthOptions, info googleOAuthTokenInfo) (GoogleOAuthSession, error) {
+func sessionFromGoogleTokenInfo(opts GoogleOAuthOptions, info googleOAuthTokenInfo, engine *Engine) (GoogleOAuthSession, error) {
 	if info.Error != "" {
 		return GoogleOAuthSession{}, fmt.Errorf("google tokeninfo rejected id token: %s", info.Error)
 	}
@@ -381,7 +379,8 @@ func sessionFromGoogleTokenInfo(opts GoogleOAuthOptions, info googleOAuthTokenIn
 	if !verified {
 		return GoogleOAuthSession{}, fmt.Errorf("google account email is not verified")
 	}
-	if !googleOAuthEmailAllowed(email, opts.AllowedEmails, opts.AllowedDomains) {
+	role, allowed := googleOAuthAuthorizedRole(email, opts, engine)
+	if !allowed {
 		return GoogleOAuthSession{}, fmt.Errorf("google account %s is not allowed", email)
 	}
 	now := time.Now().UTC()
@@ -392,6 +391,7 @@ func sessionFromGoogleTokenInfo(opts GoogleOAuthOptions, info googleOAuthTokenIn
 		EmailVerified: verified,
 		Name:          strings.TrimSpace(info.Name),
 		Picture:       strings.TrimSpace(info.Picture),
+		Role:          string(role),
 		IssuedAt:      now.Unix(),
 		ExpiresAt:     now.Add(opts.SessionTTL).Unix(),
 	}, nil
@@ -420,7 +420,7 @@ func googleOAuthEmailAllowed(email string, allowedEmails []string, allowedDomain
 	return slices.Contains(allowedDomains, strings.ToLower(strings.TrimSpace(domain)))
 }
 
-func authenticateGoogleOAuthSession(c *gin.Context, opts GoogleOAuthOptions) (GoogleOAuthSession, bool) {
+func authenticateGoogleOAuthSession(c *gin.Context, opts GoogleOAuthOptions, engine *Engine) (GoogleOAuthSession, bool) {
 	if !opts.Enabled {
 		return GoogleOAuthSession{}, false
 	}
@@ -435,10 +435,29 @@ func authenticateGoogleOAuthSession(c *gin.Context, opts GoogleOAuthOptions) (Go
 	if session.Provider != "google" || session.Email == "" || session.ExpiresAt <= time.Now().Unix() {
 		return GoogleOAuthSession{}, false
 	}
-	if !googleOAuthEmailAllowed(session.Email, opts.AllowedEmails, opts.AllowedDomains) {
+	role, allowed := googleOAuthAuthorizedRole(session.Email, opts, engine)
+	if !allowed {
 		return GoogleOAuthSession{}, false
 	}
+	session.Role = string(role)
 	return session, true
+}
+
+func googleOAuthAuthorizedRole(email string, opts GoogleOAuthOptions, engine *Engine) (RouterUserRole, bool) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if googleOAuthEmailAllowed(email, opts.AllowedEmails, opts.AllowedDomains) {
+		return RouterUserRoleAdmin, true
+	}
+	if engine != nil {
+		if user, ok := engine.GetUserByEmail(email); ok && user.Enabled {
+			role := normalizeRouterUserRole(user.Role)
+			if role == "" {
+				role = RouterUserRoleUser
+			}
+			return role, true
+		}
+	}
+	return "", false
 }
 
 func googleOAuthStateFromCookie(c *gin.Context, opts GoogleOAuthOptions) (googleOAuthState, bool) {

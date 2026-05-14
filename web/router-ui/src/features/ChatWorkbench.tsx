@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, AtSign, Check, Copy, FileText, Image as ImageIcon, RefreshCw, Send, Trash2, X } from "lucide-react";
-import { MarkdownContent } from "../components/MarkdownContent";
 import { ProtocolIcon } from "../components/ServiceIcon";
 import { api, type DashboardChatContent, type DashboardChatContentPart, type DashboardChatMessage } from "../lib/api";
 import { providerAccountLabel, providerInstanceID } from "../lib/derive";
@@ -30,6 +29,15 @@ type ChatMessage = Omit<DashboardChatMessage, "content"> & {
 type ChatMode = "stream" | "buffered";
 type ReasoningEffort = "" | "low" | "medium" | "high" | "xhigh";
 
+type ChatSessionSnapshot = {
+  messages: ChatMessage[];
+  input: string;
+  mode: ChatMode;
+  selectedModel: string;
+  reasoningEffort: ReasoningEffort;
+  updatedAt: number;
+};
+
 type PendingAttachment = {
   id: string;
   name: string;
@@ -45,7 +53,12 @@ const transcriptBottomSlack = 96;
 const maxImageAttachmentBytes = 10 * 1024 * 1024;
 const maxTextAttachmentBytes = 256 * 1024;
 const maxAttachments = 8;
+const maxChatSessions = 32;
 const streamRenderFlushMs = 80;
+const chatSessionStoragePrefix = "pangaea:router-ui:chat-session:v1:";
+const loadMarkdownContent = () => import("../components/MarkdownContent").then((module) => ({ default: module.MarkdownContent }));
+const MarkdownContent = lazy(loadMarkdownContent);
+const chatSessionCache: Record<string, ChatSessionSnapshot> = {};
 
 export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
   const [renderTarget, setRenderTarget] = useState<ChatWorkbenchTarget | null>(target);
@@ -63,7 +76,11 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
   const [stickToBottom, setStickToBottom] = useState(true);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const targetKey = target ? `${providerInstanceID(target.provider)}:${target.endpoint.id}` : "";
+  const activeSessionKeyRef = useRef("");
+  const restoringSessionRef = useRef(false);
+  const latestSessionRef = useRef<ChatSessionSnapshot>(emptyChatSession());
+  latestSessionRef.current = { messages, input, mode, selectedModel, reasoningEffort, updatedAt: Date.now() };
+  const targetKey = target ? chatSessionKey(target) : "";
   const transcript = useMemo(() => messages.filter((message) => !message.pending && !message.error).map(({ role, content, requestContent }) => ({ role, content: requestContent ?? content })), [messages]);
   const activeTarget = target ?? renderTarget;
   const modelOptions = useMemo(() => activeTarget ? chatModelOptions(activeTarget.endpoint) : [], [activeTarget]);
@@ -73,8 +90,11 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
     if (target) {
       setRenderTarget(target);
       setExiting(false);
+      void loadMarkdownContent();
       return;
     }
+    persistActiveChatSession(chatSessionCache, activeSessionKeyRef.current, latestSessionRef.current);
+    activeSessionKeyRef.current = "";
     if (!renderTarget) return;
     setExiting(true);
     const timeout = window.setTimeout(() => {
@@ -86,13 +106,18 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
 
   useEffect(() => {
     if (!target) return;
-    setMessages([]);
-    setInput("");
-    setMode(target.endpoint.supportsStream ? "stream" : "buffered");
-    const options = chatModelOptions(target.endpoint);
-    const initialModel = options[0]?.value || target.endpoint.model;
-    setSelectedModel(initialModel);
-    setReasoningEffort(defaultReasoningEffort(initialModel, target.provider));
+    if (activeSessionKeyRef.current === targetKey) {
+      return;
+    }
+    persistActiveChatSession(chatSessionCache, activeSessionKeyRef.current, latestSessionRef.current);
+    activeSessionKeyRef.current = targetKey;
+    restoringSessionRef.current = true;
+    const session = normalizeChatSession(loadChatSession(chatSessionCache, targetKey), target);
+    setMessages(session.messages);
+    setInput(session.input);
+    setMode(session.mode);
+    setSelectedModel(session.selectedModel);
+    setReasoningEffort(session.reasoningEffort);
     setAttachments([]);
     setAttachmentError("");
     setDragActive(false);
@@ -100,6 +125,20 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
     setCopiedMessageID(null);
     setStickToBottom(true);
   }, [targetKey, target]);
+
+  useEffect(() => {
+    if (restoringSessionRef.current) {
+      restoringSessionRef.current = false;
+      return;
+    }
+    persistActiveChatSession(chatSessionCache, activeSessionKeyRef.current, latestSessionRef.current);
+  }, [messages, input, mode, selectedModel, reasoningEffort]);
+
+  useEffect(() => {
+    return () => {
+      persistActiveChatSession(chatSessionCache, activeSessionKeyRef.current, latestSessionRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!stickToBottom) return;
@@ -228,6 +267,16 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
     scrollTranscriptToBottom("smooth");
   }
 
+  function saveActiveChatSession() {
+    persistActiveChatSession(chatSessionCache, activeSessionKeyRef.current, latestSessionRef.current);
+  }
+
+  function closeChat() {
+    saveActiveChatSession();
+    activeSessionKeyRef.current = "";
+    onClose();
+  }
+
   function scrollTranscriptToBottom(behavior: ScrollBehavior) {
     const element = transcriptRef.current;
     if (!element) return;
@@ -236,7 +285,13 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
 
   return (
     <div className={cx("chat-layer", exiting && "is-exiting")} role="presentation">
-      <button className="chat-scrim" type="button" aria-label="Close chat" onClick={onClose} />
+      <button
+        className="chat-scrim"
+        type="button"
+        aria-label="Close chat"
+        onClick={closeChat}
+        onPointerDown={saveActiveChatSession}
+      />
       <aside
         className={cx("chat-workbench", dragActive && "is-dragging-file")}
         aria-label={`${endpoint.label} chat`}
@@ -270,7 +325,7 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
               </p>
             </div>
           </div>
-          <button className="icon-button" type="button" aria-label="Close chat" onClick={onClose}>
+          <button className="icon-button" type="button" aria-label="Close chat" onClick={closeChat}>
             <X aria-hidden="true" size={18} />
           </button>
         </div>
@@ -331,7 +386,9 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
                 {message.error ? (
                   <div className="inline-error endpoint-error">{message.error}</div>
                 ) : message.content ? (
-                  <MarkdownContent content={message.content} deferHighlight={message.pending} />
+                  <Suspense fallback={<TypingSpinner />}>
+                    <MarkdownContent key={`${message.id}:${message.pending ? "streaming" : "static"}`} content={message.content} deferHighlight={message.pending} />
+                  </Suspense>
                 ) : null}
               </div>
             </article>
@@ -404,6 +461,131 @@ export function ChatWorkbench({ target, token, onClose }: ChatWorkbenchProps) {
 
 function isNearTranscriptBottom(element: HTMLElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= transcriptBottomSlack;
+}
+
+function chatSessionKey(target: ChatWorkbenchTarget) {
+  const identity = target.provider.identity;
+  return [
+    identity.provider_type,
+    identity.service,
+    identity.kind,
+    identity.node_id,
+    identity.host_name,
+    identity.account?.id || target.provider.auth?.account?.id || "",
+    identity.account?.display || target.provider.auth?.account?.display || providerAccountLabel(target.provider),
+    target.endpoint.protocol,
+  ].map(stableKeyPart).join(":");
+}
+
+function emptyChatSession(): ChatSessionSnapshot {
+  return {
+    messages: [],
+    input: "",
+    mode: "stream",
+    selectedModel: "",
+    reasoningEffort: "",
+    updatedAt: 0,
+  };
+}
+
+function normalizeChatSession(session: ChatSessionSnapshot | undefined, target: ChatWorkbenchTarget): ChatSessionSnapshot {
+  const fallback = defaultChatSession(target);
+  if (!session) {
+    return fallback;
+  }
+  const modelOptions = chatModelOptions(target.endpoint);
+  const validModels = new Set(modelOptions.map((option) => option.value));
+  const selectedModel = validModels.has(session.selectedModel) ? session.selectedModel : fallback.selectedModel;
+  return {
+    messages: session.messages.map((message) => ({ ...message, pending: false })),
+    input: session.input,
+    mode: target.endpoint.supportsStream ? session.mode : "buffered",
+    selectedModel,
+    reasoningEffort: thinkingLevelsForModel(selectedModel, target.provider).includes(session.reasoningEffort) ? session.reasoningEffort : defaultReasoningEffort(selectedModel, target.provider),
+    updatedAt: session.updatedAt || Date.now(),
+  };
+}
+
+function defaultChatSession(target: ChatWorkbenchTarget): ChatSessionSnapshot {
+  const options = chatModelOptions(target.endpoint);
+  const selectedModel = options[0]?.value || target.endpoint.model;
+  return {
+    messages: [],
+    input: "",
+    mode: target.endpoint.supportsStream ? "stream" : "buffered",
+    selectedModel,
+    reasoningEffort: defaultReasoningEffort(selectedModel, target.provider),
+    updatedAt: Date.now(),
+  };
+}
+
+function persistActiveChatSession(cache: Record<string, ChatSessionSnapshot>, key: string, session: ChatSessionSnapshot) {
+  if (!key) {
+    return;
+  }
+  const snapshot = {
+    messages: session.messages.map((message) => ({ ...message, pending: false })),
+    input: session.input,
+    mode: session.mode,
+    selectedModel: session.selectedModel,
+    reasoningEffort: session.reasoningEffort,
+    updatedAt: Date.now(),
+  };
+  cache[key] = snapshot;
+  writeChatSessionStorage(key, snapshot);
+  pruneChatSessions(cache);
+}
+
+function loadChatSession(cache: Record<string, ChatSessionSnapshot>, key: string) {
+  return cache[key] ?? readChatSessionStorage(key);
+}
+
+function readChatSessionStorage(key: string): ChatSessionSnapshot | undefined {
+  try {
+    const raw = window.sessionStorage.getItem(chatSessionStoragePrefix + key);
+    if (!raw) return undefined;
+    const value = JSON.parse(raw) as Partial<ChatSessionSnapshot>;
+    if (!Array.isArray(value.messages)) return undefined;
+    return {
+      messages: value.messages as ChatMessage[],
+      input: typeof value.input === "string" ? value.input : "",
+      mode: value.mode === "buffered" ? "buffered" : "stream",
+      selectedModel: typeof value.selectedModel === "string" ? value.selectedModel : "",
+      reasoningEffort: isReasoningEffort(value.reasoningEffort) ? value.reasoningEffort : "",
+      updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : Date.now(),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeChatSessionStorage(key: string, session: ChatSessionSnapshot) {
+  try {
+    window.sessionStorage.setItem(chatSessionStoragePrefix + key, JSON.stringify(session));
+  } catch {
+    // Chat history is a convenience cache; quota/private-mode failures should not break chat.
+  }
+}
+
+function stableKeyPart(value: string) {
+  return encodeURIComponent(value.trim().toLowerCase());
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === "" || value === "low" || value === "medium" || value === "high" || value === "xhigh";
+}
+
+function pruneChatSessions(cache: Record<string, ChatSessionSnapshot>) {
+  const entries = Object.entries(cache);
+  if (entries.length <= maxChatSessions) {
+    return;
+  }
+  entries
+    .sort((left, right) => left[1].updatedAt - right[1].updatedAt)
+    .slice(0, entries.length - maxChatSessions)
+    .forEach(([key]) => {
+      delete cache[key];
+    });
 }
 
 function chatModelOptions(endpoint: ServiceEndpoint) {

@@ -160,8 +160,8 @@ type SecurityProfile struct {
 func DefaultSecurityProfile() SecurityProfile {
 	return SecurityProfile{
 		RunAsNonRoot:     true,
-		RunAsUser:        10001,
-		RunAsGroup:       10001,
+		RunAsUser:        1000,
+		RunAsGroup:       1000,
 		NoNewPrivileges:  true,
 		DropCapabilities: []string{"ALL"},
 		ReadOnlyRootFS:   true,

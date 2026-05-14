@@ -69,6 +69,9 @@ type RouteRequest struct {
 	TenantID           string            `json:"tenant_id,omitempty"`
 	UserID             string            `json:"user_id,omitempty"`
 	APIKeyID           string            `json:"api_key_id,omitempty"`
+	RoutingRuleID      string            `json:"routing_rule_id,omitempty"`
+	RoutingRuleName    string            `json:"routing_rule_name,omitempty"`
+	RoutingRuleOwner   string            `json:"routing_rule_owner,omitempty"`
 	ProviderInstanceID string            `json:"provider_instance_id,omitempty"`
 	ProviderType       string            `json:"provider_type,omitempty"`
 	Model              string            `json:"model"`
@@ -80,6 +83,7 @@ type RouteRequest struct {
 type RouteDecision struct {
 	Allowed              bool                   `json:"allowed"`
 	RouteID              string                 `json:"route_id,omitempty"`
+	RoutingRuleID        string                 `json:"routing_rule_id,omitempty"`
 	ModelAlias           string                 `json:"model_alias,omitempty"`
 	CanonicalModel       string                 `json:"canonical_model,omitempty"`
 	Selected             string                 `json:"selected,omitempty"`

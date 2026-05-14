@@ -18,6 +18,9 @@ import type {
   RequestTracePage,
   RouteDecision,
   RouteRequest,
+  RouterUser,
+  RoutingRule,
+  RoutingRuleDryRunResponse,
   RouterSession,
   SessionSnapshot,
 } from "./types";
@@ -452,6 +455,50 @@ export const api = {
     const payload = await request<{ providers?: ProviderRegistration[] }>("/router/v1/providers", { token });
     return payload.providers ?? [];
   },
+  usersMe: (token?: string) => request<{ user?: RouterUser }>("/router/v1/users/me", { token }),
+  users: async (token?: string) => {
+    const payload = await request<{ users?: RouterUser[] }>("/router/v1/users", { token });
+    return payload.users ?? [];
+  },
+  createUser: (payload: { email: string; name?: string; role?: string; enabled?: boolean }, token?: string) =>
+    request<RouterUser>("/router/v1/users", {
+      token,
+      method: "POST",
+      body: payload,
+      okStatuses: [201],
+    }),
+  updateUser: (email: string, payload: { name?: string; role?: string; enabled?: boolean }, token?: string) =>
+    request<RouterUser>(`/router/v1/users/${encodeURIComponent(email)}`, {
+      token,
+      method: "PUT",
+      body: payload,
+    }),
+  deleteUser: (email: string, token?: string) => request<void>(`/router/v1/users/${encodeURIComponent(email)}`, { token, method: "DELETE", okStatuses: [204] }),
+  routingRules: async (token?: string) => {
+    const payload = await request<{ rules?: RoutingRule[] }>("/router/v1/routing-rules", { token });
+    return payload.rules ?? [];
+  },
+  createRoutingRule: (rule: Partial<RoutingRule>, token?: string) =>
+    request<RoutingRule>("/router/v1/routing-rules", {
+      token,
+      method: "POST",
+      body: rule,
+      okStatuses: [201],
+    }),
+  updateRoutingRule: (ruleID: string, rule: Partial<RoutingRule>, token?: string) =>
+    request<RoutingRule>(`/router/v1/routing-rules/${encodeURIComponent(ruleID)}`, {
+      token,
+      method: "PUT",
+      body: rule,
+    }),
+  deleteRoutingRule: (ruleID: string, token?: string) => request<void>(`/router/v1/routing-rules/${encodeURIComponent(ruleID)}`, { token, method: "DELETE", okStatuses: [204] }),
+  dryRunRoutingRule: (payload: { rule_id?: string; rule?: Partial<RoutingRule>; request: RouteRequest; name?: string; scope?: string; owner_email?: string }, token?: string) =>
+    request<RoutingRuleDryRunResponse>("/router/v1/routing-rules/dry-run", {
+      token,
+      method: "POST",
+      body: payload,
+      okStatuses: [200, 409],
+    }),
   nodes: async (token?: string) => {
     const payload = await request<{ nodes?: NodeSnapshot[] }>("/router/v1/nodes", { token });
     return payload.nodes ?? [];

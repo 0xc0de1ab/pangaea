@@ -11,7 +11,7 @@ services:
       - PROXY_API_KEY=test-secret-key
     # Mount the local state.vscdb if available, otherwise it might fail to authenticate to Google
     volumes:
-      - ~/.antigravity-server/data/User/globalStorage/state.vscdb:/root/.antigravity-server/data/User/globalStorage/state.vscdb:ro
+      - ~/.antigravity-server/data/User/globalStorage/state.vscdb:/var/lib/antigravity/home/.antigravity-server/data/User/globalStorage/state.vscdb:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
       interval: 5s

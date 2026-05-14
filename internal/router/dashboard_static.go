@@ -24,9 +24,9 @@ func redirectToEmbeddedRouterDashboard(c *gin.Context) {
 	c.Redirect(http.StatusMovedPermanently, embeddedRouterDashboardRoot)
 }
 
-func serveEmbeddedRouterDashboardWithAuth(auth AdminAuthOptions) gin.HandlerFunc {
+func serveEmbeddedRouterDashboardWithAuth(auth AdminAuthOptions, engine *Engine) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if shouldRedirectEmbeddedRouterDashboardToGoogleLogin(c, auth) {
+		if shouldRedirectEmbeddedRouterDashboardToGoogleLogin(c, auth, engine) {
 			setEmbeddedRouterDashboardHeaders(c)
 			c.Header("Cache-Control", "no-store")
 			c.Redirect(http.StatusFound, embeddedRouterDashboardGoogleLoginURL(c))
@@ -70,7 +70,7 @@ func serveEmbeddedRouterDashboard(c *gin.Context) {
 	serveEmbeddedRouterDashboardFile(c, embeddedRouterDashboardIndex, false)
 }
 
-func shouldRedirectEmbeddedRouterDashboardToGoogleLogin(c *gin.Context, auth AdminAuthOptions) bool {
+func shouldRedirectEmbeddedRouterDashboardToGoogleLogin(c *gin.Context, auth AdminAuthOptions, engine *Engine) bool {
 	if !embeddedRouterDashboardRequiresGoogleLogin(auth) {
 		return false
 	}
@@ -81,7 +81,7 @@ func shouldRedirectEmbeddedRouterDashboardToGoogleLogin(c *gin.Context, auth Adm
 	if assetPath != "" && assetPath != embeddedRouterDashboardIndex && embeddedRouterDashboardLooksLikeAsset(assetPath) {
 		return false
 	}
-	_, ok = authenticateGoogleOAuthSession(c, auth.GoogleOAuth)
+	_, ok = authenticateGoogleOAuthSession(c, auth.GoogleOAuth, engine)
 	return !ok
 }
 
@@ -165,9 +165,9 @@ func setEmbeddedRouterDashboardHeaders(c *gin.Context) {
 
 func embeddedRouterDashboardCacheControl(name string) string {
 	if strings.HasPrefix(name, "assets/") {
-		return "public, max-age=31536000, immutable"
+		return "private, no-cache, must-revalidate"
 	}
-	return "public, max-age=3600"
+	return "private, no-cache, must-revalidate"
 }
 
 func embeddedRouterDashboardContentType(name string, body []byte) string {

@@ -979,6 +979,156 @@ func TestHTTPRouterAdminRequiresAPIKeyWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestHTTPRouterUsersCRUDRequiresAdmin(t *testing.T) {
+	engine, _ := testEngine(t)
+	store := security.NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKey("admin_key", "pk_admin_router", "ops", "admin_1"); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine, APIKeys: store})
+
+	body := []byte(`{"email":"user@example.test","name":"User One","role":"user","enabled":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/router/v1/users", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer pk_admin_router")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected user create 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/users", nil)
+	req.Header.Set("authorization", "Bearer pk_admin_router")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "user@example.test") {
+		t.Fatalf("expected user list to include created user, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body = []byte(`{"name":"User Disabled","role":"user","enabled":false}`)
+	req = httptest.NewRequest(http.MethodPut, "/router/v1/users/user@example.test", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer pk_admin_router")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) {
+		t.Fatalf("expected user update, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/router/v1/users/user@example.test", nil)
+	req.Header.Set("authorization", "Bearer pk_admin_router")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected user delete 204, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPRouterGoogleUserCanManageOwnRulesOnly(t *testing.T) {
+	engine, _ := testEngine(t)
+	if _, err := engine.UpsertUser(RouterUserUpsertRequest{Email: "user@example.test", Name: "User One", Role: RouterUserRoleUser}); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	oauth := GoogleOAuthOptions{
+		Enabled:       true,
+		ClientID:      "client-test",
+		ClientSecret:  "secret-test",
+		SessionSecret: "session-secret-test",
+		SessionTTL:    time.Hour,
+	}
+	handler := NewHTTPHandler(HTTPOptions{
+		Engine: engine,
+		AdminAuth: AdminAuthOptions{
+			Mode:        routerAdminAuthModeGoogle,
+			GoogleOAuth: oauth,
+		},
+	})
+	sessionCookie := testGoogleOAuthSessionCookie(t, oauth, "user@example.test")
+
+	req := httptest.NewRequest(http.MethodGet, "/router/v1/users/me", nil)
+	req.AddCookie(sessionCookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"role":"user"`) {
+		t.Fatalf("expected user session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/router/v1/users", nil)
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected non-admin users list 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body := []byte(`{"name":"mine","scope":"user","filters":[{"type":"any","label":"Any"}]}`)
+	req = httptest.NewRequest(http.MethodPost, "/router/v1/routing-rules", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"owner_email":"user@example.test"`) {
+		t.Fatalf("expected own routing rule create, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body = []byte(`{"name":"public-default","scope":"public","filters":[{"type":"any","label":"Any"}]}`)
+	req = httptest.NewRequest(http.MethodPost, "/router/v1/routing-rules", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected public rule create 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPNamedRouteUsesUserRoutingRule(t *testing.T) {
+	engine, _ := testEngine(t)
+	if _, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:       "fast",
+		Scope:      RoutingRuleScopeUser,
+		OwnerEmail: "usr_1",
+		Filters: []RoutingFilter{{
+			Type:  "criteria",
+			Label: "codex only",
+			Criteria: RoutingFilterCriteria{
+				Services: []provider.Service{provider.ServiceCodex},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("upsert routing rule: %v", err)
+	}
+	engine.SetInvoker(fakeInvoker{})
+	store := security.NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKey("key_1", "pk_route_user", "team-a", "usr_1"); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine, APIKeys: store})
+
+	body := []byte(`{"model":"gpt-5-codex","messages":[{"role":"user","content":"hello"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/route/usr_1/fast/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer pk_route_user")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected named route 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	traces := engine.RequestTraces(1)
+	if len(traces) != 1 || traces[0].RouteRequest.RoutingRuleName != "fast" || traces[0].RouteRequest.RoutingRuleOwner != "usr_1" {
+		t.Fatalf("trace did not record named route request: %#v", traces)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/route/other_user/fast/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer pk_route_user")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected named route user mismatch 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHTTPRouterAdminAuthDisablesBearerWhenGoogleOAuthEnabled(t *testing.T) {
 	engine, _ := testEngine(t)
 	store := security.NewAPIKeyStore([]byte("pepper"))

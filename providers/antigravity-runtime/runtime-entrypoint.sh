@@ -13,7 +13,7 @@ if [ ! -x "${CORE_PATH}" ] && [ -x "${default_core_path}" ]; then
   export CORE_PATH="${default_core_path}"
 fi
 export INSTALL_DIR="${INSTALL_DIR:-${ANTIGRAVITY_SERVER_DIR}}"
-export ANTIGRAVITY_GEMINI_DIR="${ANTIGRAVITY_GEMINI_DIR:-/root/.antigravity-server}"
+export ANTIGRAVITY_GEMINI_DIR="${ANTIGRAVITY_GEMINI_DIR:-/var/lib/antigravity/home/.antigravity-server}"
 export ANTIGRAVITY_APP_DATA_DIR="${ANTIGRAVITY_APP_DATA_DIR:-data}"
 export STATE_VSCDB_PATH="${STATE_VSCDB_PATH:-/var/lib/antigravity/state/User/globalStorage/state.vscdb}"
 export VSCDB_PATH="${VSCDB_PATH:-${STATE_VSCDB_PATH}}"
@@ -23,9 +23,9 @@ mkdir -p \
   "$(dirname "${STATE_VSCDB_PATH}")" \
   "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/globalStorage" \
   "${ANTIGRAVITY_GEMINI_DIR}/${ANTIGRAVITY_APP_DATA_DIR}/User/History" \
-  "${HOME:-/root}/.antigravity-server/extensions" \
-  "${HOME:-/root}/.antigravity-server/data/User/globalStorage" \
-  "${HOME:-/root}/.antigravity-server/data/User/History"
+  "${HOME:-/home/pangaea}/.antigravity-server/extensions" \
+  "${HOME:-/home/pangaea}/.antigravity-server/data/User/globalStorage" \
+  "${HOME:-/home/pangaea}/.antigravity-server/data/User/History"
 
 if [ "$#" -eq 0 ]; then
   set -- serve --proxy-addr 0.0.0.0:8080 --db-path "${STATE_VSCDB_PATH}"
