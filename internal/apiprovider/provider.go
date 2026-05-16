@@ -174,7 +174,13 @@ type compatibleModelsResponse struct {
 }
 
 type compatibleModel struct {
-	ID string `json:"id"`
+	ID             string   `json:"id"`
+	Label          string   `json:"label,omitempty"`
+	DisplayName    string   `json:"display_name,omitempty"`
+	DisplayNameV1  string   `json:"displayName,omitempty"`
+	Kind           string   `json:"kind,omitempty"`
+	GroupMembers   []string `json:"groupMembers,omitempty"`
+	GroupMembersV1 []string `json:"group_members,omitempty"`
 }
 
 type geminiModelsResponse struct {
@@ -284,9 +290,19 @@ func compatibleModels(items []compatibleModel, capabilities []provider.Capabilit
 		if id == "" {
 			continue
 		}
+		aliases := []string(nil)
+		for _, label := range []string{item.Label, item.DisplayName, item.DisplayNameV1} {
+			label = strings.TrimSpace(label)
+			if label != "" && label != id {
+				aliases = mergeStringSet(aliases, []string{label})
+			}
+		}
 		models = append(models, provider.Model{
 			ID:           id,
+			Aliases:      aliases,
 			Capabilities: capabilities,
+			Kind:         strings.TrimSpace(item.Kind),
+			GroupMembers: mergeStringSet(item.GroupMembers, item.GroupMembersV1),
 		})
 	}
 	return models

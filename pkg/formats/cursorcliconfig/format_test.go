@@ -2,9 +2,12 @@ package cursorcliconfig
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -74,6 +77,67 @@ exit 2
 	}
 }
 
+func TestProbeUsesCursorDashboardCurrentPeriodUsage(t *testing.T) {
+	var sawAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/aiserver.v1.DashboardService/GetCurrentPeriodUsage" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Connect-Protocol-Version") != "1" {
+			t.Fatalf("missing connect protocol header")
+		}
+		if r.Header.Get("Authorization") == "Bearer cursor-access-test" {
+			sawAuth = true
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"billingCycleStart":"1778222860000",
+			"billingCycleEnd":"1780901260000",
+			"planUsage":{"totalSpend":1998,"includedSpend":1998,"remaining":2,"limit":2000,"autoPercentUsed":44.4,"apiPercentUsed":0,"totalPercentUsed":22.2},
+			"displayMessage":"You've used 100% of your included usage"
+		}`))
+	}))
+	defer server.Close()
+	t.Setenv("PANGAEA_CURSOR_API_BASE_URL", "")
+	t.Setenv("CURSOR_API_BASE_URL", "")
+
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	authPath := filepath.Join(home, ".config", "cursor", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte(`{"accessToken":"cursor-access-test","refreshToken":"cursor-refresh-test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cliConfigPath := filepath.Join(home, ".cursor", "cli-config.json")
+	if err := os.MkdirAll(filepath.Dir(cliConfigPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var f Format
+	raw := strings.Replace(cursorCLIConfigFixture("dev@example.com", "Pro"), `"version": 1,`, `"version": 1, "serverConfigCache":{"backendUrl":"`+server.URL+`"},`, 1)
+	snap, err := f.Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := f.Probe(context.Background(), snap, cliConfigPath, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawAuth {
+		t.Fatal("dashboard request did not use Cursor access token")
+	}
+	if rep.Used != 1998 || rep.Limit != 2000 || rep.Unit != "usd_cents" {
+		t.Fatalf("usage summary = %#v", rep)
+	}
+	if len(rep.Windows) != 1 || rep.Windows[0].Label != "Included usage" || rep.Windows[0].RemainingPct < 0.09 || rep.Windows[0].RemainingPct > 0.11 {
+		t.Fatalf("usage windows = %#v", rep.Windows)
+	}
+	if len(rep.Notes) == 0 || !strings.Contains(strings.Join(rep.Notes, "\n"), "display-message") {
+		t.Fatalf("expected display message note: %#v", rep.Notes)
+	}
+}
+
 func TestParseRejectsMissingAuthInfo(t *testing.T) {
 	var f Format
 	if _, err := f.Parse([]byte(`{"version":1}`)); err == nil {
@@ -85,6 +149,13 @@ func TestAuthFormatUsesCursorAgentStatusAndAbout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is POSIX-only")
 	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"planUsage":{"totalSpend":100,"remaining":1900,"limit":2000}}`))
+	}))
+	defer server.Close()
+	t.Setenv("PANGAEA_CURSOR_API_BASE_URL", server.URL)
+
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "cursor-agent")
 	script := `#!/bin/sh

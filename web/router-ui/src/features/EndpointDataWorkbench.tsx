@@ -375,7 +375,7 @@ function UsageTable({ snapshot, rows, loading, now, scopeKey }: { snapshot?: Pro
                     </div>
                   </td>
                   <td className="numeric"><span className={cx("usage-value-box", changed.has(`${rowKey}:usedLimit`) && "usage-value-changed")}>{formatUsedLimit(row)}</span></td>
-                  <td><span className={cx("usage-value-box", changed.has(`${rowKey}:unit`) && "usage-value-changed")}>{row.unit || ""}</span></td>
+                  <td><span className={cx("usage-value-box", changed.has(`${rowKey}:unit`) && "usage-value-changed")}>{formatUsageUnit(row.unit)}</span></td>
                   <td><span className={cx("usage-value-box", changed.has(`${rowKey}:resetAt`) && "usage-value-changed")}>{formatLocalReset(row.resetAt)}</span></td>
                   <td className="mono">{formatTimeLeft(row.resetAt, now)}</td>
                 </tr>
@@ -417,7 +417,7 @@ function usageChangeValues(usage: ProviderUsageSnapshot["usage"] | undefined, ro
     const key = usageRowKey(row, index);
     values[`${key}:remaining`] = formatPercent(remainingPercent(row));
     values[`${key}:usedLimit`] = formatUsedLimit(row);
-    values[`${key}:unit`] = row.unit || "";
+    values[`${key}:unit`] = formatUsageUnit(row.unit);
     values[`${key}:resetAt`] = formatLocalReset(row.resetAt);
   });
   return values;
@@ -524,22 +524,19 @@ function modelsForProtocol(protocol: ProviderProtocol, token?: string) {
 function normalizeModelRows(endpoint: ServiceEndpoint | undefined, provider: ProviderRegistration, rawModels: unknown): ModelRow[] {
   const rows = new Map<string, ModelRow>();
   const providerModels = provider.models ?? [];
-  const service = provider.identity.service;
-  const rawRows = normalizeRawModelRows(endpoint, service, rawModels);
+  const rawRows = normalizeRawModelRows(endpoint, rawModels);
   const rawByID = new Map(rawRows.map((row) => [row.id, row]));
   const publicModelIDs = new Set(rawRows.map((row) => row.id).filter(Boolean));
   const protocol = endpoint?.protocol ?? "provider";
   const protocolLabel = endpoint?.protocolLabel ?? "Provider";
-  const providerModelIDs = providerModels.map((model) => model.id).filter((id) => id && !isProviderAutoGroupModel(service, id));
   for (const model of providerModels) {
     const raw = rawByID.get(model.id);
     const key = `${protocol}:${model.id}`;
-    const isAutoGroup = isProviderAutoGroupModel(service, model.id);
     rows.set(key, {
       id: model.id,
       display: modelDisplayName(model.id, model.aliases, raw?.display),
-      kind: isAutoGroup && !model.kind ? "group" : model.kind,
-      groupMembers: model.group_members?.length ? model.group_members : isAutoGroup ? providerModelIDs : undefined,
+      kind: model.kind || raw?.kind,
+      groupMembers: model.group_members?.length ? model.group_members : raw?.groupMembers,
       aliases: normalizeModelAliases(model.id, model.aliases ?? [], publicModelIDs),
       protocol: protocolLabel,
       capabilities: model.capabilities ?? [],
@@ -563,7 +560,7 @@ function isGroupModel(model: Pick<ModelRow, "kind" | "groupMembers">) {
 }
 
 function isAliasModel(model: Pick<ModelRow, "id" | "kind">) {
-  return model.kind === "alias" || model.id === "antigravity-default";
+  return model.kind === "alias";
 }
 
 function normalizeModelAliases(modelID: string, aliases: string[], publicModelIDs: Set<string>): ModelAlias[] {
@@ -583,7 +580,7 @@ function normalizeModelAliases(modelID: string, aliases: string[], publicModelID
   return out;
 }
 
-function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, service: string, rawModels: unknown): ModelRow[] {
+function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, rawModels: unknown): ModelRow[] {
   if (!endpoint) return [];
   const root = asRecord(rawModels);
   if (!root) return [];
@@ -597,6 +594,8 @@ function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, service: s
         display: modelDisplayName(id, [], stringValue(record.displayName) || name),
         protocol: endpoint.protocolLabel,
         capabilities: asArray(record.supportedGenerationMethods).map((value) => String(value)),
+        kind: stringValue(record.kind),
+        groupMembers: stringArrayValue(record.group_members) || stringArrayValue(record.groupMembers),
         contextTokens: numberValue(record.inputTokenLimit),
         maxContextTokens: numberValue(record.inputTokenLimit),
         maxOutputTokens: numberValue(record.outputTokenLimit),
@@ -606,11 +605,11 @@ function normalizeRawModelRows(endpoint: ServiceEndpoint | undefined, service: s
   return asArray(root.data).map((item) => {
     const record = asRecord(item) ?? {};
     const id = stringValue(record.id);
-    const isAutoGroup = isProviderAutoGroupModel(service, id);
     return {
       id,
       display: stringValue(record.display_name) || id,
-      kind: isAutoGroup ? "group" : undefined,
+      kind: stringValue(record.kind),
+      groupMembers: stringArrayValue(record.group_members) || stringArrayValue(record.groupMembers),
       protocol: endpoint.protocolLabel,
     };
   }).filter((row) => row.id);
@@ -634,24 +633,6 @@ function geminiCLIModelLabel(modelID: string) {
   if (id.includes("flash")) return "Flash";
   if (id.includes("pro")) return "Pro";
   return "";
-}
-
-function isProviderAutoGroupModel(service: string | undefined, modelID: string | undefined) {
-  if ((modelID ?? "").trim().toLowerCase() !== "auto") {
-    return false;
-  }
-  const key = (service ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
-  return [
-    "github-copilot",
-    "github-copilot-sidecar",
-    "github-copilot-acp",
-    "github-copilot-sdk",
-    "githubcopilot",
-    "copilot",
-    "copilot-sidecar",
-    "copilot-acp",
-    "copilot-sdk",
-  ].includes(key);
 }
 
 function uniqueStrings(values: string[]) {
@@ -725,7 +706,7 @@ function usageWindowFromRecord(record?: Record<string, unknown> | null, fallback
   const limit = numberValue(record.limit);
   const unit = stringValue(record.unit);
   const resetAt = stringValue(record.reset_at);
-  if (remainingPct === undefined && used === undefined && limit === undefined && !resetAt) {
+  if (remainingPct === undefined && used === undefined && limit === undefined) {
     return null;
   }
   return { label, remainingPct, used, limit, unit, resetAt };
@@ -757,7 +738,24 @@ function formatPercent(value: number) {
 
 function formatUsedLimit(row: UsageWindowRow) {
   if (row.used === undefined && row.limit === undefined) return "";
+  if (isUSDCentsUnit(row.unit)) {
+    return `${row.used !== undefined ? formatUSDCents(row.used) : "-"} / ${row.limit !== undefined ? formatUSDCents(row.limit) : "-"}`;
+  }
   return `${row.used !== undefined ? n(row.used) : "-"} / ${row.limit !== undefined ? n(row.limit) : "-"}`;
+}
+
+function isUSDCentsUnit(unit?: string) {
+  const normalized = (unit ?? "").trim().toLowerCase();
+  return normalized === "usd_cents" || normalized === "cents" || normalized === "usd-cent" || normalized === "usd-cents";
+}
+
+function formatUSDCents(value: number) {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value / 100);
+}
+
+function formatUsageUnit(unit?: string) {
+  if (isUSDCentsUnit(unit)) return "USD";
+  return unit || "";
 }
 
 function formatLocalReset(value?: string) {
@@ -803,6 +801,11 @@ function asArray(value: unknown): unknown[] {
 
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : "";
+}
+
+function stringArrayValue(value: unknown) {
+  const out = asArray(value).map((item) => stringValue(item).trim()).filter(Boolean);
+  return out.length ? out : undefined;
 }
 
 function numberValue(value: unknown) {

@@ -66,9 +66,9 @@ func parseCursorModels(raw []byte, capabilities []provider.Capability) []provide
 		return nil
 	}
 	if models := parseCursorModelJSON(raw, capabilities); len(models) > 0 {
-		return models
+		return markCursorModelMetadata(models)
 	}
-	return parseCursorModelText(string(raw), capabilities)
+	return markCursorModelMetadata(parseCursorModelText(string(raw), capabilities))
 }
 
 func parseCursorModelJSON(raw []byte, capabilities []provider.Capability) []provider.Model {
@@ -250,6 +250,27 @@ func newCursorModel(id string, display string, capabilities []provider.Capabilit
 		model.Aliases = appendStringUniqueCursor(model.Aliases, alias)
 	}
 	return model
+}
+
+func markCursorModelMetadata(models []provider.Model) []provider.Model {
+	memberIDs := make([]string, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" || strings.EqualFold(id, "auto") {
+			continue
+		}
+		memberIDs = append(memberIDs, id)
+	}
+	for i := range models {
+		if !strings.EqualFold(strings.TrimSpace(models[i].ID), "auto") {
+			continue
+		}
+		models[i].Kind = "group"
+		for _, memberID := range memberIDs {
+			models[i].GroupMembers = appendStringUniqueCursor(models[i].GroupMembers, memberID)
+		}
+	}
+	return models
 }
 
 func cursorModelCapabilities(capabilities []provider.Capability) []provider.Capability {

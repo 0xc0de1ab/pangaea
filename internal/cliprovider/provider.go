@@ -115,9 +115,11 @@ func New(opts Options) (*Provider, error) {
 	if now == nil {
 		now = time.Now
 	}
+	registration := opts.Registration
+	registration.Models = annotateCLIModelMetadata(service, registration.Models)
 	observedAt := now().UTC()
 	return &Provider{
-		registration:   opts.Registration,
+		registration:   registration,
 		service:        service,
 		command:        append([]string(nil), opts.Command...),
 		env:            cloneStringMap(opts.Env),
@@ -140,11 +142,13 @@ func (p *Provider) Registration() (provider.Registration, error) {
 	return p.registration, nil
 }
 
+func (p *Provider) ForceModelDiscovery() bool { return true }
+
 func (p *Provider) Models(context.Context) ([]provider.Model, error) {
 	if p == nil {
 		return nil, ErrCLIProviderConfig
 	}
-	return cloneModels(p.registration.Models), nil
+	return annotateCLIModelMetadata(p.service, cloneModels(p.registration.Models)), nil
 }
 
 func (p *Provider) Usage() (provider.UsageReport, error) {
@@ -1199,6 +1203,91 @@ func cloneModels(in []provider.Model) []provider.Model {
 	out := make([]provider.Model, len(in))
 	copy(out, in)
 	return out
+}
+
+func annotateCLIModelMetadata(service provider.Service, models []provider.Model) []provider.Model {
+	switch service {
+	case provider.ServiceClaude:
+		for i := range models {
+			if strings.EqualFold(strings.TrimSpace(models[i].ID), "claude-default") {
+				models[i].Kind = "alias"
+			}
+		}
+	case provider.ServiceGemini:
+		for i := range models {
+			switch strings.ToLower(strings.TrimSpace(models[i].ID)) {
+			case "auto-gemini-3":
+				models[i].Kind = "group"
+				models[i].Aliases = appendStringUnique(models[i].Aliases, "Auto (Gemini 3)")
+				models[i].GroupMembers = appendStringUnique(models[i].GroupMembers, "gemini-3.1-pro-preview")
+				models[i].GroupMembers = appendStringUnique(models[i].GroupMembers, "gemini-3-flash-preview")
+			case "auto-gemini-2.5":
+				models[i].Kind = "group"
+				models[i].Aliases = appendStringUnique(models[i].Aliases, "Auto (Gemini 2.5)")
+				models[i].GroupMembers = appendStringUnique(models[i].GroupMembers, "gemini-2.5-pro")
+				models[i].GroupMembers = appendStringUnique(models[i].GroupMembers, "gemini-2.5-flash")
+			}
+		}
+	case provider.ServiceAntigravity:
+		for i := range models {
+			if strings.EqualFold(strings.TrimSpace(models[i].ID), "antigravity-default") {
+				models[i].Kind = "alias"
+			}
+		}
+	case provider.ServiceGitHubCopilot:
+		annotateAutoAndDefaultAliasModels(models, []string{"github-copilot-default", "copilot-default"}, "copilot-default")
+	case provider.ServiceCursor:
+		annotateAutoAndDefaultAliasModels(models, nil, "")
+	}
+	return models
+}
+
+func annotateAutoAndDefaultAliasModels(models []provider.Model, aliasIDs []string, aliasName string) {
+	aliasSet := make(map[string]struct{}, len(aliasIDs))
+	for _, id := range aliasIDs {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id != "" {
+			aliasSet[id] = struct{}{}
+		}
+	}
+	memberIDs := make([]string, 0, len(models))
+	for i := range models {
+		id := strings.TrimSpace(models[i].ID)
+		lower := strings.ToLower(id)
+		if _, ok := aliasSet[lower]; ok {
+			models[i].Kind = "alias"
+			if aliasName != "" && lower != aliasName {
+				models[i].Aliases = appendStringUnique(models[i].Aliases, aliasName)
+			}
+			continue
+		}
+		if id == "" || lower == "auto" || strings.EqualFold(strings.TrimSpace(models[i].Kind), "alias") {
+			continue
+		}
+		memberIDs = appendStringUnique(memberIDs, id)
+	}
+	for i := range models {
+		if !strings.EqualFold(strings.TrimSpace(models[i].ID), "auto") {
+			continue
+		}
+		models[i].Kind = "group"
+		for _, memberID := range memberIDs {
+			models[i].GroupMembers = appendStringUnique(models[i].GroupMembers, memberID)
+		}
+	}
+}
+
+func appendStringUnique(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

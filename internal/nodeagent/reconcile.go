@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -184,32 +185,56 @@ func copyAuthToHostMountIfPossible(spec runtime.CopySpec, mounts []runtime.Mount
 		mode = 0o600
 	}
 	if err := os.MkdirAll(filepath.Dir(hostPath), 0o700); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	uid, gid := copySpecOwner(spec, mount)
 	if err := chownIfRequested(filepath.Dir(hostPath), uid, gid); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(hostPath), ".pangaea-auth-*")
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	if err := tmp.Close(); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	if err := os.Chmod(tmpPath, mode); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	if err := chownIfRequested(tmpPath, uid, gid); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	if err := os.Rename(tmpPath, hostPath); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return false, nil
+		}
 		return false, err
 	}
 	return true, nil
@@ -306,8 +331,21 @@ func copyAuthFromContainerIfValid(ctx context.Context, rt runtime.Runtime, id ru
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
-	if _, err := format.Parse(raw); err != nil {
+	containerSnap, err := format.Parse(raw)
+	if err != nil {
 		return nil
+	}
+	containerValidation, err := format.Validate(ctx, containerSnap, formats.ValidateOpts{})
+	if err != nil || !authValidationAllowsContainerCopy(containerValidation.Status) {
+		return nil
+	}
+	if hostRaw, err := os.ReadFile(spec.HostPath); err == nil {
+		if hostSnap, parseErr := format.Parse(hostRaw); parseErr == nil {
+			hostValidation, validateErr := format.Validate(ctx, hostSnap, formats.ValidateOpts{})
+			if validateErr == nil && authValidationAllowsContainerCopy(hostValidation.Status) && authSnapshotExpiresAfter(hostSnap, containerSnap) {
+				return nil
+			}
+		}
 	}
 	if spec.FileMode != 0 {
 		if err := os.Chmod(tmpPath, spec.FileMode.Perm()); err != nil {
@@ -318,6 +356,22 @@ func copyAuthFromContainerIfValid(ctx context.Context, rt runtime.Runtime, id ru
 		return err
 	}
 	return nil
+}
+
+func authValidationAllowsContainerCopy(status formats.ValidationStatus) bool {
+	return status == formats.StatusOK || status == formats.StatusScopeWarn
+}
+
+func authSnapshotExpiresAfter(a formats.Snapshot, b formats.Snapshot) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	aExp := a.ExpiresAt()
+	bExp := b.ExpiresAt()
+	if aExp.IsZero() || bExp.IsZero() {
+		return false
+	}
+	return aExp.After(bExp)
 }
 
 func shouldRecreateExistingContainer(status runtime.ContainerStatus, spec runtime.ContainerSpec) bool {

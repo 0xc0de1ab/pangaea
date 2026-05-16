@@ -33,6 +33,8 @@ type DataClientOptions struct {
 	Provider  providerInvoker
 }
 
+const dataClientPingInterval = 10 * time.Second
+
 type providerInvoker interface {
 	Registration() (provider.Registration, error)
 	Invoke(context.Context, provider.Registration, compat.Request) (compat.Response, error)
@@ -105,6 +107,9 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 	}
 	defer conn.Close()
 
+	state := newDataClientState(conn)
+	defer state.cancelAll()
+
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -116,8 +121,27 @@ func RunSimulatorDataClient(ctx context.Context, opts DataClientOptions) error {
 	}()
 	defer close(done)
 
-	state := newDataClientState(conn)
-	defer state.cancelAll()
+	go func() {
+		ticker := time.NewTicker(dataClientPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				state.writeMu.Lock()
+				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+				state.writeMu.Unlock()
+				if err != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+	}()
+
 	for {
 		var request tunnel.DataRequest
 		if err := conn.ReadJSON(&request); err != nil {

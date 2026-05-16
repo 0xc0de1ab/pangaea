@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  configuredModels,
+  configuredModelStatus,
   ensureCopilotAuthFile,
   modelStatusFromSDKModels,
   openAIModelsFromSDKModels,
@@ -63,6 +65,19 @@ test("maps Copilot SDK model metadata to Pangaea status details", () => {
   assert.equal(status["gpt-5"].supportsImages, true);
   assert.deepEqual(status["gpt-5"].supportedReasoningEfforts, ["low", "medium", "high"]);
   assert.equal(status["gpt-5"].defaultReasoningEffort, "medium");
+});
+
+test("maps configured Copilot fallback models to provider metadata", () => {
+  const models = configuredModels("github-copilot-default,auto,gpt-5.2");
+  assert.equal(models[0].kind, "alias");
+  assert.equal(models[0].label, "copilot-default");
+  assert.equal(models[1].kind, "group");
+  assert.deepEqual(models[1].groupMembers, ["gpt-5.2"]);
+
+  const status = configuredModelStatus("github-copilot-default,auto,gpt-5.2");
+  assert.equal(status["github-copilot-default"].kind, "alias");
+  assert.equal(status.auto.kind, "group");
+  assert.deepEqual(status.auto.groupMembers, ["gpt-5.2"]);
 });
 
 test("restores Copilot SDK config when token fields disappear", () => {

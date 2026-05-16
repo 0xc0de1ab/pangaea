@@ -755,7 +755,6 @@ func registrationModels(cfg Config, modelCapabilities []provider.Capability, sin
 		MaxContextTokens: defaultContextTokens(provider.Service(cfg.Service), strings.TrimSpace(cfg.Model)),
 		MaxOutputTokens:  defaultOutputTokens(provider.Service(cfg.Service), strings.TrimSpace(cfg.Model)),
 	}
-	applyKnownModelMetadata(provider.Service(cfg.Service), &model)
 	return []provider.Model{model}, nil
 }
 
@@ -890,28 +889,11 @@ func parseModelList(service provider.Service, raw string, capabilities []provide
 			MaxContextTokens: defaultContextTokens(service, id),
 			MaxOutputTokens:  defaultOutputTokens(service, id),
 		})
-		applyKnownModelMetadata(service, &models[len(models)-1])
 	}
 	if len(models) == 0 {
 		return nil, fmt.Errorf("--models did not contain any model ids")
 	}
 	return models, nil
-}
-
-func applyKnownModelMetadata(service provider.Service, model *provider.Model) {
-	if service != provider.ServiceGemini || model == nil {
-		return
-	}
-	switch strings.ToLower(strings.TrimSpace(model.ID)) {
-	case "auto-gemini-3":
-		model.Kind = "group"
-		model.GroupMembers = mergeStringLists(model.GroupMembers, []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview"})
-		model.Aliases = mergeStringLists(model.Aliases, []string{"Auto (Gemini 3)"})
-	case "auto-gemini-2.5":
-		model.Kind = "group"
-		model.GroupMembers = mergeStringLists(model.GroupMembers, []string{"gemini-2.5-pro", "gemini-2.5-flash"})
-		model.Aliases = mergeStringLists(model.Aliases, []string{"Auto (Gemini 2.5)"})
-	}
 }
 
 func defaultContextTokens(service provider.Service, model string) int {

@@ -39,8 +39,11 @@ func TestBuildSetupProviderDockerPlanUsesHostIdentityAndGeminiSettings(t *testin
 	if plan.Spec.ProviderType != "gemini-cli" || plan.Spec.InstanceID != "gemini-operator-example.test" {
 		t.Fatalf("unexpected provider types: %#v", plan.Spec)
 	}
-	if len(plan.Spec.Models) == 0 || plan.Spec.Models[0].ID != "auto-gemini-3" || plan.Spec.Models[0].Kind != "group" {
-		t.Fatalf("gemini default model should be the auto group: %#v", plan.Spec.Models)
+	if len(plan.Spec.Models) == 0 || plan.Spec.Models[0].ID != "auto-gemini-3" {
+		t.Fatalf("gemini default model should point at Gemini auto: %#v", plan.Spec.Models)
+	}
+	if plan.Spec.Models[0].Kind != "" || len(plan.Spec.Models[0].GroupMembers) != 0 {
+		t.Fatalf("setup should leave model metadata classification to the provider shim: %#v", plan.Spec.Models[0])
 	}
 	if got := strings.Join(plan.Spec.Models[0].Aliases, ","); !strings.HasPrefix(got, "gemini-default,") {
 		t.Fatalf("gemini default alias should point at auto group: %#v", plan.Spec.Models[0].Aliases)

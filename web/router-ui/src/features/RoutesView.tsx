@@ -1,17 +1,33 @@
 import type { DragEvent, FormEvent } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Copy, GripVertical, Play, Plus, RefreshCw, Save, Search, Settings2, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Copy, GripVertical, Play, Plus, RefreshCw, Save, Search, Settings2, Trash2, X } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
-import { capacityRows } from "../lib/derive";
+import { capacityRows, providerAccountLabel } from "../lib/derive";
 import { copyText, cx, hasText, middleEllipsis, n } from "../lib/format";
-import type { RouteDecision, RouteRequest, RoutingFilter, RoutingRule, RoutingRuleDryRunResponse, RoutingRuleStep } from "../lib/types";
+import type { RouteDecision, RouteRequest, RouterUser, RoutingFilter, RoutingRule, RoutingRuleDryRunResponse, RoutingRuleStep } from "../lib/types";
 
 type DraftRule = Omit<RoutingRule, "id" | "created_at" | "updated_at"> & { id?: string };
 type CapacityRow = ReturnType<typeof capacityRows>[number];
+type CriteriaOption = {
+  value: string;
+  label?: string;
+  description?: string;
+};
+type RouteCriteriaOptions = {
+  services: CriteriaOption[];
+  protocols: CriteriaOption[];
+  providerTypes: CriteriaOption[];
+  models: CriteriaOption[];
+  modelsByService: Record<string, CriteriaOption[]>;
+  accounts: CriteriaOption[];
+  accountsByService: Record<string, CriteriaOption[]>;
+  nodes: CriteriaOption[];
+  nodesByService: Record<string, CriteriaOption[]>;
+};
 
 const emptyFilter: RoutingFilter = {
   id: "any",
@@ -28,6 +44,11 @@ const emptyRule: DraftRule = {
   filters: [emptyFilter],
 };
 const capacityPageSizeOptions = [10, 25, 50, 100];
+const protocolOptions: CriteriaOption[] = [
+  { value: "openai", label: "OpenAI", description: "OpenAI-compatible chat/completions, models, and usage routes" },
+  { value: "anthropic", label: "Anthropic", description: "Anthropic-compatible messages, models, and usage routes" },
+  { value: "gemini", label: "Gemini", description: "Gemini-compatible generateContent and streamGenerateContent routes" },
+];
 
 export function RoutesView({ data, queries, search, token, refresh }: DashboardViewProps) {
   const [error, setError] = useState("");
@@ -37,6 +58,7 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
   const [capacityPageSize, setCapacityPageSize] = useState(25);
   const [capacitySettingsOpen, setCapacitySettingsOpen] = useState(false);
   const allCapacity = useMemo(() => capacityRows(data.providers).filter((row) => hasText(row, search)), [data.providers, search]);
+  const filterOptions = useMemo(() => routeCriteriaOptions(data.providers, data.models), [data.models, data.providers]);
   const capacity = useMemo(() => {
     const query = capacityModelQuery.trim().toLowerCase();
     if (!query) {
@@ -155,6 +177,8 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
       <RoutingRuleWorkspace
         editingRule={editingRule}
         models={data.models}
+        filterOptions={filterOptions}
+        users={data.users}
         token={token}
         onCancel={cancelEditing}
         onSaved={savedRule}
@@ -299,12 +323,16 @@ function CapacityPagination({
 const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
   editingRule,
   models,
+  filterOptions,
+  users,
   token,
   onCancel,
   onSaved,
 }: {
   editingRule: RoutingRule | null;
   models: DashboardViewProps["data"]["models"];
+  filterOptions: RouteCriteriaOptions;
+  users: RouterUser[];
   token?: string;
   onCancel: () => void;
   onSaved: () => void;
@@ -323,6 +351,7 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
   const [saving, setSaving] = useState(false);
   const editingID = editingRule?.id || "";
   const decision = dryRun?.decision ?? null;
+  const userOptions = useMemo(() => [...users].sort((left, right) => left.email.localeCompare(right.email)), [users]);
   const updateDraftNameRef = useCallback((value: string) => {
     draftNameRef.current = value;
   }, []);
@@ -351,6 +380,13 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
   }, [models, model]);
 
   useEffect(() => {
+    if (draft.scope !== "user" || draft.owner_email || userOptions.length === 0) {
+      return;
+    }
+    setDraft((value) => value.scope === "user" && !value.owner_email ? { ...value, owner_email: userOptions[0].email } : value);
+  }, [draft.owner_email, draft.scope, userOptions]);
+
+  useEffect(() => {
     const steps = dryRun?.steps ?? [];
     if (steps.length === 0) {
       setActiveStep(-1);
@@ -373,12 +409,30 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
     onCancel();
   }
 
+  function setRuleScope(scope: string) {
+    setDraft((value) => {
+      if (scope === "public") {
+        return { ...value, scope, owner_email: "" };
+      }
+      const ownerStillExists = value.owner_email && userOptions.some((user) => user.email === value.owner_email);
+      return {
+        ...value,
+        scope,
+        owner_email: ownerStillExists ? value.owner_email : userOptions[0]?.email ?? value.owner_email ?? "",
+      };
+    });
+  }
+
   async function saveRule(event: FormEvent) {
     event.preventDefault();
     setError("");
     const current = currentDraft(draft, draftNameRef.current);
     if (!validRoutingRuleName(current.name)) {
       setError("Route rule name must be URL-safe: A-Z, a-z, 0-9, '.', '_', '~', or '-'.");
+      return;
+    }
+    if (current.scope === "user" && !current.owner_email?.trim()) {
+      setError("Select a user before saving a user-scoped route rule.");
       return;
     }
     setSaving(true);
@@ -438,14 +492,14 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
     }));
   }
 
-  function updateFilterCriteria(index: number, key: string, raw: string) {
+  function updateFilterCriteriaValues(index: number, key: string, values: string[]) {
     setDraft((value) => ({
       ...value,
       filters: value.filters.map((filter, i) => i === index ? {
         ...filter,
         criteria: {
           ...(filter.criteria ?? {}),
-          [key]: splitCSV(raw),
+          [key]: uniqueStrings(values),
         },
       } : filter),
     }));
@@ -503,14 +557,25 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
             </label>
             <label className="field">
               <span>Scope</span>
-              <select value={draft.scope} onChange={(event) => setDraft((value) => ({ ...value, scope: event.target.value, owner_email: event.target.value === "public" ? "" : value.owner_email }))}>
+              <select value={draft.scope} onChange={(event) => setRuleScope(event.target.value)}>
                 <option value="public">Public</option>
                 <option value="user">User</option>
               </select>
             </label>
             <label className="field">
               <span>Owner</span>
-              <input value={draft.owner_email || ""} onChange={(event) => setDraft((value) => ({ ...value, owner_email: event.target.value }))} disabled={draft.scope === "public"} placeholder="user@example.com" />
+              <select value={draft.owner_email || ""} onChange={(event) => setDraft((value) => ({ ...value, owner_email: event.target.value }))} disabled={draft.scope === "public" || userOptions.length === 0}>
+                {draft.scope === "public" ? <option value="">All users</option> : null}
+                {draft.scope === "user" && draft.owner_email && !userOptions.some((user) => user.email === draft.owner_email) ? (
+                  <option value={draft.owner_email}>{draft.owner_email} (not registered)</option>
+                ) : null}
+                {userOptions.map((user) => (
+                  <option key={user.email} value={user.email}>
+                    {user.email}{user.name ? ` - ${user.name}` : ""}{user.enabled ? "" : " (disabled)"}
+                  </option>
+                ))}
+                {draft.scope === "user" && userOptions.length === 0 ? <option value="">No users available</option> : null}
+              </select>
             </label>
           </div>
           <label className="field">
@@ -520,50 +585,20 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
 
           <div className="filter-chain">
             {draft.filters.map((filter, index) => (
-              <div
+              <RoutingFilterCard
                 key={`${filter.id || filter.type}-${index}`}
-                className="filter-card"
-                draggable
+                filter={filter}
+                index={index}
+                lastIndex={draft.filters.length - 1}
+                filterOptions={filterOptions}
+                canRemove={draft.filters.length > 1}
                 onDragStart={() => setDragIndex(index)}
-                onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => onDropFilter(event, index)}
-              >
-                <div className="filter-card-head">
-                  <GripVertical aria-hidden="true" size={16} />
-                  <strong>{index + 1}. {filter.label || filter.type}</strong>
-                  <StatusBadge value={filter.type} tone={filter.type === "any" ? "ok" : "warn"} />
-                  <div className="row-actions">
-                    <button className="icon-button small" type="button" aria-label="Move filter up" disabled={index === 0} onClick={() => moveFilter(index, index - 1)}>
-                      <ArrowUp aria-hidden="true" size={14} />
-                    </button>
-                    <button className="icon-button small" type="button" aria-label="Move filter down" disabled={index === draft.filters.length - 1} onClick={() => moveFilter(index, index + 1)}>
-                      <ArrowDown aria-hidden="true" size={14} />
-                    </button>
-                    <button className="icon-button small danger-text" type="button" aria-label="Remove filter" disabled={draft.filters.length === 1} onClick={() => removeFilter(index)}>
-                      <Trash2 aria-hidden="true" size={14} />
-                    </button>
-                  </div>
-                </div>
-                <div className="filter-fields">
-                  <label className="field">
-                    <span>Type</span>
-                    <select value={filter.type} onChange={(event) => updateFilter(index, { type: event.target.value })}>
-                      <option value="any">Any</option>
-                      <option value="criteria">Criteria</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>Label</span>
-                    <input value={filter.label || ""} onChange={(event) => updateFilter(index, { label: event.target.value })} />
-                  </label>
-                  <CriteriaField label="Service" value={filter.criteria?.services} onChange={(value) => updateFilterCriteria(index, "services", value)} />
-                  <CriteriaField label="Protocol" value={filter.criteria?.api_dialects} onChange={(value) => updateFilterCriteria(index, "api_dialects", value)} />
-                  <CriteriaField label="Provider Type" value={filter.criteria?.provider_types} onChange={(value) => updateFilterCriteria(index, "provider_types", value)} />
-                  <CriteriaField label="Model" value={filter.criteria?.models} onChange={(value) => updateFilterCriteria(index, "models", value)} />
-                  <CriteriaField label="Account" value={filter.criteria?.accounts} onChange={(value) => updateFilterCriteria(index, "accounts", value)} />
-                  <CriteriaField label="Node" value={filter.criteria?.node_ids} onChange={(value) => updateFilterCriteria(index, "node_ids", value)} />
-                </div>
-              </div>
+                onMove={moveFilter}
+                onRemove={removeFilter}
+                onUpdateFilter={updateFilter}
+                onUpdateCriteria={updateFilterCriteriaValues}
+              />
             ))}
           </div>
 
@@ -620,6 +655,147 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
     </div>
   );
 });
+
+function RoutingFilterCard({
+  filter,
+  index,
+  lastIndex,
+  filterOptions,
+  canRemove,
+  onDragStart,
+  onDrop,
+  onMove,
+  onRemove,
+  onUpdateFilter,
+  onUpdateCriteria,
+}: {
+  filter: RoutingFilter;
+  index: number;
+  lastIndex: number;
+  filterOptions: RouteCriteriaOptions;
+  canRemove: boolean;
+  onDragStart: () => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onMove: (from: number, to: number) => void;
+  onRemove: (index: number) => void;
+  onUpdateFilter: (index: number, patch: Partial<RoutingFilter>) => void;
+  onUpdateCriteria: (index: number, key: string, values: string[]) => void;
+}) {
+  const modelOptions = useMemo(() => modelOptionsForFilter(filter, filterOptions), [filter, filterOptions]);
+  const accountOptions = useMemo(() => scopedOptionsForFilter(filter, filterOptions.accounts, filterOptions.accountsByService), [filter, filterOptions]);
+  const nodeOptions = useMemo(() => scopedOptionsForFilter(filter, filterOptions.nodes, filterOptions.nodesByService), [filter, filterOptions]);
+  const selectedServices = uniqueStrings(filter.criteria?.services ?? []);
+  const modelNote = selectedServices.length
+    ? `Filtered to models reported by ${selectedServices.join(", ")}.`
+    : "Examples come from public models and provider model reports.";
+  const accountNote = selectedServices.length
+    ? `Filtered to accounts reported by ${selectedServices.join(", ")}.`
+    : "Examples come from provider auth/account snapshots.";
+  const nodeNote = selectedServices.length
+    ? `Filtered to nodes running ${selectedServices.join(", ")}.`
+    : "Examples come from currently reported provider node IDs.";
+  return (
+    <div
+      className="filter-card"
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+    >
+      <div className="filter-card-head">
+        <GripVertical aria-hidden="true" size={16} />
+        <strong>{index + 1}. {filter.label || filter.type}</strong>
+        <StatusBadge value={filter.type} tone={filter.type === "any" ? "ok" : "warn"} />
+        <div className="row-actions">
+          <button className="icon-button small" type="button" aria-label="Move filter up" disabled={index === 0} onClick={() => onMove(index, index - 1)}>
+            <ArrowUp aria-hidden="true" size={14} />
+          </button>
+          <button className="icon-button small" type="button" aria-label="Move filter down" disabled={index === lastIndex} onClick={() => onMove(index, index + 1)}>
+            <ArrowDown aria-hidden="true" size={14} />
+          </button>
+          <button className="icon-button small danger-text" type="button" aria-label="Remove filter" disabled={!canRemove} onClick={() => onRemove(index)}>
+            <Trash2 aria-hidden="true" size={14} />
+          </button>
+        </div>
+      </div>
+      <div className="filter-fields">
+        <label className="field">
+          <span>Filter Type</span>
+          <select value={filter.type} onChange={(event) => onUpdateFilter(index, { type: event.target.value })}>
+            <option value="any">Any fallback</option>
+            <option value="criteria">Criteria match</option>
+          </select>
+          <small className="field-note">
+            {filter.type === "any" ? "Uses any routable provider for the requested API protocol and model." : "Narrows providers with the selected criteria below."}
+          </small>
+        </label>
+        <label className="field">
+          <span>Label</span>
+          <input value={filter.label || ""} onChange={(event) => onUpdateFilter(index, { label: event.target.value })} />
+        </label>
+        <MultiCriteriaField
+          label="Service"
+          emptyLabel="Any connected service"
+          note="Pick one or more services currently reported by providers."
+          options={filterOptions.services}
+          value={filter.criteria?.services}
+          disabled={filter.type === "any"}
+          onChange={(value) => onUpdateCriteria(index, "services", value)}
+        />
+        <MultiCriteriaField
+          label="Protocol"
+          emptyLabel="Any API protocol"
+          note="Examples: openai, anthropic, gemini."
+          options={filterOptions.protocols}
+          value={filter.criteria?.api_dialects}
+          disabled={filter.type === "any"}
+          onChange={(value) => onUpdateCriteria(index, "api_dialects", value)}
+        />
+        <MultiCriteriaField
+          label="Provider Type"
+          emptyLabel="Any provider type"
+          note="Examples come from connected provider registrations."
+          options={filterOptions.providerTypes}
+          value={filter.criteria?.provider_types}
+          disabled={filter.type === "any"}
+          onChange={(value) => onUpdateCriteria(index, "provider_types", value)}
+        />
+        <MultiCriteriaField
+          label="Model"
+          emptyLabel={selectedServices.length ? "No model from selected service" : "Any model"}
+          note={modelNote}
+          options={modelOptions}
+          value={filter.criteria?.models}
+          disabled={filter.type === "any"}
+          onChange={(value) => onUpdateCriteria(index, "models", value)}
+        />
+        <MultiCriteriaField
+          label="Account"
+          emptyLabel={selectedServices.length ? "No account from selected service" : "Any account"}
+          note={accountNote}
+          options={accountOptions}
+          value={filter.criteria?.accounts}
+          disabled={filter.type === "any"}
+          onChange={(value) => onUpdateCriteria(index, "accounts", value)}
+        />
+        <MultiCriteriaField
+          label="Node"
+          emptyLabel={selectedServices.length ? "No node from selected service" : "Any node"}
+          note={nodeNote}
+          options={nodeOptions}
+          value={filter.criteria?.node_ids}
+          disabled={filter.type === "any"}
+          onChange={(value) => onUpdateCriteria(index, "node_ids", value)}
+        />
+      </div>
+      {filter.type === "any" ? (
+        <div className="any-filter-note">
+          Any fallback ignores Service, Protocol, Provider Type, Model, Account, and Node criteria in this filter. Routing still respects the incoming request protocol, requested model, health, auth, capability, and quota.
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function draftFromRule(rule: RoutingRule | null): DraftRule {
   if (!rule) {
@@ -680,12 +856,95 @@ function currentDraft(draft: DraftRule, name: string): DraftRule {
   };
 }
 
-function CriteriaField({ label, value, onChange }: { label: string; value?: string[]; onChange: (value: string) => void }) {
+function MultiCriteriaField({
+  label,
+  emptyLabel,
+  note,
+  options,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  emptyLabel: string;
+  note: string;
+  options: CriteriaOption[];
+  value?: string[];
+  disabled?: boolean;
+  onChange: (value: string[]) => void;
+}) {
+  const selectedValues = uniqueStrings(value ?? []);
+  const optionByValue = useMemo(() => new Map(options.map((option) => [option.value, option])), [options]);
+  const availableOptions = options.filter((option) => !selectedValues.includes(option.value));
+  const [selectedOption, setSelectedOption] = useState("");
+
+  useEffect(() => {
+    if (!selectedOption || availableOptions.some((option) => option.value === selectedOption)) {
+      return;
+    }
+    setSelectedOption("");
+  }, [availableOptions, selectedOption]);
+
+  function addSelected() {
+    if (!selectedOption) {
+      return;
+    }
+    onChange([...selectedValues, selectedOption]);
+    setSelectedOption("");
+  }
+
+  function removeSelected(nextValue: string) {
+    onChange(selectedValues.filter((current) => current !== nextValue));
+  }
+
+  function optionLabel(nextValue: string) {
+    return optionByValue.get(nextValue)?.label || nextValue;
+  }
+
+  function optionTitle(nextValue: string) {
+    const option = optionByValue.get(nextValue);
+    if (!option) {
+      return `${nextValue} is not currently reported by connected providers.`;
+    }
+    return [option.label || option.value, option.description].filter(Boolean).join("\n");
+  }
+
   return (
-    <label className="field">
+    <div className={cx("field route-criteria-field", disabled && "criteria-disabled")}>
       <span>{label}</span>
-      <input value={(value ?? []).join(", ")} onChange={(event) => onChange(event.target.value)} placeholder="comma separated" />
-    </label>
+      <div className="criteria-picker">
+        <select value={selectedOption} onChange={(event) => setSelectedOption(event.target.value)} disabled={disabled || availableOptions.length === 0}>
+          <option value="">{selectedValues.length ? "Add another value" : emptyLabel}</option>
+          {availableOptions.map((option) => (
+            <option key={option.value} value={option.value} title={option.description}>
+              {option.label || option.value}
+            </option>
+          ))}
+        </select>
+        <button className="icon-button small" type="button" aria-label={`Add ${label}`} disabled={disabled || !selectedOption} onClick={addSelected}>
+          <Plus aria-hidden="true" size={14} />
+        </button>
+      </div>
+      {selectedValues.length ? (
+        <div className="criteria-chip-row" aria-label={`Selected ${label} values`}>
+          {selectedValues.map((nextValue) => {
+            const reported = optionByValue.has(nextValue);
+            return (
+              <span className={cx("criteria-chip", !reported && "orphan")} key={nextValue} title={optionTitle(nextValue)}>
+                <span>{optionLabel(nextValue)}</span>
+                {!reported ? <em>not reported</em> : null}
+                <button type="button" aria-label={`Remove ${nextValue}`} disabled={disabled} onClick={() => removeSelected(nextValue)}>
+                  <X aria-hidden="true" size={12} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+      <small className="field-note" title={options.map((option) => option.value).join(", ") || note}>
+        {disabled ? "Disabled because this filter is Any fallback." : options.length ? note : `No ${label.toLowerCase()} values reported yet.`}
+      </small>
+    </div>
   );
 }
 
@@ -732,8 +991,162 @@ function compactCriteria(criteria: RoutingFilter["criteria"]) {
   return Object.fromEntries(Object.entries(criteria).filter(([, value]) => Array.isArray(value) && value.length > 0));
 }
 
-function splitCSV(value: string) {
-  return value.split(",").map((part) => part.trim()).filter(Boolean);
+function uniqueStrings(values: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function modelOptionsForFilter(filter: RoutingFilter, filterOptions: RouteCriteriaOptions) {
+  return scopedOptionsForFilter(filter, filterOptions.models, filterOptions.modelsByService);
+}
+
+function scopedOptionsForFilter(filter: RoutingFilter, fallbackOptions: CriteriaOption[], optionsByService: Record<string, CriteriaOption[]>) {
+  const selectedServices = uniqueStrings(filter.criteria?.services ?? []);
+  if (selectedServices.length === 0) {
+    return fallbackOptions;
+  }
+  const options = new Map<string, CriteriaOption>();
+  for (const service of selectedServices) {
+    for (const option of optionsByService[service] ?? []) {
+      addCriteriaOption(options, option);
+    }
+  }
+  return sortCriteriaOptions([...options.values()]);
+}
+
+function routeCriteriaOptions(providers: DashboardViewProps["data"]["providers"], publicModels: DashboardViewProps["data"]["models"]): RouteCriteriaOptions {
+  const services = new Map<string, CriteriaOption>();
+  const connectedServices = new Set<string>();
+  const providerTypes = new Map<string, CriteriaOption>();
+  const models = new Map<string, CriteriaOption>();
+  const modelsByService = new Map<string, Map<string, CriteriaOption>>();
+  const accounts = new Map<string, CriteriaOption>();
+  const accountsByService = new Map<string, Map<string, CriteriaOption>>();
+  const nodes = new Map<string, CriteriaOption>();
+  const nodesByService = new Map<string, Map<string, CriteriaOption>>();
+
+  for (const model of publicModels) {
+    addCriteriaOption(models, {
+      value: model.id,
+      label: model.display && model.display !== model.id ? `${model.display} (${model.id})` : model.id,
+      description: [model.protocol ? `Protocol: ${model.protocol}` : "", model.canonical_model ? `Canonical: ${model.canonical_model}` : ""].filter(Boolean).join("\n"),
+    });
+    if (model.canonical_model && model.canonical_model !== model.id) {
+      addCriteriaOption(models, {
+        value: model.canonical_model,
+        label: `${model.canonical_model} (canonical)`,
+        description: `Canonical model for ${model.id}`,
+      });
+    }
+  }
+
+  for (const provider of providers) {
+    const service = provider.identity.service?.trim();
+    if (service) {
+      addCriteriaOption(services, {
+        value: service,
+        description: `Reported by ${provider.identity.provider_type || "provider"} on ${provider.identity.host_name || provider.identity.node_id || "unknown host"}`,
+      });
+      const status = provider.health?.status || "unknown";
+      if (status !== "down") {
+        connectedServices.add(service);
+      }
+    }
+
+    addCriteriaOption(providerTypes, {
+      value: provider.identity.provider_type,
+      description: [provider.identity.service, provider.identity.kind, provider.identity.host_name].filter(Boolean).join(" / "),
+    });
+
+    const account = providerAccountLabel(provider);
+    const accountOption = {
+      value: account,
+      description: [provider.identity.service, provider.identity.host_name, provider.identity.provider_type].filter(Boolean).join(" / "),
+    };
+    addCriteriaOption(accounts, accountOption);
+    addServiceCriteriaOption(accountsByService, service, accountOption);
+
+    const nodeOption = {
+      value: provider.identity.node_id,
+      description: [provider.identity.host_name, provider.identity.service, provider.identity.provider_type].filter(Boolean).join(" / "),
+    };
+    addCriteriaOption(nodes, nodeOption);
+    addServiceCriteriaOption(nodesByService, service, nodeOption);
+
+    for (const model of provider.models ?? []) {
+      const modelOption = {
+        value: model.id,
+        description: [provider.identity.service, provider.identity.provider_type, model.kind ? `Kind: ${model.kind}` : ""].filter(Boolean).join(" / "),
+      };
+      addCriteriaOption(models, modelOption);
+      addServiceCriteriaOption(modelsByService, service, modelOption);
+      for (const alias of model.aliases ?? []) {
+        const aliasOption = {
+          value: alias,
+          label: `${alias} (alias)`,
+          description: `Alias for ${model.id}`,
+        };
+        addCriteriaOption(models, aliasOption);
+        addServiceCriteriaOption(modelsByService, service, aliasOption);
+      }
+      for (const groupMember of model.group_members ?? []) {
+        const groupMemberOption = {
+          value: groupMember,
+          label: `${groupMember} (group member)`,
+          description: `Member of ${model.id}`,
+        };
+        addCriteriaOption(models, groupMemberOption);
+        addServiceCriteriaOption(modelsByService, service, groupMemberOption);
+      }
+    }
+  }
+
+  const connectedServiceOptions = [...services.values()].filter((option) => connectedServices.has(option.value));
+  return {
+    services: sortCriteriaOptions(connectedServiceOptions.length ? connectedServiceOptions : [...services.values()]),
+    protocols: protocolOptions,
+    providerTypes: sortCriteriaOptions([...providerTypes.values()]),
+    models: sortCriteriaOptions([...models.values()]),
+    modelsByService: Object.fromEntries([...modelsByService.entries()].map(([service, serviceModels]) => [service, sortCriteriaOptions([...serviceModels.values()])])),
+    accounts: sortCriteriaOptions([...accounts.values()]),
+    accountsByService: Object.fromEntries([...accountsByService.entries()].map(([service, serviceAccounts]) => [service, sortCriteriaOptions([...serviceAccounts.values()])])),
+    nodes: sortCriteriaOptions([...nodes.values()]),
+    nodesByService: Object.fromEntries([...nodesByService.entries()].map(([service, serviceNodes]) => [service, sortCriteriaOptions([...serviceNodes.values()])])),
+  };
+}
+
+function addServiceCriteriaOption(target: Map<string, Map<string, CriteriaOption>>, service: string | undefined, option: CriteriaOption) {
+  const key = service?.trim();
+  if (!key) {
+    return;
+  }
+  let serviceModels = target.get(key);
+  if (!serviceModels) {
+    serviceModels = new Map<string, CriteriaOption>();
+    target.set(key, serviceModels);
+  }
+  addCriteriaOption(serviceModels, option);
+}
+
+function addCriteriaOption(target: Map<string, CriteriaOption>, option: CriteriaOption) {
+  const value = option.value?.trim();
+  if (!value || target.has(value)) {
+    return;
+  }
+  target.set(value, { ...option, value });
+}
+
+function sortCriteriaOptions(options: CriteriaOption[]) {
+  return [...options].sort((left, right) => (left.label || left.value).localeCompare(right.label || right.value));
 }
 
 function validRoutingRuleName(name: string) {

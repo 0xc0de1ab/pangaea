@@ -40,6 +40,9 @@ func TestParseCursorModelText(t *testing.T) {
 	if len(models[0].Aliases) != 1 || models[0].Aliases[0] != "Auto" {
 		t.Fatalf("auto alias = %#v", models[0].Aliases)
 	}
+	if models[0].Kind != "group" || strings.Join(models[0].GroupMembers, ",") != "composer-2,gpt-5,claude-sonnet-4-6[thinking=true,context=200k,effort=medium]" {
+		t.Fatalf("auto metadata = %#v", models[0])
+	}
 }
 
 func TestProviderModelsDiscoversCursorAgentModels(t *testing.T) {

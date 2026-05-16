@@ -150,8 +150,31 @@ func NewHTTPHandler(opts HTTPOptions) http.Handler {
 			return routeRequest
 		})
 	})
+	r.POST("/v1/responses", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok {
+			return
+		}
+		handleOpenAIResponses(c, opts, func(openaiRequest compat.OpenAIResponsesRequest) RouteRequest {
+			routeRequest := applyPublicPrincipal(principal, RouteRequest{
+				TenantID:   c.GetHeader("x-pangaea-tenant-id"),
+				UserID:     c.GetHeader("x-pangaea-user-id"),
+				APIKeyID:   c.GetHeader("x-pangaea-api-key-id"),
+				Model:      openaiRequest.Model,
+				APIDialect: compat.APIDialectOpenAI,
+				Stream:     openaiRequest.Stream,
+			})
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
+	})
 	r.POST("/router/v1/compat/v1/chat/completions", func(c *gin.Context) {
 		handleOpenAIChatCompletions(c, opts, func(openaiRequest compat.OpenAIChatRequest) RouteRequest {
+			return dashboardCompatRouteRequest(c, openaiRequest.Model, compat.APIDialectOpenAI, openaiRequest.Stream)
+		})
+	})
+	r.POST("/router/v1/compat/v1/responses", func(c *gin.Context) {
+		handleOpenAIResponses(c, opts, func(openaiRequest compat.OpenAIResponsesRequest) RouteRequest {
 			return dashboardCompatRouteRequest(c, openaiRequest.Model, compat.APIDialectOpenAI, openaiRequest.Stream)
 		})
 	})
@@ -1126,6 +1149,17 @@ func registerNamedRouteCompatRoutes(r *gin.Engine, opts HTTPOptions) {
 			return routeRequest
 		})
 	})
+	group.POST("/v1/responses", func(c *gin.Context) {
+		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
+		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
+			return
+		}
+		handleOpenAIResponses(c, opts, func(openaiRequest compat.OpenAIResponsesRequest) RouteRequest {
+			routeRequest := namedRouteRequest(c, principal, openaiRequest.Model, compat.APIDialectOpenAI, openaiRequest.Stream)
+			applyRouteRequestProviderHeaders(c, &routeRequest)
+			return routeRequest
+		})
+	})
 	group.POST("/v1/messages", func(c *gin.Context) {
 		principal, ok := authenticatePublicRequest(c, opts.APIKeys)
 		if !ok || !authorizeNamedRoutePrincipal(c, principal) {
@@ -1285,6 +1319,46 @@ func handleOpenAIChatCompletions(c *gin.Context, opts HTTPOptions, buildRouteReq
 		return
 	}
 	openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, openaiResponse)
+}
+
+func handleOpenAIResponses(c *gin.Context, opts HTTPOptions, buildRouteRequest func(compat.OpenAIResponsesRequest) RouteRequest) {
+	engine, ok := requireEngine(c, opts.Engine)
+	if !ok {
+		return
+	}
+	var openaiRequest compat.OpenAIResponsesRequest
+	if err := c.ShouldBindJSON(&openaiRequest); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	canonicalRequest, err := compat.OpenAIResponsesRequestToCanonical(openaiRequest)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	requestID := publicRequestID(c)
+	routeRequest := buildRouteRequest(openaiRequest)
+	execution := RouteExecutionRequest{
+		RequestID:     requestID,
+		RouteRequest:  routeRequest,
+		QuotaScope:    CanonicalQuotaScope(requestID, routeRequest, canonicalRequest),
+		QuotaEstimate: EstimateQuotaUsage(canonicalRequest),
+	}
+	if openaiRequest.Stream {
+		writeOpenAIResponsesEventStream(c, engine, execution, canonicalRequest)
+		return
+	}
+	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	if err != nil {
+		writeRouteError(c, err)
+		return
+	}
+	openaiResponse, err := compat.OpenAIResponsesResponseFromCanonical(response)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1491,9 +1565,12 @@ func traceCapturablePath(method string, path string) bool {
 		return false
 	}
 	return path == "/v1/chat/completions" ||
+		path == "/v1/responses" ||
 		path == "/v1/messages" ||
 		path == "/router/v1/compat/v1/chat/completions" ||
+		path == "/router/v1/compat/v1/responses" ||
 		path == "/router/v1/compat/v1/messages" ||
+		(strings.HasPrefix(path, "/route/") && strings.HasSuffix(path, "/v1/responses")) ||
 		strings.HasPrefix(path, "/v1beta/models/") ||
 		strings.HasPrefix(path, "/v1/models/") ||
 		strings.HasPrefix(path, "/router/v1/compat/v1beta/models/") ||
@@ -1986,6 +2063,270 @@ func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
 	})
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	flushSSE(c)
+}
+
+type openAIResponsesEventStreamWriter struct {
+	id               string
+	model            string
+	itemID           string
+	created          int64
+	wrote            bool
+	done             bool
+	outputStarted    bool
+	usage            compat.Usage
+	pendingContent   strings.Builder
+	outputText       strings.Builder
+	lastContentFlush time.Time
+}
+
+func writeOpenAIResponsesEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
+	writer := &openAIResponsesEventStreamWriter{
+		id:      execution.RequestID,
+		model:   request.Model,
+		itemID:  "msg_" + execution.RequestID,
+		created: time.Now().Unix(),
+	}
+	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+		return writer.write(c, event)
+	})
+	if err != nil {
+		if !writer.wrote {
+			writeRouteError(c, err)
+			return
+		}
+		writer.writeError(c, err)
+		return
+	}
+	if !writer.done {
+		writer.writeDone(c)
+	}
+}
+
+func (w *openAIResponsesEventStreamWriter) ensure(c *gin.Context) {
+	if w.wrote {
+		return
+	}
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache")
+	c.Header("connection", "keep-alive")
+	c.Status(http.StatusOK)
+	w.wrote = true
+	writeSSEEvent(c, "response.created", gin.H{
+		"type": "response.created",
+		"response": compat.OpenAIResponsesResponse{
+			ID:        w.id,
+			Object:    "response",
+			CreatedAt: w.created,
+			Status:    "in_progress",
+			Model:     w.model,
+			Output:    []compat.OpenAIResponsesOutputItem{},
+		},
+	})
+}
+
+func (w *openAIResponsesEventStreamWriter) write(c *gin.Context, event compat.Event) error {
+	if err := event.Validate(); err != nil {
+		return fmt.Errorf("validate upstream stream event %s: %w", event.Type, err)
+	}
+	w.applyEventMeta(event)
+	w.ensure(c)
+	switch event.Type {
+	case compat.EventMessageStart:
+		return nil
+	case compat.EventContentDelta:
+		w.writeContentDelta(c, event.ContentDelta.Text)
+	case compat.EventUsageDelta:
+		w.flushContent(c)
+		w.usage.InputTokens += event.UsageDelta.InputTokens
+		w.usage.OutputTokens += event.UsageDelta.OutputTokens
+		w.usage.TotalTokens += event.UsageDelta.TotalTokens
+	case compat.EventDone:
+		w.writeDone(c)
+	case compat.EventError:
+		w.writeErrorMessage(c, event.Error.Message)
+	}
+	return nil
+}
+
+func (w *openAIResponsesEventStreamWriter) writeContentDelta(c *gin.Context, text string) {
+	if text == "" {
+		return
+	}
+	w.pendingContent.WriteString(text)
+	now := time.Now()
+	if w.lastContentFlush.IsZero() || w.pendingContent.Len() >= streamDeltaFlushBytes || now.Sub(w.lastContentFlush) >= streamDeltaFlushInterval {
+		w.flushContent(c)
+	}
+}
+
+func (w *openAIResponsesEventStreamWriter) flushContent(c *gin.Context) {
+	if w.pendingContent.Len() == 0 {
+		return
+	}
+	w.ensure(c)
+	w.ensureOutputStarted(c)
+	text := w.pendingContent.String()
+	w.pendingContent.Reset()
+	w.lastContentFlush = time.Now()
+	w.outputText.WriteString(text)
+	writeSSEEvent(c, "response.output_text.delta", gin.H{
+		"type":          "response.output_text.delta",
+		"response_id":   w.id,
+		"item_id":       w.itemID,
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         text,
+	})
+}
+
+func (w *openAIResponsesEventStreamWriter) ensureOutputStarted(c *gin.Context) {
+	if w.outputStarted {
+		return
+	}
+	writeSSEEvent(c, "response.output_item.added", gin.H{
+		"type":         "response.output_item.added",
+		"response_id":  w.id,
+		"output_index": 0,
+		"item": compat.OpenAIResponsesOutputItem{
+			ID:      w.itemID,
+			Type:    "message",
+			Status:  "in_progress",
+			Role:    string(compat.MessageRoleAssistant),
+			Content: []compat.OpenAIResponsesOutputContent{},
+		},
+	})
+	writeSSEEvent(c, "response.content_part.added", gin.H{
+		"type":          "response.content_part.added",
+		"response_id":   w.id,
+		"item_id":       w.itemID,
+		"output_index":  0,
+		"content_index": 0,
+		"part": compat.OpenAIResponsesOutputContent{
+			Type: "output_text",
+			Text: "",
+		},
+	})
+	w.outputStarted = true
+}
+
+func (w *openAIResponsesEventStreamWriter) applyEventMeta(event compat.Event) {
+	if event.ResponseID != "" {
+		w.id = event.ResponseID
+		if w.itemID == "" || strings.HasPrefix(w.itemID, "msg_") {
+			w.itemID = "msg_" + event.ResponseID
+		}
+	}
+	if event.Model != "" {
+		w.model = event.Model
+	}
+}
+
+func (w *openAIResponsesEventStreamWriter) writeDone(c *gin.Context) {
+	if w.done {
+		return
+	}
+	w.ensure(c)
+	w.flushContent(c)
+	outputText := w.outputText.String()
+	if w.outputStarted {
+		writeSSEEvent(c, "response.output_text.done", gin.H{
+			"type":          "response.output_text.done",
+			"response_id":   w.id,
+			"item_id":       w.itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"text":          outputText,
+		})
+		writeSSEEvent(c, "response.content_part.done", gin.H{
+			"type":          "response.content_part.done",
+			"response_id":   w.id,
+			"item_id":       w.itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"part": compat.OpenAIResponsesOutputContent{
+				Type: "output_text",
+				Text: outputText,
+			},
+		})
+		writeSSEEvent(c, "response.output_item.done", gin.H{
+			"type":         "response.output_item.done",
+			"response_id":  w.id,
+			"output_index": 0,
+			"item": compat.OpenAIResponsesOutputItem{
+				ID:     w.itemID,
+				Type:   "message",
+				Status: "completed",
+				Role:   string(compat.MessageRoleAssistant),
+				Content: []compat.OpenAIResponsesOutputContent{{
+					Type: "output_text",
+					Text: outputText,
+				}},
+			},
+		})
+	}
+	writeSSEEvent(c, "response.completed", gin.H{
+		"type":     "response.completed",
+		"response": w.completedResponse(outputText),
+	})
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flushSSE(c)
+	w.done = true
+}
+
+func (w *openAIResponsesEventStreamWriter) completedResponse(outputText string) compat.OpenAIResponsesResponse {
+	response := compat.OpenAIResponsesResponse{
+		ID:        w.id,
+		Object:    "response",
+		CreatedAt: w.created,
+		Status:    "completed",
+		Model:     w.model,
+		Output:    []compat.OpenAIResponsesOutputItem{},
+	}
+	if outputText != "" || w.outputStarted {
+		response.Output = append(response.Output, compat.OpenAIResponsesOutputItem{
+			ID:     w.itemID,
+			Type:   "message",
+			Status: "completed",
+			Role:   string(compat.MessageRoleAssistant),
+			Content: []compat.OpenAIResponsesOutputContent{{
+				Type: "output_text",
+				Text: outputText,
+			}},
+		})
+		response.OutputText = outputText
+	}
+	if w.usage != (compat.Usage{}) {
+		total := w.usage.TotalTokens
+		if total == 0 {
+			total = w.usage.InputTokens + w.usage.OutputTokens
+		}
+		response.Usage = &compat.OpenAIResponsesUsage{
+			InputTokens:  w.usage.InputTokens,
+			OutputTokens: w.usage.OutputTokens,
+			TotalTokens:  total,
+		}
+	}
+	return response
+}
+
+func (w *openAIResponsesEventStreamWriter) writeError(c *gin.Context, err error) {
+	message := "stream failed"
+	if err != nil {
+		message = err.Error()
+	}
+	w.writeErrorMessage(c, message)
+}
+
+func (w *openAIResponsesEventStreamWriter) writeErrorMessage(c *gin.Context, message string) {
+	w.ensure(c)
+	w.flushContent(c)
+	writeSSEEvent(c, "error", gin.H{
+		"type":  "error",
+		"error": gin.H{"message": message},
+	})
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	flushSSE(c)
+	w.done = true
 }
 
 func writeAnthropicMessagesStream(c *gin.Context, response compat.Response) {

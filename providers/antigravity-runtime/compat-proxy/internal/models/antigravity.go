@@ -51,6 +51,8 @@ type GetAvailableModelsResponse struct {
 type ModelDetail struct {
 	Model          string     `json:"model"`
 	Label          string     `json:"label,omitempty"`
+	Kind           string     `json:"kind,omitempty"`
+	GroupMembers   []string   `json:"groupMembers,omitempty"`
 	MaxTokens      int        `json:"maxTokens,omitempty"`
 	QuotaInfo      *QuotaInfo `json:"quotaInfo,omitempty"`
 	SupportsImages bool       `json:"supportsImages,omitempty"`

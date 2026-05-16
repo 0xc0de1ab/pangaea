@@ -899,7 +899,7 @@ func dedupeSetupCapabilities(in []provider.Capability) []provider.Capability {
 
 func defaultSetupGeminiModels(caps []provider.Capability) []provider.Model {
 	return []provider.Model{
-		{ID: "auto-gemini-3", Aliases: []string{"gemini-default", "gemini-auto", "Auto Gemini 3", "Auto (Gemini 3)"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576, MaxOutputTokens: 65_536, Kind: "group", GroupMembers: []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview"}},
+		{ID: "auto-gemini-3", Aliases: []string{"gemini-default", "gemini-auto", "Auto Gemini 3", "Auto (Gemini 3)"}, Capabilities: caps, ContextTokens: 1_048_576, MaxContextTokens: 1_048_576, MaxOutputTokens: 65_536},
 	}
 }
 

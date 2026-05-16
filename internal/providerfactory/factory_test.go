@@ -580,7 +580,7 @@ func hasFactoryCapability(capabilities []provider.Capability, want provider.Capa
 	return false
 }
 
-func TestRegistrationModelsAnnotatesGeminiAutoGroups(t *testing.T) {
+func TestRegistrationModelsPreservesConfiguredGeminiModelsWithoutRuntimeMetadata(t *testing.T) {
 	models, err := registrationModels(Config{
 		Service: "gemini",
 		Models:  "auto-gemini-3=gemini-auto,auto-gemini-2.5",
@@ -591,13 +591,51 @@ func TestRegistrationModelsAnnotatesGeminiAutoGroups(t *testing.T) {
 	if len(models) != 2 {
 		t.Fatalf("len(models) = %d, want 2: %#v", len(models), models)
 	}
-	if models[0].Kind != "group" || strings.Join(models[0].GroupMembers, ",") != "gemini-3.1-pro-preview,gemini-3-flash-preview" {
-		t.Fatalf("unexpected auto-gemini-3 metadata: %#v", models[0])
+	if models[0].Kind != "" || len(models[0].GroupMembers) != 0 {
+		t.Fatalf("registration should not classify auto-gemini-3 metadata: %#v", models[0])
 	}
-	if strings.Join(models[0].Aliases, ",") != "gemini-auto,Auto (Gemini 3)" {
+	if strings.Join(models[0].Aliases, ",") != "gemini-auto" {
 		t.Fatalf("unexpected auto-gemini-3 aliases: %#v", models[0].Aliases)
 	}
-	if models[1].Kind != "group" || strings.Join(models[1].GroupMembers, ",") != "gemini-2.5-pro,gemini-2.5-flash" {
-		t.Fatalf("unexpected auto-gemini-2.5 metadata: %#v", models[1])
+	if models[1].Kind != "" || len(models[1].GroupMembers) != 0 {
+		t.Fatalf("registration should not classify auto-gemini-2.5 metadata: %#v", models[1])
+	}
+}
+
+func TestRegistrationModelsLeavesProviderSpecificMetadataToShim(t *testing.T) {
+	copilot, err := registrationModels(Config{
+		Service: "github-copilot",
+		Models:  "github-copilot-default,auto,gpt-5",
+	}, []provider.Capability{provider.CapabilityOpenAIChat}, nil)
+	if err != nil {
+		t.Fatalf("copilot registration models: %v", err)
+	}
+	if copilot[0].Kind != "" || len(copilot[0].GroupMembers) != 0 || len(copilot[0].Aliases) != 0 {
+		t.Fatalf("copilot default should not be classified by setup/factory: %#v", copilot[0])
+	}
+	if copilot[1].Kind != "" || len(copilot[1].GroupMembers) != 0 {
+		t.Fatalf("copilot auto should not be classified by setup/factory: %#v", copilot[1])
+	}
+
+	cursor, err := registrationModels(Config{
+		Service: "cursor",
+		Models:  "auto,composer-2,gpt-5",
+	}, []provider.Capability{provider.CapabilityOpenAIChat}, nil)
+	if err != nil {
+		t.Fatalf("cursor registration models: %v", err)
+	}
+	if cursor[0].Kind != "" || len(cursor[0].GroupMembers) != 0 {
+		t.Fatalf("cursor auto should not be classified by setup/factory: %#v", cursor[0])
+	}
+
+	antigravity, err := registrationModels(Config{
+		Service: "antigravity",
+		Models:  "antigravity-default",
+	}, []provider.Capability{provider.CapabilityOpenAIChat}, nil)
+	if err != nil {
+		t.Fatalf("antigravity registration models: %v", err)
+	}
+	if antigravity[0].Kind != "" {
+		t.Fatalf("antigravity default should not be classified by setup/factory: %#v", antigravity[0])
 	}
 }

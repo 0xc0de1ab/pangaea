@@ -95,12 +95,14 @@ export function UsersView({ data, queries, search, token, refresh }: DashboardVi
       id: "email",
       header: "Email",
       sortValue: (row) => row.email,
-      cell: (row) => (
-        <div className="stacked-cell">
-          <strong>{row.email}</strong>
-          <span>{row.name || "no display name"}</span>
-        </div>
-      ),
+      cell: (row) => <strong>{row.email}</strong>,
+      width: "280px",
+    },
+    {
+      id: "name",
+      header: "Name",
+      sortValue: (row) => row.name || "",
+      cell: (row) => row.name || <span className="muted-cell">no display name</span>,
     },
     {
       id: "role",

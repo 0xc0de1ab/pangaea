@@ -73,6 +73,7 @@ func New(opts Options) (*Provider, error) {
 	if err := opts.Registration.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrConfig, err)
 	}
+	opts.Registration.Models = annotateCursorDirectModels(opts.Registration.Models)
 	base := strings.TrimSpace(opts.BaseURL)
 	if base == "" {
 		base = strings.TrimSpace(os.Getenv(envBaseURL))
@@ -175,15 +176,52 @@ func (p *Provider) Registration() (provider.Registration, error) {
 	return p.registration, nil
 }
 
-func (p *Provider) ForceModelDiscovery() bool { return false }
+func (p *Provider) ForceModelDiscovery() bool { return true }
 
 func (p *Provider) Models(context.Context) ([]provider.Model, error) {
 	if p == nil {
 		return nil, ErrConfig
 	}
-	out := make([]provider.Model, len(p.registration.Models))
-	copy(out, p.registration.Models)
-	return out, nil
+	return annotateCursorDirectModels(p.registration.Models), nil
+}
+
+func annotateCursorDirectModels(in []provider.Model) []provider.Model {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]provider.Model, len(in))
+	copy(out, in)
+	memberIDs := make([]string, 0, len(out))
+	for _, model := range out {
+		id := strings.TrimSpace(model.ID)
+		if id == "" || strings.EqualFold(id, "auto") || strings.EqualFold(strings.TrimSpace(model.Kind), "alias") {
+			continue
+		}
+		memberIDs = appendStringUnique(memberIDs, id)
+	}
+	for i := range out {
+		if !strings.EqualFold(strings.TrimSpace(out[i].ID), "auto") {
+			continue
+		}
+		out[i].Kind = "group"
+		for _, memberID := range memberIDs {
+			out[i].GroupMembers = appendStringUnique(out[i].GroupMembers, memberID)
+		}
+	}
+	return out
+}
+
+func appendStringUnique(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func (p *Provider) Usage() (provider.UsageReport, error) {

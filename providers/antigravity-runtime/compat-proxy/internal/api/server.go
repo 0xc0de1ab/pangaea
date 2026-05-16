@@ -21,6 +21,8 @@ type Server struct {
 	version string
 }
 
+const antigravityDefaultModelAlias = "antigravity-default"
+
 func NewServer(engine interfaces.EngineBridge, keys APIKeys, version string) *Server {
 	s := &Server{
 		engine:  engine,
@@ -487,12 +489,27 @@ func (s *Server) handleOpenAIModels(c *gin.Context) {
 	}
 
 	var data []models.OpenAIModel
+	hasDefaultAlias := false
 	for _, id := range ids {
-		data = append(data, models.OpenAIModel{
+		model := models.OpenAIModel{
 			ID:      id,
 			Object:  "model",
 			Created: time.Now().Unix(),
 			OwnedBy: "antigravity",
+		}
+		if id == antigravityDefaultModelAlias {
+			model.Kind = "alias"
+			hasDefaultAlias = true
+		}
+		data = append(data, model)
+	}
+	if !hasDefaultAlias {
+		data = append(data, models.OpenAIModel{
+			ID:      antigravityDefaultModelAlias,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: "antigravity",
+			Kind:    "alias",
 		})
 	}
 
@@ -529,6 +546,13 @@ func (s *Server) handleDetailedModels(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
+	if details == nil {
+		details = map[string]models.ModelDetail{}
+	}
+	detail := details[antigravityDefaultModelAlias]
+	detail.Model = antigravityDefaultModelAlias
+	detail.Kind = "alias"
+	details[antigravityDefaultModelAlias] = detail
 
 	c.JSON(http.StatusOK, details)
 }

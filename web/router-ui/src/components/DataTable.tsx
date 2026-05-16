@@ -21,6 +21,7 @@ type ColumnMeta = {
 export type DashboardColumn<T> = {
   id: string;
   header: string;
+  headerDescription?: string;
   headerExtra?: ReactNode;
   headerAction?: {
     disabled?: boolean;
@@ -96,24 +97,27 @@ export function DataTable<T>({ rows, columns, empty, getRowId, onRowClick, compa
                     key={header.id}
                     className={cx(meta?.align && `align-${meta.align}`, meta?.className)}
                     style={{ width: meta?.width }}
+                    title={sourceColumn?.headerDescription}
                   >
                     {sourceColumn?.headerAction ? (
                       <LongPressHeaderButton
                         action={sourceColumn.headerAction}
                         label={flexRender(header.column.columnDef.header, header.getContext())}
+                        description={sourceColumn.headerDescription}
                       />
                     ) : canSort ? (
                       <button
                         type="button"
                         className="th-sort"
                         onClick={header.column.getToggleSortingHandler()}
-                        aria-label={`Sort by ${String(header.column.columnDef.header)}`}
+                        title={sourceColumn?.headerDescription}
+                        aria-label={headerAriaLabel(String(header.column.columnDef.header), sourceColumn?.headerDescription, true)}
                       >
                         <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
                         <SortIcon aria-hidden="true" size={13} />
                       </button>
                     ) : (
-                      <div className="th-static">
+                      <div className="th-static" title={sourceColumn?.headerDescription} aria-label={headerAriaLabel(String(header.column.columnDef.header), sourceColumn?.headerDescription, false)}>
                         <span>{flexRender(header.column.columnDef.header, header.getContext())}</span>
                       </div>
                     )}
@@ -160,7 +164,12 @@ export function DataTable<T>({ rows, columns, empty, getRowId, onRowClick, compa
   );
 }
 
-function LongPressHeaderButton({ action, label }: { action: NonNullable<DashboardColumn<unknown>["headerAction"]>; label: ReactNode }) {
+function headerAriaLabel(header: string, description: string | undefined, sortable: boolean) {
+  const detail = description ? `${header}: ${description}` : header;
+  return sortable ? `Sort by ${detail}` : detail;
+}
+
+function LongPressHeaderButton({ action, label, description }: { action: NonNullable<DashboardColumn<unknown>["headerAction"]>; label: ReactNode; description?: string }) {
   const timerRef = useRef<number | null>(null);
   const firedRef = useRef(false);
   const [holding, setHolding] = useState(false);
@@ -192,7 +201,8 @@ function LongPressHeaderButton({ action, label }: { action: NonNullable<Dashboar
       type="button"
       className={cx("th-sort", "th-long-press", holding && "holding", action.pressed && "selected")}
       disabled={action.disabled}
-      title={action.title}
+      title={action.title || description}
+      aria-label={description ? `${String(label)}: ${description}` : undefined}
       aria-pressed={action.pressed}
       onPointerDown={startPress}
       onPointerUp={clearTimer}

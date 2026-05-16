@@ -490,6 +490,17 @@ func mergeDiscoveredModel(current provider.Model, discovered provider.Model) pro
 	if current.MaxContextTokens == 0 {
 		current.MaxContextTokens = discovered.MaxContextTokens
 	}
+	if current.MaxOutputTokens == 0 {
+		current.MaxOutputTokens = discovered.MaxOutputTokens
+	}
+	if current.Kind == "" {
+		current.Kind = discovered.Kind
+	}
+	if len(current.GroupMembers) == 0 {
+		current.GroupMembers = append([]string(nil), discovered.GroupMembers...)
+	} else {
+		current.GroupMembers = mergeStrings(current.GroupMembers, discovered.GroupMembers)
+	}
 	if discovered.Quota != nil {
 		current.Quota = cloneModelQuota(discovered.Quota)
 	}

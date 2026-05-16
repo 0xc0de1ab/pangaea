@@ -83,6 +83,8 @@ type OpenAIModel struct {
 	Object  string `json:"object"`
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+	Label   string `json:"label,omitempty"`
+	Kind    string `json:"kind,omitempty"`
 }
 
 type OpenAIModelList struct {

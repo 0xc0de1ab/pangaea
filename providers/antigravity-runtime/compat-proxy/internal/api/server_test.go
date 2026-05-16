@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,6 +56,44 @@ func TestGeminiStreamingEndpointUsesSSE(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, `"text":"hello "`) || !strings.Contains(body, `"text":"from gemini stream"`) {
 		t.Fatalf("unexpected stream body: %s", body)
+	}
+}
+
+func TestModelEndpointsExposeDefaultAliasMetadata(t *testing.T) {
+	server := NewServer(&testEngineBridge{models: []string{"gpt-oss-120b-medium"}}, APIKeys{}, "test")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var list models.OpenAIModelList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode models: %v", err)
+	}
+	var alias models.OpenAIModel
+	for _, model := range list.Data {
+		if model.ID == "antigravity-default" {
+			alias = model
+		}
+	}
+	if alias.ID == "" || alias.Kind != "alias" {
+		t.Fatalf("default alias missing from /v1/models: %#v", list.Data)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/models/status", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var status map[string]models.ModelDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status["antigravity-default"].Kind != "alias" {
+		t.Fatalf("default alias missing from /v1/models/status: %#v", status)
 	}
 }
 
@@ -136,6 +175,7 @@ type testEngineBridge struct {
 	response  string
 	stream    []string
 	streamErr error
+	models    []string
 }
 
 func (e *testEngineBridge) Invoke(context.Context, string, string, []models.ToolDefinition, []models.Media) (*interfaces.ModelResponse, error) {
@@ -162,6 +202,9 @@ func (e *testEngineBridge) InvokeStream(context.Context, string, string, []model
 }
 
 func (e *testEngineBridge) GetModels(context.Context) ([]string, error) {
+	if len(e.models) > 0 {
+		return e.models, nil
+	}
 	return []string{"antigravity-default"}, nil
 }
 

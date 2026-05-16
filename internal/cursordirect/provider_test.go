@@ -103,6 +103,51 @@ func TestInvokeOpenAIChatRoundTrip(t *testing.T) {
 	}
 }
 
+func TestModelsAnnotateCursorAutoGroup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	reg := provider.Registration{
+		Identity: provider.ProviderIdentity{
+			ProviderType:       "cursor",
+			ProviderInstanceID: "cursor-1",
+			NodeID:             "n1",
+			HostName:           "h1",
+			Service:            provider.ServiceCursor,
+			Kind:               provider.KindCLIContainer,
+		},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		Models: []provider.Model{
+			{ID: "auto"},
+			{ID: "composer-2"},
+			{ID: "gpt-5.2"},
+		},
+		Health:       provider.Health{Status: provider.HealthReady, CheckedAt: time.Now()},
+		RegisteredAt: time.Now(),
+	}
+	p, err := New(Options{
+		Registration: reg,
+		BaseURL:      srv.URL,
+		APIKey:       "test-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.ForceModelDiscovery() {
+		t.Fatalf("cursor direct provider should force model metadata refresh")
+	}
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	byID := map[string]provider.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if byID["auto"].Kind != "group" || !containsString(byID["auto"].GroupMembers, "composer-2") || !containsString(byID["auto"].GroupMembers, "gpt-5.2") {
+		t.Fatalf("auto metadata = %#v", byID["auto"])
+	}
+}
+
 func TestInvokeStreamOpenAISSE(t *testing.T) {
 	var sawStream bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +230,15 @@ func TestInvokeStreamOpenAISSE(t *testing.T) {
 	if len(events) < 3 {
 		t.Fatalf("events: %+v", events)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestInvokeStreamNonStreamEmitsSyntheticEvents(t *testing.T) {

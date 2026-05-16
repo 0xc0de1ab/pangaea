@@ -118,15 +118,26 @@ func (AuthFormat) AccountDisplay(ctx context.Context, snap formats.Snapshot, pat
 	return strings.TrimSpace(status.UserInfo.Email), nil
 }
 
-func (AuthFormat) Probe(ctx context.Context, snap formats.Snapshot, path string, _ *http.Client) (formats.UsageReport, error) {
+func (AuthFormat) Probe(ctx context.Context, snap formats.Snapshot, path string, httpClient *http.Client) (formats.UsageReport, error) {
 	if snap == nil {
 		return formats.UsageReport{}, fmt.Errorf("cursorauth.Probe: nil snapshot")
 	}
+	rep := formats.UsageReport{}
+	usage, usageErr := cursorDashboardUsage(ctx, snap, path, httpClient)
+	if usageErr == nil {
+		rep = mergeCursorUsageReports(rep, usage)
+	} else {
+		rep.Notes = append(rep.Notes, "status:Cursor usage unavailable")
+	}
 	about, err := cursorAgentAbout(ctx, path)
 	if err != nil {
+		if cursorUsageReportHasSignal(rep) {
+			rep.Notes = append(rep.Notes, "status:Cursor Agent about unavailable")
+			return rep, nil
+		}
 		return formats.UsageReport{}, err
 	}
-	rep := formats.UsageReport{PlanTier: strings.TrimSpace(about.SubscriptionTier)}
+	rep.PlanTier = strings.TrimSpace(about.SubscriptionTier)
 	if email := strings.TrimSpace(about.UserEmail); email != "" {
 		rep.Notes = append(rep.Notes, "email:"+email)
 	}

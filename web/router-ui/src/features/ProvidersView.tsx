@@ -147,6 +147,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     {
       id: "select",
       header: "Sel",
+      headerDescription: "Select disconnected provider registrations for deletion. Connected providers are protected.",
       cell: (row) => {
         const id = providerInstanceID(row);
         const disconnected = disconnectedIDs.has(id);
@@ -168,6 +169,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     {
       id: "node",
       header: "Node",
+      headerDescription: "Provider node ID. The service icon at the front identifies the target service.",
       sortValue: (row) => row.identity.node_id,
       cell: (row) => (
         <span className="id-cell provider-node-cell" title={providerInstanceID(row)}>
@@ -180,19 +182,21 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
       ),
       width: "152px",
     },
-    { id: "kind", header: "Kind", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
+    { id: "kind", header: "Kind", headerDescription: "Provider runtime mode such as direct-http, cli-adapter, acp, or sidecar.", sortValue: (row) => row.identity.kind, cell: (row) => row.identity.kind, width: "138px" },
     {
       id: "apis",
       header: "Service APIs",
+      headerDescription: "API dialects exposed by this provider, shown as OpenAI, Anthropic, and Gemini endpoint icons.",
       sortValue: (row) => providerServiceEndpoints(row).map((endpoint) => endpoint.label).join(","),
       cell: (row) => <ServiceBadgeRow provider={row} />,
       width: "122px",
     },
-    { id: "host", header: "Host", sortValue: (row) => row.identity.host_name, cell: (row) => <HostCell identity={row.identity} />, width: "172px" },
-    { id: "account", header: "Account", sortValue: (row) => providerAccountLabel(row), cell: (row) => providerAccountLabel(row), width: "190px" },
+    { id: "host", header: "Host", headerDescription: "Physical or VM host name reported by the provider. Container icons show runtime metadata on hover.", sortValue: (row) => row.identity.host_name, cell: (row) => <HostCell identity={row.identity} />, width: "172px" },
+    { id: "account", header: "Account", headerDescription: "Authenticated account associated with the provider auth state.", sortValue: (row) => providerAccountLabel(row), cell: (row) => providerAccountLabel(row), width: "190px" },
     {
       id: "health",
       header: "H",
+      headerDescription: "Health status. Ready providers can receive traffic; degraded, draining, or down providers need attention.",
       sortValue: (row) => row.health?.status,
       cell: (row) => <StatusBadge value={row.health?.status} title={providerHealthTitle(row)} icon={HeartPulse} iconOnly />,
       width: "48px",
@@ -201,6 +205,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     {
       id: "auth",
       header: "A",
+      headerDescription: "Auth status. Shows whether credentials are healthy, refreshing, expiring, unavailable, or missing login.",
       sortValue: (row) => row.auth?.status,
       cell: (row) => <StatusBadge value={row.auth?.status} title={providerAuthTitle(row)} icon={KeyRound} iconOnly />,
       width: "48px",
@@ -209,6 +214,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     {
       id: "sessions",
       header: "C/D",
+      headerDescription: "Control/Data sessions. Control carries management commands; Data carries proxied API traffic.",
       sortValue: (row) => Number(control.has(providerInstanceID(row))) + Number(dataSession.has(providerInstanceID(row))),
       cell: (row) => (
         <div className="session-pair session-icon-pair">
@@ -231,12 +237,13 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
       width: "74px",
       align: "center",
     },
-    { id: "models", header: "Models", sortValue: (row) => row.models?.length ?? 0, cell: (row) => n(row.models?.length ?? 0), align: "right", width: "80px" },
-    { id: "queue", header: "Queue", sortValue: (row) => row.limits?.queue_depth ?? 0, cell: (row) => n(row.limits?.queue_depth ?? 0), align: "right", width: "76px" },
-    { id: "streams", header: "Streams", sortValue: (row) => row.limits?.active_streams ?? 0, cell: (row) => n(row.limits?.active_streams ?? 0), align: "right", width: "92px" },
+    { id: "models", header: "Models", headerDescription: "Number of models reported by the provider.", sortValue: (row) => row.models?.length ?? 0, cell: (row) => n(row.models?.length ?? 0), align: "right", width: "80px" },
+    { id: "queue", header: "Queue", headerDescription: "Current queued request depth reported by the provider.", sortValue: (row) => row.limits?.queue_depth ?? 0, cell: (row) => n(row.limits?.queue_depth ?? 0), align: "right", width: "76px" },
+    { id: "streams", header: "Streams", headerDescription: "Current active streaming responses handled by the provider.", sortValue: (row) => row.limits?.active_streams ?? 0, cell: (row) => n(row.limits?.active_streams ?? 0), align: "right", width: "92px" },
     {
       id: "usage",
       header: "Requests",
+      headerDescription: "Request count from the latest usage snapshot for this provider.",
       sortValue: (row) => usage.get(providerInstanceID(row))?.usage?.requests ?? 0,
       cell: (row) => n(usage.get(providerInstanceID(row))?.usage?.requests ?? 0),
       align: "right",
@@ -245,6 +252,7 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     {
       id: "actions",
       header: "Actions",
+      headerDescription: "Provider management actions: drain, resume routing, and refresh auth.",
       cell: (row) => (
         <div className="row-actions">
           <button className="icon-button small" type="button" title="Drain" onClick={(event) => { event.stopPropagation(); providerAction(row, "drain"); }}>
@@ -651,8 +659,8 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, chan
         </div>
         <div className={cx("tag-list", changed.has("models:list") && "provider-value-changed")}>
           {(provider.models ?? []).map((model) => (
-            <span className={isGroupProviderModel(provider.identity.service, model) || isAliasProviderModel(model) ? "tag mono model-tag-group" : "tag mono"} key={model.id}>
-              {isGroupProviderModel(provider.identity.service, model) ? <span className="model-group-badge mini" title="Group model">G</span> : null}
+            <span className={isGroupProviderModel(model) || isAliasProviderModel(model) ? "tag mono model-tag-group" : "tag mono"} key={model.id}>
+              {isGroupProviderModel(model) ? <span className="model-group-badge mini" title="Group model">G</span> : null}
               {isAliasProviderModel(model) ? <span className="model-alias-badge mini" title="Alias model">A</span> : null}
               {model.id}
             </span>

@@ -202,7 +202,7 @@ export function capacityRows(providers: ProviderRegistration[]) {
         };
       row.providers += 1;
       row.hosts.add(provider.identity.host_name);
-      row.groupModel = row.groupModel || isGroupProviderModel(provider.identity.service, model);
+      row.groupModel = row.groupModel || isGroupProviderModel(model);
       row.aliasModel = row.aliasModel || isAliasProviderModel(model);
       for (const member of model.group_members ?? []) {
         row.groupMembers.add(member);

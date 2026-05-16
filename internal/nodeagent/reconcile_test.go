@@ -2,14 +2,19 @@ package nodeagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/runtime"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/githubcopilotapps"
 )
 
@@ -102,6 +107,76 @@ type fakeExistingContainerRuntime struct {
 
 func (r *fakeExistingContainerRuntime) FindByLabels(context.Context, map[string]string) (runtime.ContainerStatus, bool, error) {
 	return r.status, r.found, nil
+}
+
+const testAuthCopyFormatName = "nodeagent-test-auth-copy-format"
+
+func init() {
+	formats.Register(testAuthCopyFormat{})
+}
+
+type testAuthCopyFormat struct{}
+
+type testAuthCopySnapshot struct {
+	raw       []byte
+	expiresAt time.Time
+}
+
+func testAuthCopyRaw(expiresAt time.Time) []byte {
+	return []byte("exp:" + strconv.FormatInt(expiresAt.Unix(), 10))
+}
+
+func (testAuthCopyFormat) Name() string { return testAuthCopyFormatName }
+
+func (testAuthCopyFormat) Strategies() []string { return []string{"expiry"} }
+
+func (testAuthCopyFormat) Parse(raw []byte) (formats.Snapshot, error) {
+	text := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(text, "exp:") {
+		return nil, errors.New("missing exp prefix")
+	}
+	sec, err := strconv.ParseInt(strings.TrimPrefix(text, "exp:"), 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	return testAuthCopySnapshot{raw: append([]byte(nil), raw...), expiresAt: time.Unix(sec, 0).UTC()}, nil
+}
+
+func (testAuthCopyFormat) Validate(_ context.Context, snap formats.Snapshot, opts formats.ValidateOpts) (formats.ValidationResult, error) {
+	now := time.Now
+	if opts.Clock != nil {
+		now = opts.Clock
+	}
+	status := formats.StatusOK
+	if !snap.ExpiresAt().After(now()) {
+		status = formats.StatusExpired
+	}
+	return formats.ValidationResult{Status: status, CheckedAt: now().UTC()}, nil
+}
+
+func (testAuthCopyFormat) Compare(_ string, a, b formats.Snapshot) int {
+	if a.ExpiresAt().Before(b.ExpiresAt()) {
+		return -1
+	}
+	if a.ExpiresAt().After(b.ExpiresAt()) {
+		return 1
+	}
+	return 0
+}
+
+func (testAuthCopyFormat) Redact(snap formats.Snapshot) formats.Summary {
+	return formats.Summary{Identity: snap.Identity(), FingerprintShort: snap.Fingerprint()[:12], ExpiresAt: snap.ExpiresAt()}
+}
+
+func (s testAuthCopySnapshot) Identity() string { return s.Fingerprint()[:16] }
+
+func (s testAuthCopySnapshot) ExpiresAt() time.Time { return s.expiresAt }
+
+func (s testAuthCopySnapshot) Raw() []byte { return append([]byte(nil), s.raw...) }
+
+func (s testAuthCopySnapshot) Fingerprint() string {
+	sum := sha256.Sum256(s.raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing.T) {
@@ -668,6 +743,109 @@ func TestReconcileExistingContainerSkipsInvalidContainerAuthBeforeHostSync(t *te
 	}
 	if got, want := strings.Join(rt.calls, ","), "copy-from,copy"; got != want {
 		t.Fatalf("sync call order = %s, want %s", got, want)
+	}
+}
+
+func TestReconcileExistingContainerSkipsExpiredContainerAuthBeforeHostSync(t *testing.T) {
+	dir := t.TempDir()
+	hostPath := filepath.Join(dir, "auth.txt")
+	now := time.Now().UTC()
+	validHost := testAuthCopyRaw(now.Add(time.Hour))
+	if err := os.WriteFile(hostPath, validHost, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := &fakeExistingContainerRuntime{
+		fakeContainerRuntime: fakeContainerRuntime{
+			copyFromContent: testAuthCopyRaw(now.Add(-time.Hour)),
+		},
+		status: runtime.ContainerStatus{
+			ID:    "container-existing",
+			Image: "pangaea/provider-gemini:test",
+			State: "running",
+		},
+		found: true,
+	}
+	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ProviderType: "gemini-cli",
+		InstanceID:   "gemini-primary",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-gemini:test",
+		Service:      provider.ServiceGemini,
+		Auth: AuthSpec{
+			Mode:          "file",
+			Format:        testAuthCopyFormatName,
+			HostPath:      hostPath,
+			ContainerPath: "/var/lib/pangaea/home/gemini/.gemini/oauth_creds.json",
+			FileMode:      "0600",
+			Sync: AuthSyncSpec{
+				ContainerToHost: true,
+				HostToContainer: "reconcile",
+			},
+		},
+		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a2", "oci-a2")
+	if err != nil {
+		t.Fatalf("reconcile existing provider container: %v", err)
+	}
+	got, err := os.ReadFile(hostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(validHost) {
+		t.Fatalf("expired container auth overwrote host auth: got %q want %q", got, validHost)
+	}
+	if gotCalls, wantCalls := strings.Join(rt.calls, ","), "copy-from,copy"; gotCalls != wantCalls {
+		t.Fatalf("sync call order = %s, want %s", gotCalls, wantCalls)
+	}
+}
+
+func TestReconcileExistingContainerSkipsOlderContainerAuthBeforeHostSync(t *testing.T) {
+	dir := t.TempDir()
+	hostPath := filepath.Join(dir, "auth.txt")
+	now := time.Now().UTC()
+	validHost := testAuthCopyRaw(now.Add(2 * time.Hour))
+	if err := os.WriteFile(hostPath, validHost, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := &fakeExistingContainerRuntime{
+		fakeContainerRuntime: fakeContainerRuntime{
+			copyFromContent: testAuthCopyRaw(now.Add(time.Hour)),
+		},
+		status: runtime.ContainerStatus{
+			ID:    "container-existing",
+			Image: "pangaea/provider-codex:test",
+			State: "running",
+		},
+		found: true,
+	}
+	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
+		ProviderType: "codex-cli",
+		InstanceID:   "codex-primary",
+		Kind:         provider.KindCLIContainer,
+		Image:        "pangaea/provider-codex:test",
+		Service:      provider.ServiceCodex,
+		Auth: AuthSpec{
+			Mode:          "file",
+			Format:        testAuthCopyFormatName,
+			HostPath:      hostPath,
+			ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
+			FileMode:      "0600",
+			Sync: AuthSyncSpec{
+				ContainerToHost: true,
+				HostToContainer: "reconcile",
+			},
+		},
+		Shim: ShimSpec{Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}, "node-a2", "oci-a2")
+	if err != nil {
+		t.Fatalf("reconcile existing provider container: %v", err)
+	}
+	got, err := os.ReadFile(hostPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(validHost) {
+		t.Fatalf("older container auth overwrote host auth: got %q want %q", got, validHost)
 	}
 }
 

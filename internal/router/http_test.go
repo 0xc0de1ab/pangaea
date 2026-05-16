@@ -551,6 +551,42 @@ func TestHTTPOpenAIChatCompletionsWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPOpenAIResponsesWithSimulator(t *testing.T) {
+	engine, _ := testEngine(t)
+	sim, err := providersim.New(providersim.Options{
+		Registration: registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0),
+	})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{
+		"model":"gpt-5-codex",
+		"instructions":"be concise",
+		"input":"hello responses"
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_http_response_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response compat.OpenAIResponsesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Object != "response" || response.OutputText != "providersim: hello responses" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.Usage == nil || response.Usage.TotalTokens == 0 {
+		t.Fatalf("expected usage, got %#v", response.Usage)
+	}
+}
+
 func TestHTTPTraceAfterOpenAIChatCompletion(t *testing.T) {
 	engine, _ := testEngine(t)
 	sim, err := providersim.New(providersim.Options{
@@ -692,6 +728,47 @@ func TestHTTPOpenAIChatCompletionsStreamsSSEWithSimulator(t *testing.T) {
 	body := rec.Body.String()
 	if !bytes.Contains([]byte(body), []byte("data:")) || !bytes.Contains([]byte(body), []byte("providersim: hello stream")) || !bytes.Contains([]byte(body), []byte("data: [DONE]")) {
 		t.Fatalf("unexpected SSE body: %s", body)
+	}
+}
+
+func TestHTTPOpenAIResponsesStreamsSSEWithSimulator(t *testing.T) {
+	engine, _ := testEngine(t)
+	sim, err := providersim.New(providersim.Options{
+		Registration: registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0),
+	})
+	if err != nil {
+		t.Fatalf("new simulator: %v", err)
+	}
+	engine.SetInvoker(sim)
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{
+		"model":"gpt-5-codex",
+		"stream":true,
+		"input":"hello stream responses"
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_http_response_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("content-type"); got != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %q", got)
+	}
+	body := rec.Body.String()
+	for _, expected := range []string{
+		"event: response.created",
+		"event: response.output_text.delta",
+		"providersim: hello stream responses",
+		"event: response.completed",
+		"data: [DONE]",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in SSE body: %s", expected, body)
+		}
 	}
 }
 

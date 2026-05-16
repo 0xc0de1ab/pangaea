@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ChevronLeft, ChevronRight, Clock3, RadioTower, Settings2, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Clock3, Eye, FileJson, RadioTower, Settings2, ShieldAlert, X } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { MetricTile } from "../components/MetricTile";
@@ -11,10 +11,16 @@ import type { Incident, ProviderRegistration, QuotaSnapshot, RequestTrace } from
 
 const overviewCapacityPageSizeOptions = [5, 10, 25, 50];
 
+type FailureRow = {
+  ordinal: number;
+  trace: RequestTrace;
+};
+
 export function Overview({ data, queries, search }: DashboardViewProps) {
   const [capacityPageIndex, setCapacityPageIndex] = useState(0);
   const [capacityPageSize, setCapacityPageSize] = useState(10);
   const [capacitySettingsOpen, setCapacitySettingsOpen] = useState(false);
+  const [selectedErrorTrace, setSelectedErrorTrace] = useState<RequestTrace | null>(null);
   const incidents = useMemo(() => deriveIncidents(data).filter((incident) => hasText(incident, search)), [data, search]);
   const capacity = useMemo(() => capacityRows(data.providers).filter((row) => hasText(row, search)), [data.providers, search]);
   const capacityPageCount = Math.max(1, Math.ceil(capacity.length / capacityPageSize));
@@ -30,7 +36,11 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
     .filter((provider) => ["refresh_soon", "expired", "revoked", "conflict", "unavailable", "no_login"].includes(provider.auth?.status || ""))
     .filter((provider) => hasText(provider, search));
   const quotaRisk = data.quotas.filter((quota) => quotaPressure(quota) >= 0.7).filter((quota) => hasText(quota, search));
-  const recentFailures = data.traces.filter((trace) => trace.status !== "completed").filter((trace) => hasText(trace, search)).slice(0, 12);
+  const recentFailures: FailureRow[] = data.traces
+    .filter((trace) => trace.status !== "completed")
+    .filter((trace) => hasText(trace, search))
+    .slice(0, 12)
+    .map((trace, index) => ({ ordinal: index + 1, trace }));
 
   useEffect(() => {
     setCapacityPageIndex(0);
@@ -76,7 +86,7 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
 
   const capacityColumns: DashboardColumn<(typeof capacity)[number]>[] = [
     { id: "service", header: "Service", sortValue: (row) => row.service, cell: (row) => row.service, width: "110px" },
-    { id: "model", header: "Model", sortValue: (row) => row.model, cell: (row) => <span className="mono">{middleEllipsis(row.model, 22, 10)}</span> },
+    { id: "model", header: "Model", sortValue: (row) => row.model, cell: (row) => <OverviewCapacityModelCell row={row} /> },
     { id: "hosts", header: "Hosts", sortValue: (row) => row.hosts.size, cell: (row) => n(row.hosts.size), align: "right", width: "76px" },
     { id: "ready", header: "Ready", sortValue: (row) => row.ready, cell: (row) => n(row.ready), align: "right", width: "76px" },
     { id: "degraded", header: "Degraded", sortValue: (row) => row.degraded, cell: (row) => n(row.degraded), align: "right", width: "92px" },
@@ -99,12 +109,23 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
     { id: "requests", header: "Requests", sortValue: (row) => row.committed?.requests ?? 0, cell: (row) => `${n(row.committed?.requests ?? 0)} / ${n(row.limit?.max_requests ?? 0)}`, align: "right", width: "138px" },
   ];
 
-  const failureColumns: DashboardColumn<RequestTrace>[] = [
-    { id: "time", header: "Time", sortValue: (row) => row.started_at, cell: (row) => fmtTime(row.started_at), width: "126px" },
-    { id: "request", header: "Request", sortValue: (row) => row.request_id, cell: (row) => <span className="mono">{middleEllipsis(row.request_id)}</span> },
-    { id: "model", header: "Model", sortValue: (row) => row.route_request?.model, cell: (row) => row.route_request?.model || "" },
-    { id: "status", header: "Status", sortValue: (row) => row.status, cell: (row) => <StatusBadge value={row.status} />, width: "128px" },
-    { id: "error", header: "Error", sortValue: (row) => row.error || row.decision?.reason, cell: (row) => row.error || row.decision?.reason || row.error_code || "" },
+  const failureColumns: DashboardColumn<FailureRow>[] = [
+    { id: "ordinal", header: "#", sortValue: (row) => row.ordinal, cell: (row) => <span className="mono failure-ordinal">{n(row.ordinal)}</span>, align: "right", width: "58px" },
+    { id: "time", header: "Time", sortValue: (row) => row.trace.started_at, cell: (row) => fmtTime(row.trace.started_at), width: "126px" },
+    { id: "request", header: "Request", sortValue: (row) => row.trace.request_id, cell: (row) => <span className="mono failure-request-id">{row.trace.request_id}</span>, width: "320px" },
+    { id: "model", header: "Model", sortValue: (row) => row.trace.route_request?.model, cell: (row) => row.trace.route_request?.model || "" },
+    { id: "status", header: "Status", sortValue: (row) => row.trace.status, cell: (row) => <StatusBadge value={row.trace.status} />, width: "128px" },
+    {
+      id: "error",
+      header: "Error",
+      sortValue: (row) => failureErrorText(row.trace),
+      cell: (row) => (
+        <FailureErrorCell
+          trace={row.trace}
+          onOpen={() => setSelectedErrorTrace(row.trace)}
+        />
+      ),
+    },
   ];
 
   return (
@@ -177,8 +198,179 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
       <Section title="Recent Route Failures" subtitle="Rejected, failed, and upstream-error traces" error={queries.traces.error}>
         <DataTable rows={recentFailures} columns={failureColumns} empty="No recent route failures" compact />
       </Section>
+      <FailureErrorModal trace={selectedErrorTrace} onClose={() => setSelectedErrorTrace(null)} />
     </div>
   );
+}
+
+function OverviewCapacityModelCell({ row }: { row: ReturnType<typeof capacityRows>[number] }) {
+  const groupMembers = Array.from(row.groupMembers ?? []);
+  const title = [
+    row.groupModel ? `Group model${groupMembers.length ? `: ${groupMembers.join(", ")}` : ""}` : "",
+    row.aliasModel ? "Alias model" : "",
+  ].filter(Boolean).join(" / ");
+  return (
+    <span className={cx("model-name-line", "capacity-model-name")} title={title || row.model}>
+      {row.groupModel ? <span className="model-group-badge mini" title="Group model">G</span> : null}
+      {row.aliasModel ? <span className="model-alias-badge mini" title="Alias model">A</span> : null}
+      <span className="mono">{middleEllipsis(row.model, 22, 10)}</span>
+    </span>
+  );
+}
+
+function FailureErrorCell({ trace, onOpen }: { trace: RequestTrace; onOpen: () => void }) {
+  const text = failureErrorText(trace);
+  if (!text) {
+    return "";
+  }
+  const parsed = parseFailureError(text);
+  const showDetails = text.length > 88 || Boolean(parsed.payload);
+  return (
+    <div className="failure-error-cell">
+      <span className="failure-error-text">{middleEllipsis(text, 72, 22)}</span>
+      {showDetails ? (
+        <button
+          className="icon-button small"
+          type="button"
+          aria-label="Show error detail"
+          title="Show error detail"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen();
+          }}
+        >
+          <Eye aria-hidden="true" size={15} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function FailureErrorModal({ trace, onClose }: { trace: RequestTrace | null; onClose: () => void }) {
+  if (!trace) {
+    return null;
+  }
+  const text = failureErrorText(trace);
+  const parsed = parseFailureError(text);
+  return (
+    <div className="modal-layer" role="presentation">
+      <button className="modal-scrim" type="button" aria-label="Close error detail" onClick={onClose} />
+      <div className="modal error-detail-modal" role="dialog" aria-modal="true" aria-labelledby="failure-error-title">
+        <div className="modal-header">
+          <div className="modal-title-row">
+            <AlertTriangle aria-hidden="true" size={18} />
+            <h2 id="failure-error-title">Route Failure Error</h2>
+          </div>
+          <button className="icon-button" type="button" aria-label="Close error detail" onClick={onClose}>
+            <X aria-hidden="true" size={17} />
+          </button>
+        </div>
+        <div className="modal-body error-detail-body">
+          <div className="badge-row">
+            <StatusBadge value={trace.status} />
+            {trace.error_status ? <StatusBadge value={`HTTP ${trace.error_status}`} tone="warn" /> : null}
+            {trace.error_code ? <StatusBadge value={trace.error_code} tone="unknown" /> : null}
+          </div>
+          <div className="kv-list">
+            <div className="kv-key">Request</div><div className="kv-value mono">{trace.request_id}</div>
+            <div className="kv-key">Model</div><div className="kv-value mono">{trace.route_request?.model || ""}</div>
+            <div className="kv-key">Started</div><div className="kv-value">{fmtTime(trace.started_at)}</div>
+          </div>
+          <ErrorDetailBlock title="Raw Error" value={text || "(empty error)"} />
+          {parsed.payload ? (
+            <ErrorDetailBlock title="Parsed Error Payload" value={formatPrettyValue(parsed.payload)} json />
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ErrorDetailBlock({ title, value, json }: { title: string; value: string; json?: boolean }) {
+  return (
+    <section className="error-detail-section">
+      <div className="error-detail-section-head">
+        {json ? <FileJson aria-hidden="true" size={15} /> : null}
+        <strong>{title}</strong>
+      </div>
+      <pre className="trace-http-block error-detail-pre">{value}</pre>
+    </section>
+  );
+}
+
+function failureErrorText(trace: RequestTrace) {
+  return trace.error || trace.decision?.reason || trace.error_code || "";
+}
+
+function parseFailureError(text: string) {
+  const payload = parseJSONLike(text);
+  return { payload };
+}
+
+function parseJSONLike(value: string): unknown | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || !/^[\[{"]/.test(trimmed)) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const jsonPrefix = extractJSONPrefix(trimmed);
+    if (!jsonPrefix) {
+      return undefined;
+    }
+    try {
+      return JSON.parse(jsonPrefix);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function extractJSONPrefix(value: string) {
+  const start = value.search(/[\[{]/);
+  if (start < 0) {
+    return "";
+  }
+  const opener = value[start];
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === opener) {
+      depth += 1;
+    } else if (char === closer) {
+      depth -= 1;
+      if (depth === 0) {
+        return value.slice(start, index + 1);
+      }
+    }
+  }
+  return "";
+}
+
+function formatPrettyValue(value: unknown) {
+  if (typeof value === "string") {
+    const parsed = parseJSONLike(value);
+    return parsed === undefined ? value : JSON.stringify(parsed, null, 2);
+  }
+  return JSON.stringify(value, null, 2);
 }
 
 function OverviewCapacityPageSizeMenu({

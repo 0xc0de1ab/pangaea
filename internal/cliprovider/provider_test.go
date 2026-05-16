@@ -204,6 +204,91 @@ func TestProviderInvokeExpandsCommandTemplate(t *testing.T) {
 	}
 }
 
+func TestProviderModelsClassifiesRuntimeMetadataByService(t *testing.T) {
+	p := newTestProviderWithOptions(t, Options{
+		Service: provider.ServiceGitHubCopilot,
+		Command: []string{"echo", "{{prompt}}"},
+		Registration: provider.Registration{
+			Identity: provider.ProviderIdentity{
+				ProviderType:       "copilot-test",
+				ProviderInstanceID: "copilot-test-a1",
+				NodeID:             "node-a1",
+				HostName:           "snowbox",
+				Service:            provider.ServiceGitHubCopilot,
+				Kind:               provider.KindCLIContainer,
+			},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+			Models: []provider.Model{
+				{ID: "github-copilot-default"},
+				{ID: "auto"},
+				{ID: "gpt-5.2"},
+			},
+			Health:       provider.Health{Status: provider.HealthReady, CheckedAt: time.Now().UTC()},
+			RegisteredAt: time.Now().UTC(),
+		},
+		Runner: CommandRunnerFunc(func(context.Context, CommandSpec) (CommandResult, error) {
+			return CommandResult{Stdout: []byte("unused")}, nil
+		}),
+	})
+	if !p.ForceModelDiscovery() {
+		t.Fatalf("CLI provider should refresh model metadata before registering")
+	}
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	byID := map[string]provider.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if byID["github-copilot-default"].Kind != "alias" || !containsString(byID["github-copilot-default"].Aliases, "copilot-default") {
+		t.Fatalf("default metadata = %#v", byID["github-copilot-default"])
+	}
+	if byID["auto"].Kind != "group" || !containsString(byID["auto"].GroupMembers, "gpt-5.2") {
+		t.Fatalf("auto metadata = %#v", byID["auto"])
+	}
+}
+
+func TestProviderModelsClassifiesGeminiAutoGroups(t *testing.T) {
+	p := newTestProviderWithOptions(t, Options{
+		Service: provider.ServiceGemini,
+		Registration: provider.Registration{
+			Identity: provider.ProviderIdentity{
+				ProviderType:       "gemini-test",
+				ProviderInstanceID: "gemini-test-a1",
+				NodeID:             "node-a1",
+				HostName:           "snowbox",
+				Service:            provider.ServiceGemini,
+				Kind:               provider.KindCLIContainer,
+			},
+			Capabilities: []provider.Capability{provider.CapabilityGeminiGenerateContent},
+			Models: []provider.Model{
+				{ID: "auto-gemini-3", Aliases: []string{"gemini-default"}},
+				{ID: "auto-gemini-2.5"},
+			},
+			Health:       provider.Health{Status: provider.HealthReady, CheckedAt: time.Now().UTC()},
+			RegisteredAt: time.Now().UTC(),
+		},
+		Runner: CommandRunnerFunc(func(context.Context, CommandSpec) (CommandResult, error) {
+			return CommandResult{Stdout: []byte("unused")}, nil
+		}),
+	})
+	models, err := p.Models(context.Background())
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	byID := map[string]provider.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if byID["auto-gemini-3"].Kind != "group" || !containsString(byID["auto-gemini-3"].GroupMembers, "gemini-3-flash-preview") {
+		t.Fatalf("auto-gemini-3 metadata = %#v", byID["auto-gemini-3"])
+	}
+	if byID["auto-gemini-2.5"].Kind != "group" || !containsString(byID["auto-gemini-2.5"].GroupMembers, "gemini-2.5-flash") {
+		t.Fatalf("auto-gemini-2.5 metadata = %#v", byID["auto-gemini-2.5"])
+	}
+}
+
 func TestPromptFromCanonicalIncludesToolCalls(t *testing.T) {
 	prompt, err := PromptFromCanonical(compat.Request{
 		Dialect: compat.APIDialectOpenAI,
@@ -224,6 +309,15 @@ func TestPromptFromCanonicalIncludesToolCalls(t *testing.T) {
 	if !strings.Contains(prompt, "call_1") || !strings.Contains(prompt, `{"q":"status"}`) {
 		t.Fatalf("tool call missing from prompt: %s", prompt)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func newTestProvider(t *testing.T, service provider.Service, runner CommandRunner) *Provider {

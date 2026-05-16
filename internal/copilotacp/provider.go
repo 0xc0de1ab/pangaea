@@ -41,6 +41,7 @@ func New(opts Options) (*Provider, error) {
 	if err := opts.Registration.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrConfig, err)
 	}
+	opts.Registration.Models = annotateCopilotModels(opts.Registration.Models)
 	copilotPath := strings.TrimSpace(opts.CopilotPath)
 	if copilotPath == "" {
 		copilotPath = strings.TrimSpace(os.Getenv("PANGAEA_COPILOT_CLI_EXE"))
@@ -75,15 +76,63 @@ func (p *Provider) Registration() (provider.Registration, error) {
 	return p.registration, nil
 }
 
-func (p *Provider) ForceModelDiscovery() bool { return false }
+func (p *Provider) ForceModelDiscovery() bool { return true }
 
 func (p *Provider) Models(context.Context) ([]provider.Model, error) {
 	if p == nil {
 		return nil, ErrConfig
 	}
-	out := make([]provider.Model, len(p.registration.Models))
-	copy(out, p.registration.Models)
-	return out, nil
+	return annotateCopilotModels(p.registration.Models), nil
+}
+
+func annotateCopilotModels(in []provider.Model) []provider.Model {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]provider.Model, len(in))
+	copy(out, in)
+	memberIDs := make([]string, 0, len(out))
+	for i := range out {
+		id := strings.TrimSpace(out[i].ID)
+		switch strings.ToLower(id) {
+		case "github-copilot-default":
+			out[i].Kind = "alias"
+			out[i].Aliases = appendStringUnique(out[i].Aliases, "copilot-default")
+			continue
+		case "copilot-default":
+			out[i].Kind = "alias"
+			continue
+		case "", "auto":
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(out[i].Kind), "alias") {
+			continue
+		}
+		memberIDs = appendStringUnique(memberIDs, id)
+	}
+	for i := range out {
+		if !strings.EqualFold(strings.TrimSpace(out[i].ID), "auto") {
+			continue
+		}
+		out[i].Kind = "group"
+		for _, memberID := range memberIDs {
+			out[i].GroupMembers = appendStringUnique(out[i].GroupMembers, memberID)
+		}
+	}
+	return out
+}
+
+func appendStringUnique(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func (p *Provider) Usage() (provider.UsageReport, error) {

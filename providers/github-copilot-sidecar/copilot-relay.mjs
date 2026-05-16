@@ -140,9 +140,8 @@ function parseListen(argv) {
   };
 }
 
-function configuredModels() {
-  const raw = process.env.PANGAEA_MODELS || process.env.COPILOT_RELAY_MODELS || process.env.PANGAEA_MODEL || "github-copilot-default";
-  return raw
+export function configuredModels(raw = process.env.PANGAEA_MODELS || process.env.COPILOT_RELAY_MODELS || process.env.PANGAEA_MODEL || "github-copilot-default") {
+  const parsed = raw
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean)
@@ -150,6 +149,34 @@ function configuredModels() {
       const [id] = item.split("=", 1);
       return { id: id.trim(), object: "model", created: 0, owned_by: "github-copilot" };
     });
+  const memberIDs = parsed
+    .map((model) => model.id)
+    .filter((id) => id && id !== "auto" && id !== "github-copilot-default" && id !== "copilot-default");
+  return parsed.map((model) => {
+    if (model.id === "github-copilot-default") {
+      return { ...model, label: "copilot-default", kind: "alias" };
+    }
+    if (model.id === "copilot-default") {
+      return { ...model, kind: "alias" };
+    }
+    if (model.id === "auto") {
+      return { ...model, kind: "group", groupMembers: memberIDs };
+    }
+    return model;
+  });
+}
+
+export function configuredModelStatus(raw) {
+  const status = {};
+  for (const model of configuredModels(raw)) {
+    status[model.id] = {
+      model: model.id,
+      ...(model.label ? { label: model.label } : {}),
+      ...(model.kind ? { kind: model.kind } : {}),
+      ...(model.groupMembers?.length ? { groupMembers: model.groupMembers } : {}),
+    };
+  }
+  return status;
 }
 
 function modelID(model) {
@@ -534,7 +561,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/v1/models/status") {
       const models = await getModelsCached().catch(() => []);
-      sendJSON(res, 200, modelStatusFromSDKModels(models));
+      const status = modelStatusFromSDKModels(models);
+      sendJSON(res, 200, Object.keys(status).length > 0 ? status : configuredModelStatus());
       return;
     }
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
