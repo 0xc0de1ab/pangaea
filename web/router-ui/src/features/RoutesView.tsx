@@ -8,6 +8,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
 import { capacityRows, providerAccountLabel } from "../lib/derive";
 import { copyText, cx, hasText, middleEllipsis, n } from "../lib/format";
+import { normalizeService } from "../lib/service-endpoints";
 import type { RouteDecision, RouteRequest, RouterUser, RoutingFilter, RoutingRule, RoutingRuleDryRunResponse, RoutingRuleStep } from "../lib/types";
 
 type DraftRule = Omit<RoutingRule, "id" | "created_at" | "updated_at"> & { id?: string };
@@ -497,10 +498,7 @@ const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
       ...value,
       filters: value.filters.map((filter, i) => i === index ? {
         ...filter,
-        criteria: {
-          ...(filter.criteria ?? {}),
-          [key]: uniqueStrings(values),
-        },
+        criteria: nextFilterCriteria(filter.criteria ?? {}, key, values, filterOptions),
       } : filter),
     }));
   }
@@ -1016,11 +1014,52 @@ function scopedOptionsForFilter(filter: RoutingFilter, fallbackOptions: Criteria
   }
   const options = new Map<string, CriteriaOption>();
   for (const service of selectedServices) {
-    for (const option of optionsByService[service] ?? []) {
+    for (const option of criteriaOptionsForService(optionsByService, service)) {
       addCriteriaOption(options, option);
     }
   }
   return sortCriteriaOptions([...options.values()]);
+}
+
+function nextFilterCriteria(criteria: NonNullable<RoutingFilter["criteria"]>, key: string, values: string[], filterOptions: RouteCriteriaOptions) {
+  const next = {
+    ...criteria,
+    [key]: uniqueStrings(values),
+  };
+  if (key !== "services") {
+    return next;
+  }
+  const services = uniqueStrings(values);
+  if (services.length === 0) {
+    return next;
+  }
+  next.models = pruneValuesToServiceOptions(next.models, services, filterOptions.modelsByService);
+  next.accounts = pruneValuesToServiceOptions(next.accounts, services, filterOptions.accountsByService);
+  next.node_ids = pruneValuesToServiceOptions(next.node_ids, services, filterOptions.nodesByService);
+  return next;
+}
+
+function pruneValuesToServiceOptions(values: string[] | undefined, services: string[], optionsByService: Record<string, CriteriaOption[]>) {
+  if (!values?.length) {
+    return values;
+  }
+  const allowed = new Set<string>();
+  for (const service of services) {
+    for (const option of criteriaOptionsForService(optionsByService, service)) {
+      allowed.add(option.value);
+    }
+  }
+  return values.filter((value) => allowed.has(value));
+}
+
+function criteriaOptionsForService(optionsByService: Record<string, CriteriaOption[]>, service: string) {
+  const merged = new Map<string, CriteriaOption>();
+  for (const key of serviceLookupKeys(service)) {
+    for (const option of optionsByService[key] ?? []) {
+      addCriteriaOption(merged, option);
+    }
+  }
+  return [...merged.values()];
 }
 
 function routeCriteriaOptions(providers: DashboardViewProps["data"]["providers"], publicModels: DashboardViewProps["data"]["models"]): RouteCriteriaOptions {
@@ -1125,16 +1164,22 @@ function routeCriteriaOptions(providers: DashboardViewProps["data"]["providers"]
 }
 
 function addServiceCriteriaOption(target: Map<string, Map<string, CriteriaOption>>, service: string | undefined, option: CriteriaOption) {
-  const key = service?.trim();
-  if (!key) {
+  const keys = serviceLookupKeys(service ?? "");
+  if (keys.length === 0) {
     return;
   }
-  let serviceModels = target.get(key);
-  if (!serviceModels) {
-    serviceModels = new Map<string, CriteriaOption>();
-    target.set(key, serviceModels);
+  for (const key of keys) {
+    let serviceModels = target.get(key);
+    if (!serviceModels) {
+      serviceModels = new Map<string, CriteriaOption>();
+      target.set(key, serviceModels);
+    }
+    addCriteriaOption(serviceModels, option);
   }
-  addCriteriaOption(serviceModels, option);
+}
+
+function serviceLookupKeys(service: string) {
+  return uniqueStrings([service.trim(), normalizeService(service)]);
 }
 
 function addCriteriaOption(target: Map<string, CriteriaOption>, option: CriteriaOption) {
