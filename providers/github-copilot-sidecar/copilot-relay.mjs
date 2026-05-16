@@ -72,6 +72,31 @@ function hasCopilotToken(config) {
   return false;
 }
 
+function activeCopilotAuth(config = readCopilotConfig(defaultCopilotConfigPath())) {
+  if (!config || typeof config !== "object") return null;
+  const user = config.lastLoggedInUser || (Array.isArray(config.loggedInUsers) ? config.loggedInUsers[0] : undefined) || {};
+  const host = typeof user.host === "string" && user.host.trim() ? user.host.trim() : "https://github.com";
+  const login = typeof user.login === "string" ? user.login.trim() : "";
+  const tokens = config.copilotTokens && typeof config.copilotTokens === "object" ? config.copilotTokens : config.copilotToken;
+  if (!tokens || typeof tokens !== "object") return null;
+  const exactKey = login ? `${host}:${login}` : "";
+  const token = (exactKey && typeof tokens[exactKey] === "string" ? tokens[exactKey] : undefined)
+    || Object.values(tokens).find((value) => typeof value === "string" && value.trim());
+  if (typeof token !== "string" || !token.trim()) return null;
+  return { host, login, token: token.trim() };
+}
+
+function githubAPIBase(host) {
+  const value = String(host || "").trim().replace(/\/+$/, "");
+  if (!value || value === "https://github.com" || value === "http://github.com" || value === "github.com") {
+    return "https://api.github.com";
+  }
+  if (value.startsWith("https://") || value.startsWith("http://")) {
+    return `${value}/api/v3`;
+  }
+  return `https://${value}/api/v3`;
+}
+
 function copyCopilotConfig(src, dst) {
   fs.mkdirSync(path.dirname(dst), { recursive: true, mode: 0o700 });
   fs.copyFileSync(src, dst);
@@ -374,6 +399,9 @@ async function createSession(client, model, stream) {
 const authStatusTTLMS = Number(process.env.COPILOT_RELAY_AUTH_STATUS_TTL_MS || "60000");
 let authStatusCache = { expiresAt: 0, value: null };
 let authStatusInflight = null;
+const quotaTTLMS = Number(process.env.COPILOT_RELAY_QUOTA_TTL_MS || "60000");
+let quotaCache = { expiresAt: 0, value: null };
+let quotaInflight = null;
 
 function publicAuthStatus(status) {
   const out = {
@@ -470,6 +498,150 @@ async function getAuthStatusCached() {
   return authStatusInflight;
 }
 
+export function quotaSnapshotsFromSDKQuota(result) {
+  const snapshots = result?.quotaSnapshots && typeof result.quotaSnapshots === "object" ? result.quotaSnapshots : {};
+  const out = {};
+  for (const [key, value] of Object.entries(snapshots)) {
+    if (!value || typeof value !== "object") continue;
+    out[key] = {
+      isUnlimitedEntitlement: Boolean(value.isUnlimitedEntitlement),
+      entitlementRequests: Number(value.entitlementRequests || 0),
+      usedRequests: Number(value.usedRequests || 0),
+      usageAllowedWithExhaustedQuota: Boolean(value.usageAllowedWithExhaustedQuota),
+      remainingPercentage: Number(value.remainingPercentage || 0),
+      overage: Number(value.overage || 0),
+      overageAllowedWithExhaustedQuota: Boolean(value.overageAllowedWithExhaustedQuota),
+      hasQuota: Boolean(value.hasQuota),
+      tokenBasedBilling: Boolean(value.tokenBasedBilling),
+      ...(typeof value.resetDate === "string" && value.resetDate.trim() ? { resetDate: value.resetDate.trim() } : {}),
+    };
+  }
+  return { quotaSnapshots: out };
+}
+
+function normalizedResetDate(value) {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const raw = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return `${raw}T00:00:00.000Z`;
+  }
+  const ts = new Date(raw);
+  return Number.isNaN(ts.getTime()) ? undefined : ts.toISOString();
+}
+
+function quotaSnapshotFromRaw(snapshot, fallbackResetDate) {
+  if (!snapshot || typeof snapshot !== "object") return undefined;
+  const entitlement = Number(snapshot.entitlement ?? 0);
+  const remaining = Number(snapshot.remaining ?? snapshot.quota_remaining ?? 0);
+  const remainingPercentage = Number(snapshot.percent_remaining ?? (entitlement > 0 ? (remaining / entitlement) * 100 : 0));
+  const isUnlimitedEntitlement = snapshot.unlimited === true || entitlement === -1;
+  const entitlementRequests = isUnlimitedEntitlement ? 0 : entitlement;
+  const usedRequests = isUnlimitedEntitlement ? 0 : Math.round(Math.max(0, entitlementRequests * (1 - remainingPercentage / 100)));
+  return {
+    isUnlimitedEntitlement,
+    entitlementRequests,
+    usedRequests,
+    usageAllowedWithExhaustedQuota: Boolean(snapshot.overage_permitted),
+    remainingPercentage,
+    overage: Number(snapshot.overage_count || 0),
+    overageAllowedWithExhaustedQuota: Boolean(snapshot.overage_permitted),
+    hasQuota: Boolean(snapshot.has_quota),
+    tokenBasedBilling: Boolean(snapshot.token_based_billing),
+    ...(normalizedResetDate(fallbackResetDate) ? { resetDate: normalizedResetDate(fallbackResetDate) } : {}),
+  };
+}
+
+function quotaSnapshotFromRemaining(limit, remaining, resetDate) {
+  const entitlementRequests = Number(limit || 0);
+  const remainingRequests = Number(remaining || 0);
+  if (!Number.isFinite(entitlementRequests) || entitlementRequests <= 0) return undefined;
+  const usedRequests = Math.max(0, entitlementRequests - remainingRequests);
+  return {
+    isUnlimitedEntitlement: false,
+    entitlementRequests,
+    usedRequests,
+    usageAllowedWithExhaustedQuota: false,
+    remainingPercentage: Math.max(0, Math.min(100, (remainingRequests / entitlementRequests) * 100)),
+    overage: 0,
+    overageAllowedWithExhaustedQuota: false,
+    hasQuota: true,
+    tokenBasedBilling: false,
+    ...(normalizedResetDate(resetDate) ? { resetDate: normalizedResetDate(resetDate) } : {}),
+  };
+}
+
+export function quotaSnapshotsFromCopilotUser(user) {
+  const out = {};
+  if (!user || typeof user !== "object") return { quotaSnapshots: out };
+  const resetDate = user.quota_reset_date_utc || user.quota_reset_date;
+  const snapshots = user.quota_snapshots && typeof user.quota_snapshots === "object" ? user.quota_snapshots : {};
+  for (const [key, value] of Object.entries(snapshots)) {
+    const mapped = quotaSnapshotFromRaw(value, resetDate);
+    if (mapped) out[key] = mapped;
+  }
+
+  // GitHub Copilot Free users currently omit quota_snapshots and instead
+  // expose monthly limits plus remaining counters. The official TUI uses this
+  // path for the footer quota display.
+  const monthly = user.monthly_quotas && typeof user.monthly_quotas === "object" ? user.monthly_quotas : {};
+  const remaining = user.limited_user_quotas && typeof user.limited_user_quotas === "object" ? user.limited_user_quotas : {};
+  const limitedReset = user.limited_user_reset_date || resetDate;
+  for (const key of Object.keys(monthly)) {
+    if (out[key]) continue;
+    const mapped = quotaSnapshotFromRemaining(monthly[key], remaining[key], limitedReset);
+    if (mapped) out[key] = mapped;
+  }
+  return { quotaSnapshots: out };
+}
+
+async function fetchCopilotUserQuota() {
+  const auth = activeCopilotAuth();
+  if (!auth) throw new Error("GitHub Copilot auth token unavailable");
+  const response = await fetch(`${githubAPIBase(auth.host)}/copilot_internal/user`, {
+    headers: {
+      Authorization: `Bearer ${auth.token}`,
+      Accept: "application/json",
+      "User-Agent": "pangaea-copilot-quota-probe",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub Copilot user probe failed: HTTP ${response.status}`);
+  }
+  return quotaSnapshotsFromCopilotUser(await response.json());
+}
+
+async function getQuotaCached() {
+  prepareCopilotAuth();
+  const now = Date.now();
+  if (quotaCache.value && quotaCache.expiresAt > now) {
+    return quotaCache.value;
+  }
+  if (quotaInflight) {
+    return quotaInflight;
+  }
+  quotaInflight = (async () => {
+    const direct = await fetchCopilotUserQuota().catch(() => null);
+    if (direct && Object.keys(direct.quotaSnapshots || {}).length > 0) {
+      quotaCache = { value: direct, expiresAt: Date.now() + Math.max(1000, quotaTTLMS) };
+      return direct;
+    }
+    const client = newCopilotClient();
+    try {
+      await client.start();
+      if (!client.rpc?.account?.getQuota) {
+        throw new Error("GitHub Copilot SDK does not expose account.getQuota");
+      }
+      const quota = quotaSnapshotsFromSDKQuota(await client.rpc.account.getQuota({}));
+      quotaCache = { value: quota, expiresAt: Date.now() + Math.max(1000, quotaTTLMS) };
+      return quota;
+    } finally {
+      quotaInflight = null;
+      await client.stop().catch(() => {});
+    }
+  })();
+  return quotaInflight;
+}
+
 async function handleChat(req, res) {
   const body = await readJSON(req);
   const model = body.model || process.env.PANGAEA_MODEL || "github-copilot-default";
@@ -551,6 +723,10 @@ const server = http.createServer(async (req, res) => {
           statusMessage: err instanceof Error ? err.message : String(err),
         });
       }
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/v1/quota") {
+      sendJSON(res, 200, await getQuotaCached());
       return;
     }
     if (req.method === "GET" && url.pathname === "/v1/models") {

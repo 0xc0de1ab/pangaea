@@ -600,6 +600,18 @@ func TestE2E_V2SidecarProviderShimAntigravityAndCopilot(t *testing.T) {
 			})
 			return
 		}
+		if r.URL.Path == "/v1/quota" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"quotaSnapshots": map[string]any{
+					"premium_interactions": map[string]any{
+						"entitlementRequests": 300,
+						"usedRequests":        12,
+						"remainingPercentage": 96,
+					},
+				},
+			})
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}

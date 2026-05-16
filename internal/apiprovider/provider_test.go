@@ -451,6 +451,76 @@ func TestProviderDiscoversMiniMAXTokenPlanAccountAndUsage(t *testing.T) {
 	}
 }
 
+func TestProviderDiscoversGitHubCopilotUsageFromQuota(t *testing.T) {
+	var sawQuota bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/quota" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		sawQuota = true
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"quotaSnapshots": map[string]any{
+				"chat": map[string]any{
+					"isUnlimitedEntitlement": true,
+					"entitlementRequests":    0,
+					"usedRequests":           0,
+					"remainingPercentage":    100,
+					"resetDate":              "2030-05-16T15:47:20.803Z",
+				},
+				"premium_interactions": map[string]any{
+					"isUnlimitedEntitlement": false,
+					"entitlementRequests":    300,
+					"usedRequests":           17,
+					"remainingPercentage":    94.2,
+					"resetDate":              "2030-06-01T00:00:00Z",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceGitHubCopilot
+	registration.Identity.ProviderType = "github-copilot-sidecar"
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	usage, err := client.Usage()
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if !sawQuota {
+		t.Fatalf("expected quota endpoint request")
+	}
+	if !strings.Contains(usage.Source, "github-copilot-quota") {
+		t.Fatalf("unexpected usage source: %q", usage.Source)
+	}
+	if usage.Subscription == nil || usage.Subscription.Name != "GitHub Copilot" {
+		t.Fatalf("unexpected subscription: %#v", usage.Subscription)
+	}
+	native, ok := usage.NativeSummary.(formats.UsageReport)
+	if !ok {
+		t.Fatalf("unexpected native summary type: %T", usage.NativeSummary)
+	}
+	if native.PlanTier != "github-copilot" || len(native.Windows) != 2 {
+		t.Fatalf("unexpected native usage summary: %#v", native)
+	}
+	if native.Windows[0].Label != "Chat" || native.Windows[0].RemainingPct != 100 {
+		t.Fatalf("unexpected chat window: %#v", native.Windows[0])
+	}
+	if native.Windows[1].Label != "Premium Interactions" || native.Windows[1].Used != 17 || native.Windows[1].Limit != 300 || native.Windows[1].RemainingPct != 94.2 {
+		t.Fatalf("unexpected premium window: %#v", native.Windows[1])
+	}
+	if native.Windows[0].ResetAt.IsZero() || native.Windows[1].ResetAt.IsZero() {
+		t.Fatalf("expected future reset timestamps: %#v", native.Windows)
+	}
+}
+
 func TestProviderIgnoresAntigravityMockAccountFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/account" {

@@ -10,6 +10,8 @@ import {
   ensureCopilotAuthFile,
   modelStatusFromSDKModels,
   openAIModelsFromSDKModels,
+  quotaSnapshotsFromCopilotUser,
+  quotaSnapshotsFromSDKQuota,
 } from "./copilot-relay.mjs";
 
 test("maps Copilot SDK models to OpenAI model list", () => {
@@ -78,6 +80,77 @@ test("maps configured Copilot fallback models to provider metadata", () => {
   assert.equal(status["github-copilot-default"].kind, "alias");
   assert.equal(status.auto.kind, "group");
   assert.deepEqual(status.auto.groupMembers, ["gpt-5.2"]);
+});
+
+test("maps Copilot SDK quota snapshots to public usage payload", () => {
+  const quota = quotaSnapshotsFromSDKQuota({
+    quotaSnapshots: {
+      chat: {
+        isUnlimitedEntitlement: true,
+        entitlementRequests: 0,
+        usedRequests: 0,
+        remainingPercentage: 100,
+        resetDate: "2026-05-16T15:47:20.803Z",
+      },
+      premium_interactions: {
+        isUnlimitedEntitlement: false,
+        entitlementRequests: 300,
+        usedRequests: 17,
+        remainingPercentage: 94.2,
+        overage: 1,
+        tokenBasedBilling: false,
+      },
+    },
+  });
+
+  assert.deepEqual(Object.keys(quota.quotaSnapshots), ["chat", "premium_interactions"]);
+  assert.equal(quota.quotaSnapshots.chat.isUnlimitedEntitlement, true);
+  assert.equal(quota.quotaSnapshots.premium_interactions.entitlementRequests, 300);
+  assert.equal(quota.quotaSnapshots.premium_interactions.usedRequests, 17);
+  assert.equal(quota.quotaSnapshots.premium_interactions.remainingPercentage, 94.2);
+});
+
+test("maps Copilot user quota snapshots from copilot_internal user response", () => {
+  const quota = quotaSnapshotsFromCopilotUser({
+    quota_reset_date_utc: "2030-06-01T00:00:00.000Z",
+    quota_snapshots: {
+      premium_interactions: {
+        entitlement: 300,
+        remaining: 282,
+        percent_remaining: 94,
+        overage_count: 0,
+        overage_permitted: false,
+        unlimited: false,
+      },
+    },
+  });
+
+  assert.equal(quota.quotaSnapshots.premium_interactions.entitlementRequests, 300);
+  assert.equal(quota.quotaSnapshots.premium_interactions.usedRequests, 18);
+  assert.equal(quota.quotaSnapshots.premium_interactions.remainingPercentage, 94);
+  assert.equal(quota.quotaSnapshots.premium_interactions.resetDate, "2030-06-01T00:00:00.000Z");
+});
+
+test("maps Copilot Free limited monthly quota fallback", () => {
+  const quota = quotaSnapshotsFromCopilotUser({
+    access_type_sku: "free_limited_copilot",
+    limited_user_reset_date: "2030-06-12",
+    limited_user_quotas: {
+      chat: 360,
+      completions: 4000,
+    },
+    monthly_quotas: {
+      chat: 500,
+      completions: 4000,
+    },
+  });
+
+  assert.equal(quota.quotaSnapshots.chat.entitlementRequests, 500);
+  assert.equal(quota.quotaSnapshots.chat.usedRequests, 140);
+  assert.equal(quota.quotaSnapshots.chat.remainingPercentage, 72);
+  assert.equal(quota.quotaSnapshots.chat.resetDate, "2030-06-12T00:00:00.000Z");
+  assert.equal(quota.quotaSnapshots.completions.entitlementRequests, 4000);
+  assert.equal(quota.quotaSnapshots.completions.usedRequests, 0);
 });
 
 test("restores Copilot SDK config when token fields disappear", () => {

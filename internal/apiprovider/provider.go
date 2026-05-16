@@ -250,6 +250,23 @@ type miniMAXModelRemain struct {
 	WeeklyRemainsTime         int64  `json:"weekly_remains_time"`
 }
 
+type githubCopilotQuotaResponse struct {
+	QuotaSnapshots map[string]githubCopilotQuotaSnapshot `json:"quotaSnapshots"`
+}
+
+type githubCopilotQuotaSnapshot struct {
+	IsUnlimitedEntitlement           bool    `json:"isUnlimitedEntitlement"`
+	EntitlementRequests              int64   `json:"entitlementRequests"`
+	UsedRequests                     int64   `json:"usedRequests"`
+	UsageAllowedWithExhaustedQuota   bool    `json:"usageAllowedWithExhaustedQuota"`
+	RemainingPercentage              float64 `json:"remainingPercentage"`
+	Overage                          int64   `json:"overage"`
+	OverageAllowedWithExhaustedQuota bool    `json:"overageAllowedWithExhaustedQuota"`
+	HasQuota                         bool    `json:"hasQuota"`
+	TokenBasedBilling                bool    `json:"tokenBasedBilling"`
+	ResetDate                        string  `json:"resetDate"`
+}
+
 type copilotAuthStatusResponse struct {
 	IsAuthenticated  bool                       `json:"isAuthenticated"`
 	AuthType         string                     `json:"authType"`
@@ -532,6 +549,9 @@ func (p *Provider) Usage() (provider.UsageReport, error) {
 	}
 	if p.registration.Identity.Service == provider.ServiceAntigravity {
 		p.refreshAntigravityUsage()
+	}
+	if p.registration.Identity.Service == provider.ServiceGitHubCopilot {
+		p.refreshGitHubCopilotUsage()
 	}
 	p.usageMu.Lock()
 	defer p.usageMu.Unlock()
@@ -839,6 +859,128 @@ func antigravityUsageProbeNotes(accountErr error, statusErr error) []string {
 		notes = append(notes, "quota unavailable")
 	}
 	return notes
+}
+
+func (p *Provider) refreshGitHubCopilotUsage() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var quota githubCopilotQuotaResponse
+	err := p.doGETJSON(ctx, "/v1/quota", &quota)
+	report := githubCopilotUsageReport(quota, err, time.Now().UTC())
+
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	p.usage.ObservedAt = report.ObservedAt
+	source := p.usage.Source
+	if report.Source != "github-copilot-usage-error" {
+		source = removeProviderUsageSource(source, "github-copilot-usage-error")
+	}
+	p.usage.Source = joinProviderUsageSources(source, report.Source)
+	p.usage.PlanTier = firstNonEmpty(report.PlanTier, p.usage.PlanTier)
+	p.usage.Subscription = mergeProviderSubscription(p.usage.Subscription, report.Subscription)
+	p.usage.NativeSummary = report.NativeSummary
+}
+
+func githubCopilotUsageReport(quota githubCopilotQuotaResponse, quotaErr error, observedAt time.Time) provider.UsageReport {
+	native := formats.UsageReport{
+		PlanTier: "github-copilot",
+		Unit:     "requests",
+	}
+	source := "github-copilot-quota"
+	native.Windows = githubCopilotUsageWindows(quota.QuotaSnapshots, observedAt)
+	if len(native.Windows) == 0 {
+		source = "github-copilot-usage-error"
+		if quotaErr != nil {
+			native.Notes = []string{"quota_probe_error: " + quotaErr.Error()}
+		} else {
+			native.Notes = []string{"quota unavailable"}
+		}
+	}
+	subscription := &provider.SubscriptionInfo{
+		Tier:   "github-copilot",
+		Name:   "GitHub Copilot",
+		Source: source,
+	}
+	return provider.UsageReport{
+		ObservedAt:    observedAt.UTC(),
+		Source:        source,
+		PlanTier:      "github-copilot",
+		Subscription:  subscription,
+		NativeSummary: native,
+	}
+}
+
+func githubCopilotUsageWindows(snapshots map[string]githubCopilotQuotaSnapshot, observedAt time.Time) []formats.UsageWindow {
+	if len(snapshots) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(snapshots))
+	for key := range snapshots {
+		keys = append(keys, key)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		return githubCopilotQuotaOrder(keys[i]) < githubCopilotQuotaOrder(keys[j])
+	})
+	windows := make([]formats.UsageWindow, 0, len(keys))
+	for _, key := range keys {
+		snapshot := snapshots[key]
+		label := githubCopilotQuotaLabel(key)
+		if label == "" {
+			continue
+		}
+		window := formats.UsageWindow{
+			Label:        label,
+			Used:         snapshot.UsedRequests,
+			Limit:        snapshot.EntitlementRequests,
+			RemainingPct: quotaRemainingPct(snapshot.RemainingPercentage),
+			Unit:         "requests",
+		}
+		if resetAt := parseCopilotQuotaReset(snapshot.ResetDate); !resetAt.IsZero() && resetAt.After(observedAt.Add(time.Minute)) {
+			window.ResetAt = resetAt
+		}
+		windows = append(windows, window)
+	}
+	return windows
+}
+
+func githubCopilotQuotaOrder(key string) string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "chat":
+		return "00-" + key
+	case "completions":
+		return "01-" + key
+	case "premium_interactions":
+		return "02-" + key
+	default:
+		return "99-" + key
+	}
+}
+
+func githubCopilotQuotaLabel(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	parts := strings.Fields(strings.ReplaceAll(key, "_", " "))
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + strings.ToLower(part[1:])
+	}
+	return strings.Join(parts, " ")
+}
+
+func parseCopilotQuotaReset(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return ts.UTC()
+	}
+	return time.Time{}
 }
 
 func miniMAXTokenPlanUsageReport(plan miniMAXTokenPlanResponse, observedAt time.Time) provider.UsageReport {
