@@ -79,3 +79,27 @@ func TestTranscoders(t *testing.T) {
 		})
 	}
 }
+
+func TestParseToolCallsFromMarkdownJSON(t *testing.T) {
+	response := "```json\n{\n  \"tool\": \"get_weather\",\n  \"parameters\": {\n    \"city\": \"Seoul\",\n    \"unit\": \"celsius\"\n  }\n}\n```"
+	calls := ParseToolCalls(response)
+	if len(calls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", calls)
+	}
+	call := calls[0]
+	if call.Function.Name != "get_weather" || call.Function.Arguments != `{"city":"Seoul","unit":"celsius"}` {
+		t.Fatalf("unexpected tool call: %#v", call)
+	}
+}
+
+func TestParseToolCallsFromToolCallsArray(t *testing.T) {
+	response := `{"tool_calls":[{"function":{"name":"lookup","arguments":{"id":"42"}}}]}`
+	calls := ParseToolCalls(response)
+	if len(calls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", calls)
+	}
+	call := calls[0]
+	if call.Function.Name != "lookup" || call.Function.Arguments != `{"id":"42"}` {
+		t.Fatalf("unexpected tool call: %#v", call)
+	}
+}

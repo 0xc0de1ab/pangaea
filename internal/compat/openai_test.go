@@ -93,6 +93,48 @@ func TestOpenAIResponsesRequestToCanonicalStringInput(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesRequestToCanonicalTools(t *testing.T) {
+	request, err := OpenAIResponsesRequestToCanonical(OpenAIResponsesRequest{
+		Model: "gpt-5.2",
+		Input: json.RawMessage(`"weather"`),
+		Tools: []OpenAIResponsesTool{{
+			Type:        "function",
+			Name:        "get_weather",
+			Description: "Get current weather",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("expected conversion to succeed: %v", err)
+	}
+	if len(request.Tools) != 1 {
+		t.Fatalf("expected one tool, got %#v", request.Tools)
+	}
+	if got := request.Tools[0].Name; got != "get_weather" {
+		t.Fatalf("expected responses tool name to convert, got %q", got)
+	}
+}
+
+func TestOpenAIResponsesRequestToCanonicalChatStyleTools(t *testing.T) {
+	request, err := OpenAIResponsesRequestToCanonical(OpenAIResponsesRequest{
+		Model: "gpt-5.2",
+		Input: json.RawMessage(`"weather"`),
+		Tools: []OpenAIResponsesTool{{
+			Type: "function",
+			Function: OpenAIChatToolDeclaration{
+				Name:       "get_weather",
+				Parameters: map[string]any{"type": "object"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("expected conversion to succeed: %v", err)
+	}
+	if len(request.Tools) != 1 || request.Tools[0].Name != "get_weather" {
+		t.Fatalf("expected chat-style tool to convert, got %#v", request.Tools)
+	}
+}
+
 func TestOpenAIResponsesRequestToCanonicalMessageInput(t *testing.T) {
 	request, err := OpenAIResponsesRequestToCanonical(OpenAIResponsesRequest{
 		Model: "gpt-5.2",

@@ -37,6 +37,69 @@ func TestOpenAIStreamingUsesInvokeStreamChunks(t *testing.T) {
 	}
 }
 
+func TestOpenAIUnaryConvertsAntigravityToolJSONToToolCalls(t *testing.T) {
+	server := NewServer(&testEngineBridge{response: "```json\n{\"tool\":\"get_weather\",\"parameters\":{\"city\":\"Seoul\",\"unit\":\"celsius\"}}\n```"}, APIKeys{OpenAI: "openai-key"}, "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"antigravity-default",
+		"messages":[{"role":"user","content":"weather"}],
+		"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]
+	}`))
+	req.Header.Set("authorization", "Bearer openai-key")
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out models.ChatCompletionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Choices[0].FinishReason != "tool_calls" || len(out.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected tool call response, got %#v", out)
+	}
+	if out.Choices[0].Message.Content != "" {
+		t.Fatalf("tool call content should be empty, got %#v", out.Choices[0].Message.Content)
+	}
+	call := out.Choices[0].Message.ToolCalls[0]
+	if call.Function.Name != "get_weather" || call.Function.Arguments != `{"city":"Seoul","unit":"celsius"}` {
+		t.Fatalf("unexpected tool call: %#v", call)
+	}
+}
+
+func TestOpenAIStreamingConvertsAntigravityToolJSONToToolCalls(t *testing.T) {
+	server := NewServer(&testEngineBridge{stream: []string{"```json\n{\"tool\":\"get_weather\",", "\"parameters\":{\"city\":\"Seoul\"}}\n```"}}, APIKeys{OpenAI: "openai-key"}, "test")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"antigravity-default",
+		"messages":[{"role":"user","content":"weather"}],
+		"stream":true,
+		"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]
+	}`))
+	req.Header.Set("authorization", "Bearer openai-key")
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, expected := range []string{
+		`"tool_calls"`,
+		`"name":"get_weather"`,
+		`"arguments":"{\"city\":\"Seoul\"}"`,
+		`"finish_reason":"tool_calls"`,
+		"data: [DONE]",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in stream body: %s", expected, body)
+		}
+	}
+}
+
 func TestGeminiStreamingEndpointUsesSSE(t *testing.T) {
 	server := NewServer(&testEngineBridge{stream: []string{"hello ", "from gemini stream"}}, APIKeys{Gemini: "gemini-key"}, "test")
 	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/antigravity-default:streamGenerateContent?alt=sse", strings.NewReader(`{

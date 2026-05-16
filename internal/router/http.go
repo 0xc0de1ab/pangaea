@@ -1839,8 +1839,21 @@ type openAIChatStreamChoice struct {
 }
 
 type openAIChatStreamDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string                     `json:"role,omitempty"`
+	Content   string                     `json:"content,omitempty"`
+	ToolCalls []openAIChatStreamToolCall `json:"tool_calls,omitempty"`
+}
+
+type openAIChatStreamToolCall struct {
+	Index    int                  `json:"index"`
+	ID       string               `json:"id,omitempty"`
+	Type     string               `json:"type,omitempty"`
+	Function openAIStreamFunction `json:"function"`
+}
+
+type openAIStreamFunction struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 const (
@@ -1913,6 +1926,8 @@ func (w *openAIChatEventStreamWriter) write(c *gin.Context, event compat.Event) 
 		})
 	case compat.EventContentDelta:
 		w.writeContentDelta(c, event.ContentDelta.Text)
+	case compat.EventToolCallDelta:
+		w.writeToolCallDelta(c, *event.ToolCallDelta)
 	case compat.EventUsageDelta:
 		w.flushContent(c)
 		w.usage.InputTokens += event.UsageDelta.InputTokens
@@ -1952,6 +1967,34 @@ func (w *openAIChatEventStreamWriter) flushContent(c *gin.Context) {
 		Choices: []openAIChatStreamChoice{{
 			Index: 0,
 			Delta: openAIChatStreamDelta{Content: text},
+		}},
+	})
+}
+
+func (w *openAIChatEventStreamWriter) writeToolCallDelta(c *gin.Context, tool compat.ToolCall) {
+	w.flushContent(c)
+	callType := string(tool.Type)
+	if callType == "" && (tool.ID != "" || tool.Name != "" || tool.Arguments != "") {
+		callType = string(compat.ToolCallFunction)
+	}
+	writeSSEData(c, openAIChatStreamChunk{
+		ID:      w.id,
+		Object:  "chat.completion.chunk",
+		Created: w.created,
+		Model:   w.model,
+		Choices: []openAIChatStreamChoice{{
+			Index: 0,
+			Delta: openAIChatStreamDelta{
+				ToolCalls: []openAIChatStreamToolCall{{
+					Index: tool.Index,
+					ID:    tool.ID,
+					Type:  callType,
+					Function: openAIStreamFunction{
+						Name:      tool.Name,
+						Arguments: tool.Arguments,
+					},
+				}},
+			},
 		}},
 	})
 }
@@ -2066,17 +2109,30 @@ func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
 }
 
 type openAIResponsesEventStreamWriter struct {
-	id               string
-	model            string
-	itemID           string
-	created          int64
-	wrote            bool
-	done             bool
-	outputStarted    bool
-	usage            compat.Usage
-	pendingContent   strings.Builder
-	outputText       strings.Builder
-	lastContentFlush time.Time
+	id                 string
+	model              string
+	itemID             string
+	created            int64
+	wrote              bool
+	done               bool
+	outputStarted      bool
+	messageOutputIndex int
+	usage              compat.Usage
+	pendingContent     strings.Builder
+	outputText         strings.Builder
+	toolItems          map[int]*openAIResponsesToolState
+	toolOrder          []int
+	lastContentFlush   time.Time
+}
+
+type openAIResponsesToolState struct {
+	index       int
+	outputIndex int
+	itemID      string
+	callID      string
+	name        string
+	arguments   strings.Builder
+	added       bool
 }
 
 func writeOpenAIResponsesEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
@@ -2129,12 +2185,13 @@ func (w *openAIResponsesEventStreamWriter) write(c *gin.Context, event compat.Ev
 		return fmt.Errorf("validate upstream stream event %s: %w", event.Type, err)
 	}
 	w.applyEventMeta(event)
-	w.ensure(c)
 	switch event.Type {
 	case compat.EventMessageStart:
 		return nil
 	case compat.EventContentDelta:
 		w.writeContentDelta(c, event.ContentDelta.Text)
+	case compat.EventToolCallDelta:
+		w.writeToolCallDelta(c, *event.ToolCallDelta)
 	case compat.EventUsageDelta:
 		w.flushContent(c)
 		w.usage.InputTokens += event.UsageDelta.InputTokens
@@ -2173,7 +2230,7 @@ func (w *openAIResponsesEventStreamWriter) flushContent(c *gin.Context) {
 		"type":          "response.output_text.delta",
 		"response_id":   w.id,
 		"item_id":       w.itemID,
-		"output_index":  0,
+		"output_index":  w.messageOutputIndex,
 		"content_index": 0,
 		"delta":         text,
 	})
@@ -2183,10 +2240,11 @@ func (w *openAIResponsesEventStreamWriter) ensureOutputStarted(c *gin.Context) {
 	if w.outputStarted {
 		return
 	}
+	w.messageOutputIndex = len(w.toolOrder)
 	writeSSEEvent(c, "response.output_item.added", gin.H{
 		"type":         "response.output_item.added",
 		"response_id":  w.id,
-		"output_index": 0,
+		"output_index": w.messageOutputIndex,
 		"item": compat.OpenAIResponsesOutputItem{
 			ID:      w.itemID,
 			Type:    "message",
@@ -2199,7 +2257,7 @@ func (w *openAIResponsesEventStreamWriter) ensureOutputStarted(c *gin.Context) {
 		"type":          "response.content_part.added",
 		"response_id":   w.id,
 		"item_id":       w.itemID,
-		"output_index":  0,
+		"output_index":  w.messageOutputIndex,
 		"content_index": 0,
 		"part": compat.OpenAIResponsesOutputContent{
 			Type: "output_text",
@@ -2207,6 +2265,71 @@ func (w *openAIResponsesEventStreamWriter) ensureOutputStarted(c *gin.Context) {
 		},
 	})
 	w.outputStarted = true
+}
+
+func (w *openAIResponsesEventStreamWriter) writeToolCallDelta(c *gin.Context, tool compat.ToolCall) {
+	w.flushContent(c)
+	state := w.ensureToolItem(c, tool)
+	if tool.Arguments == "" {
+		return
+	}
+	state.arguments.WriteString(tool.Arguments)
+	writeSSEEvent(c, "response.function_call_arguments.delta", gin.H{
+		"type":         "response.function_call_arguments.delta",
+		"response_id":  w.id,
+		"item_id":      state.itemID,
+		"output_index": state.outputIndex,
+		"delta":        tool.Arguments,
+	})
+}
+
+func (w *openAIResponsesEventStreamWriter) ensureToolItem(c *gin.Context, tool compat.ToolCall) *openAIResponsesToolState {
+	if w.toolItems == nil {
+		w.toolItems = map[int]*openAIResponsesToolState{}
+	}
+	index := tool.Index
+	state, ok := w.toolItems[index]
+	if !ok {
+		state = &openAIResponsesToolState{
+			index:       index,
+			outputIndex: len(w.toolOrder),
+		}
+		if w.outputStarted {
+			state.outputIndex++
+		}
+		w.toolItems[index] = state
+		w.toolOrder = append(w.toolOrder, index)
+	}
+	if tool.ID != "" {
+		state.callID = tool.ID
+	}
+	if tool.Name != "" {
+		state.name = tool.Name
+	}
+	if state.callID == "" {
+		state.callID = fmt.Sprintf("call_%s_%d", w.id, index)
+	}
+	if state.itemID == "" {
+		state.itemID = state.callID
+	}
+	if !state.added {
+		w.ensure(c)
+		writeSSEEvent(c, "response.output_item.added", gin.H{
+			"type":         "response.output_item.added",
+			"response_id":  w.id,
+			"output_index": state.outputIndex,
+			"item": compat.OpenAIResponsesOutputItem{
+				ID:        state.itemID,
+				Type:      "function_call",
+				Status:    "in_progress",
+				CallID:    state.callID,
+				Name:      state.name,
+				Arguments: "",
+			},
+		})
+		state.added = true
+	}
+	return state
 }
 
 func (w *openAIResponsesEventStreamWriter) applyEventMeta(event compat.Event) {
@@ -2233,7 +2356,7 @@ func (w *openAIResponsesEventStreamWriter) writeDone(c *gin.Context) {
 			"type":          "response.output_text.done",
 			"response_id":   w.id,
 			"item_id":       w.itemID,
-			"output_index":  0,
+			"output_index":  w.messageOutputIndex,
 			"content_index": 0,
 			"text":          outputText,
 		})
@@ -2241,7 +2364,7 @@ func (w *openAIResponsesEventStreamWriter) writeDone(c *gin.Context) {
 			"type":          "response.content_part.done",
 			"response_id":   w.id,
 			"item_id":       w.itemID,
-			"output_index":  0,
+			"output_index":  w.messageOutputIndex,
 			"content_index": 0,
 			"part": compat.OpenAIResponsesOutputContent{
 				Type: "output_text",
@@ -2251,7 +2374,7 @@ func (w *openAIResponsesEventStreamWriter) writeDone(c *gin.Context) {
 		writeSSEEvent(c, "response.output_item.done", gin.H{
 			"type":         "response.output_item.done",
 			"response_id":  w.id,
-			"output_index": 0,
+			"output_index": w.messageOutputIndex,
 			"item": compat.OpenAIResponsesOutputItem{
 				ID:     w.itemID,
 				Type:   "message",
@@ -2264,6 +2387,7 @@ func (w *openAIResponsesEventStreamWriter) writeDone(c *gin.Context) {
 			},
 		})
 	}
+	w.writeToolItemsDone(c)
 	writeSSEEvent(c, "response.completed", gin.H{
 		"type":     "response.completed",
 		"response": w.completedResponse(outputText),
@@ -2271,6 +2395,36 @@ func (w *openAIResponsesEventStreamWriter) writeDone(c *gin.Context) {
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	flushSSE(c)
 	w.done = true
+}
+
+func (w *openAIResponsesEventStreamWriter) writeToolItemsDone(c *gin.Context) {
+	for _, index := range w.toolOrder {
+		state := w.toolItems[index]
+		if state == nil || !state.added {
+			continue
+		}
+		arguments := state.arguments.String()
+		writeSSEEvent(c, "response.function_call_arguments.done", gin.H{
+			"type":         "response.function_call_arguments.done",
+			"response_id":  w.id,
+			"item_id":      state.itemID,
+			"output_index": state.outputIndex,
+			"arguments":    arguments,
+		})
+		writeSSEEvent(c, "response.output_item.done", gin.H{
+			"type":         "response.output_item.done",
+			"response_id":  w.id,
+			"output_index": state.outputIndex,
+			"item": compat.OpenAIResponsesOutputItem{
+				ID:        state.itemID,
+				Type:      "function_call",
+				Status:    "completed",
+				CallID:    state.callID,
+				Name:      state.name,
+				Arguments: arguments,
+			},
+		})
+	}
 }
 
 func (w *openAIResponsesEventStreamWriter) completedResponse(outputText string) compat.OpenAIResponsesResponse {
@@ -2294,6 +2448,20 @@ func (w *openAIResponsesEventStreamWriter) completedResponse(outputText string) 
 			}},
 		})
 		response.OutputText = outputText
+	}
+	for _, index := range w.toolOrder {
+		state := w.toolItems[index]
+		if state == nil {
+			continue
+		}
+		response.Output = append(response.Output, compat.OpenAIResponsesOutputItem{
+			ID:        state.itemID,
+			Type:      "function_call",
+			Status:    "completed",
+			CallID:    state.callID,
+			Name:      state.name,
+			Arguments: state.arguments.String(),
+		})
 	}
 	if w.usage != (compat.Usage{}) {
 		total := w.usage.TotalTokens

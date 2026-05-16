@@ -52,6 +52,27 @@ func (s *Server) setupRoutes() {
 	v1beta.POST("/models/:model", s.handleGeminiGenerateContent)
 }
 
+func appendToolUseInstructions(prompt string, tools []models.ToolDefinition) string {
+	if len(tools) == 0 {
+		return prompt
+	}
+	toolBytes, _ := json.Marshal(tools)
+	instructions := strings.TrimSpace(fmt.Sprintf(`[System]
+The caller provided tool definitions for this request.
+Available tools JSON:
+%s
+
+If you decide to call a tool, return only one or more tool calls in this exact form:
+<tool_call>{"name":"tool_name","arguments":{"key":"value"}}</tool_call>
+Do not wrap tool calls in Markdown fences and do not add explanatory text around them.
+If no tool is needed, answer normally.
+`, string(toolBytes)))
+	if strings.TrimSpace(prompt) == "" {
+		return instructions + "\n"
+	}
+	return prompt + "\n\n" + instructions + "\n"
+}
+
 func (s *Server) handleChatCompletions(c *gin.Context) {
 	var req models.ChatCompletionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -61,6 +82,7 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 
 	prompt, media := TranscodeMessages(req.Messages)
 	tools := TranscodeOpenAITools(req.Tools)
+	prompt = appendToolUseInstructions(prompt, tools)
 
 	if req.Stream {
 		s.handleStreamingChat(c, req.Model, prompt, tools, media)
@@ -78,6 +100,7 @@ func (s *Server) handleAnthropicMessages(c *gin.Context) {
 
 	prompt, media := TranscodeAnthropicMessages(req)
 	tools := TranscodeAnthropicTools(req.Tools)
+	prompt = appendToolUseInstructions(prompt, tools)
 
 	if req.Stream {
 		s.handleStreamingAnthropic(c, req.Model, prompt, tools, media)
@@ -129,7 +152,14 @@ func (s *Server) handleUnaryChat(c *gin.Context, model string, prompt string, to
 		return
 	}
 
-	toolCalls := ParseToolCalls(resp.Content)
+	var toolCalls []models.ToolCall
+	if len(tools) > 0 {
+		toolCalls = ParseToolCalls(resp.Content)
+	}
+	content := resp.Content
+	if len(toolCalls) > 0 {
+		content = ""
+	}
 
 	oaResp := models.ChatCompletionResponse{
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
@@ -141,7 +171,7 @@ func (s *Server) handleUnaryChat(c *gin.Context, model string, prompt string, to
 				Index: 0,
 				Message: models.ChatMessage{
 					Role:      "assistant",
-					Content:   resp.Content,
+					Content:   content,
 					ToolCalls: toolCalls,
 				},
 				FinishReason: "stop",
@@ -180,6 +210,7 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 	id := fmt.Sprintf("chatcmpl-%d", time.Now().Unix())
 	created := time.Now().Unix()
 	var lastUsage *models.UsageReport
+	var buffered strings.Builder
 	writeChunk := func(content string, finishReason *string, usage *models.UsageReport) {
 		streamResp := models.ChatCompletionStreamResponse{
 			ID:      id,
@@ -201,6 +232,41 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(bytes))
 		c.Writer.Flush()
 	}
+	writeToolCalls := func(toolCalls []models.ToolCall, finishReason string, usage *models.UsageReport) {
+		streamResp := models.ChatCompletionStreamResponse{
+			ID:      id,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   model,
+			Choices: []models.ChatCompletionStreamChoice{
+				{
+					Index: 0,
+					Delta: models.ChatMessage{
+						ToolCalls: toolCalls,
+					},
+				},
+			},
+		}
+		bytes, _ := json.Marshal(streamResp)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", string(bytes))
+		final := models.ChatCompletionStreamResponse{
+			ID:      id,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   model,
+			Choices: []models.ChatCompletionStreamChoice{
+				{
+					Index:        0,
+					Delta:        models.ChatMessage{},
+					FinishReason: &finishReason,
+				},
+			},
+			Usage: usage,
+		}
+		bytes, _ = json.Marshal(final)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", string(bytes))
+		c.Writer.Flush()
+	}
 
 	handleChunk := func(chunk *interfaces.StreamChunk) bool {
 		if chunk == nil {
@@ -216,6 +282,10 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 		if chunk.Content == "" {
 			return true
 		}
+		if len(tools) > 0 {
+			buffered.WriteString(chunk.Content)
+			return true
+		}
 		writeChunk(chunk.Content, nil, nil)
 		return true
 	}
@@ -226,6 +296,19 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 	for chunk := range chunks {
 		if !handleChunk(chunk) {
 			return
+		}
+	}
+	if len(tools) > 0 {
+		content := buffered.String()
+		if toolCalls := ParseToolCalls(content); len(toolCalls) > 0 {
+			stop := "tool_calls"
+			writeToolCalls(toolCalls, stop, lastUsage)
+			fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+			c.Writer.Flush()
+			return
+		}
+		if content != "" {
+			writeChunk(content, nil, nil)
 		}
 	}
 	stop := "stop"

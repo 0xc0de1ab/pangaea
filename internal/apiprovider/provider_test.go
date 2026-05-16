@@ -828,6 +828,53 @@ func TestProviderInvokeStreamOpenAICompatibleUpstreamSSE(t *testing.T) {
 	}
 }
 
+func TestProviderInvokeStreamOpenAICompatibleUpstreamSSEToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-tool\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-tool\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_weather\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-tool\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-tool\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"Seoul\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	events := []compat.Event{}
+	request := testOpenAIRequest("weather")
+	request.Stream = true
+	request.Tools = []compat.ToolDefinition{{
+		Name:       "get_weather",
+		Parameters: map[string]any{"type": "object"},
+	}}
+	response, err := client.InvokeStream(context.Background(), mustRegistration(t, client), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if len(response.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", response.Message.ToolCalls)
+	}
+	call := response.Message.ToolCalls[0]
+	if call.ID != "call_weather" || call.Name != "get_weather" || call.Arguments != `{"city":"Seoul"}` {
+		t.Fatalf("unexpected tool call: %#v", call)
+	}
+	var toolDeltas int
+	for _, event := range events {
+		if event.Type == compat.EventToolCallDelta {
+			toolDeltas++
+		}
+	}
+	if toolDeltas != 3 || response.StopReason != "tool_calls" {
+		t.Fatalf("unexpected events=%#v response=%#v", events, response)
+	}
+}
+
 func TestProviderInvokeStreamAnthropicCompatibleUpstreamSSE(t *testing.T) {
 	var sawStream bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

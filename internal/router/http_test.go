@@ -772,6 +772,81 @@ func TestHTTPOpenAIResponsesStreamsSSEWithSimulator(t *testing.T) {
 	}
 }
 
+func TestHTTPOpenAIChatCompletionsStreamsToolCalls(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.SetInvoker(toolCallStreamInvoker{})
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{
+		"model":"gpt-5-codex",
+		"stream":true,
+		"messages":[{"role":"user","content":"weather"}],
+		"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_http_tool_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, expected := range []string{
+		`"tool_calls"`,
+		`"id":"call_weather"`,
+		`"name":"get_weather"`,
+		`"arguments":"{\"city\":\"`,
+		`Seoul\"}"`,
+		`"finish_reason":"tool_calls"`,
+		"data: [DONE]",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in SSE body: %s", expected, body)
+		}
+	}
+}
+
+func TestHTTPOpenAIResponsesStreamsToolCalls(t *testing.T) {
+	engine, _ := testEngine(t)
+	engine.SetInvoker(toolCallStreamInvoker{})
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{
+		"model":"gpt-5-codex",
+		"stream":true,
+		"input":"weather",
+		"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]
+	}`)))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-request-id", "req_http_response_tool_stream_1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, expected := range []string{
+		"event: response.output_item.added",
+		`"id":"tool-call-response"`,
+		`"response_id":"tool-call-response"`,
+		`"type":"function_call"`,
+		`"name":"get_weather"`,
+		"event: response.function_call_arguments.delta",
+		`"delta":"{\"city\":\"`,
+		`Seoul\"}"`,
+		"event: response.function_call_arguments.done",
+		"event: response.output_item.done",
+		"event: response.completed",
+		"data: [DONE]",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in SSE body: %s", expected, body)
+		}
+	}
+}
+
 func TestHTTPOpenAIChatCompletionsCoalescesTinyStreamDeltas(t *testing.T) {
 	engine, _ := testEngine(t)
 	engine.SetInvoker(tinyDeltaStreamInvoker{})
@@ -1742,6 +1817,49 @@ func (tinyDeltaStreamInvoker) InvokeStream(_ context.Context, _ provider.Registr
 	}
 	if err := emit(compat.Event{Type: compat.EventDone, Model: request.Model, DoneReason: "stop"}); err != nil {
 		return compat.Response{}, err
+	}
+	return response, nil
+}
+
+type toolCallStreamInvoker struct{}
+
+func (toolCallStreamInvoker) Invoke(_ context.Context, _ provider.Registration, request compat.Request) (compat.Response, error) {
+	return compat.Response{
+		ID:      "tool-call-response",
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role: compat.MessageRoleAssistant,
+			ToolCalls: []compat.ToolCall{{
+				Index:     0,
+				ID:        "call_weather",
+				Type:      compat.ToolCallFunction,
+				Name:      "get_weather",
+				Arguments: `{"city":"Seoul"}`,
+			}},
+		},
+		StopReason: "tool_calls",
+		Usage:      compat.Usage{InputTokens: 3, OutputTokens: 5, TotalTokens: 8},
+	}, nil
+}
+
+func (toolCallStreamInvoker) InvokeStream(_ context.Context, _ provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	response, err := (toolCallStreamInvoker{}).Invoke(context.Background(), provider.Registration{}, request)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	events := []compat.Event{
+		{ResponseID: response.ID, Type: compat.EventMessageStart, Model: request.Model, Message: &compat.Message{Role: compat.MessageRoleAssistant}},
+		{ResponseID: response.ID, Type: compat.EventToolCallDelta, Model: request.Model, ToolCallDelta: &compat.ToolCall{Index: 0, ID: "call_weather", Type: compat.ToolCallFunction, Name: "get_weather"}},
+		{ResponseID: response.ID, Type: compat.EventToolCallDelta, Model: request.Model, ToolCallDelta: &compat.ToolCall{Index: 0, Type: compat.ToolCallFunction, Arguments: `{"city":"`}},
+		{ResponseID: response.ID, Type: compat.EventToolCallDelta, Model: request.Model, ToolCallDelta: &compat.ToolCall{Index: 0, Type: compat.ToolCallFunction, Arguments: `Seoul"}`}},
+		{ResponseID: response.ID, Type: compat.EventUsageDelta, Model: request.Model, UsageDelta: &response.Usage},
+		{ResponseID: response.ID, Type: compat.EventDone, Model: request.Model, DoneReason: "tool_calls"},
+	}
+	for _, event := range events {
+		if err := emit(event); err != nil {
+			return compat.Response{}, err
+		}
 	}
 	return response, nil
 }

@@ -10,12 +10,20 @@ type OpenAIResponsesRequest struct {
 	Model           string                    `json:"model"`
 	Input           json.RawMessage           `json:"input"`
 	Instructions    string                    `json:"instructions,omitempty"`
-	Tools           []OpenAIChatTool          `json:"tools,omitempty"`
+	Tools           []OpenAIResponsesTool     `json:"tools,omitempty"`
 	Temperature     *float64                  `json:"temperature,omitempty"`
 	ReasoningEffort string                    `json:"reasoning_effort,omitempty"`
 	Reasoning       *OpenAIResponsesReasoning `json:"reasoning,omitempty"`
 	MaxOutputTokens int                       `json:"max_output_tokens,omitempty"`
 	Stream          bool                      `json:"stream,omitempty"`
+}
+
+type OpenAIResponsesTool struct {
+	Type        string                    `json:"type,omitempty"`
+	Name        string                    `json:"name,omitempty"`
+	Description string                    `json:"description,omitempty"`
+	Parameters  map[string]any            `json:"parameters,omitempty"`
+	Function    OpenAIChatToolDeclaration `json:"function,omitempty"`
 }
 
 type OpenAIResponsesReasoning struct {
@@ -79,7 +87,7 @@ func OpenAIResponsesRequestToCanonical(in OpenAIResponsesRequest) (Request, erro
 	out := Request{
 		Dialect:             APIDialectOpenAI,
 		Model:               in.Model,
-		Tools:               openAIToolsToCanonical(in.Tools),
+		Tools:               openAIResponsesToolsToCanonical(in.Tools),
 		Temperature:         in.Temperature,
 		ReasoningEffort:     reasoningEffort,
 		MaxOutputTokens:     in.MaxOutputTokens,
@@ -101,6 +109,32 @@ func OpenAIResponsesRequestToCanonical(in OpenAIResponsesRequest) (Request, erro
 		return Request{}, err
 	}
 	return out, nil
+}
+
+func openAIResponsesToolsToCanonical(in []OpenAIResponsesTool) []ToolDefinition {
+	out := make([]ToolDefinition, 0, len(in))
+	for _, tool := range in {
+		if tool.Type != "" && tool.Type != "function" {
+			continue
+		}
+		name := tool.Name
+		description := tool.Description
+		parameters := tool.Parameters
+		if strings.TrimSpace(name) == "" {
+			name = tool.Function.Name
+			description = tool.Function.Description
+			parameters = tool.Function.Parameters
+		}
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		out = append(out, ToolDefinition{
+			Name:        name,
+			Description: description,
+			Parameters:  parameters,
+		})
+	}
+	return out
 }
 
 func OpenAIResponsesResponseFromCanonical(in Response) (OpenAIResponsesResponse, error) {

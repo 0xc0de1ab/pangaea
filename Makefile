@@ -7,6 +7,7 @@ VERSION ?= $(shell ./scripts/version.sh "$(VERSION_BASE)")
 # --- cross-build matrix ---------------------------------------------------
 GO_PKG         ?= ./cmd/pangaeactl
 APP_NAME       ?= pangaeactl
+BUILD_APPS     ?= pangaeactl ask-go
 PROVIDER_CODEX_IMAGE ?= pangaea/provider-codex:dev
 PROVIDER_GEMINI_IMAGE ?= pangaea/provider-gemini:dev
 PROVIDER_CLAUDE_IMAGE ?= pangaea/provider-claude:dev
@@ -43,33 +44,36 @@ ROUTER_UI_FILES := $(shell if [ -d "$(ROUTER_UI_DIR)" ]; then find "$(ROUTER_UI_
 
 artifact_os  = $(if $(filter darwin,$(1)),macos,$(1))
 artifact_dir = $(OUTPUT_DIR)/$(call artifact_os,$(1))-$(2)/$(3)
-artifact     = $(call artifact_dir,$(1),$(2),$(3))/$(APP_NAME)$(if $(filter windows,$(1)),.exe,)
+artifact     = $(call artifact_dir,$(2),$(3),$(4))/$(1)$(if $(filter windows,$(2)),.exe,)
+pkg_for      = $(if $(filter ask-go,$(1)),./examples/ask-go,$(if $(filter pangaeactl,$(1)),./cmd/pangaeactl,$(GO_PKG)))
 
 OS_ARCH_PAIRS      := $(foreach os,$(OS_LIST),$(foreach arch,$(ARCH_LIST),$(os)-$(arch)))
 OS_VARIANT_PAIRS   := $(foreach os,$(OS_LIST),$(foreach var,$(BUILD_VARIANTS),$(os)-$(var)))
 ARCH_VARIANT_PAIRS := $(foreach arch,$(ARCH_LIST),$(foreach var,$(BUILD_VARIANTS),$(arch)-$(var)))
 FULL_KEYS          := $(foreach os,$(OS_LIST),$(foreach arch,$(ARCH_LIST),$(foreach var,$(BUILD_VARIANTS),$(os)-$(arch)-$(var))))
-FULL_TARGETS       := $(foreach k,$(FULL_KEYS),$(call artifact,$(word 1,$(subst -, ,$(k))),$(word 2,$(subst -, ,$(k))),$(word 3,$(subst -, ,$(k)))))
+FULL_TARGETS       := $(foreach app,$(BUILD_APPS),$(foreach k,$(FULL_KEYS),$(call artifact,$(app),$(word 1,$(subst -, ,$(k))),$(word 2,$(subst -, ,$(k))),$(word 3,$(subst -, ,$(k))))))
 ALL_DIRS           := $(sort $(foreach k,$(FULL_KEYS),$(call artifact_dir,$(word 1,$(subst -, ,$(k))),$(word 2,$(subst -, ,$(k))),$(word 3,$(subst -, ,$(k))))))
 
 # Per-output build recipe. release -> CGO_ENABLED=0 + static + stripped;
 # debug  -> keeps symbols, leaves CGO_ENABLED to environment.
+go_deps_for = $(GO_FILES) $(if $(filter pangaeactl,$(1)),$(ROUTER_UI_STAMP))
+
 define BUILD_RULE
-$(call artifact,$(1),$(2),$(3)): $(GO_FILES) $(ROUTER_UI_STAMP) | $(call artifact_dir,$(1),$(2),$(3))
-	@echo "build $(1)/$(2)/$(3) -> $$@"
-	@GOOS=$(1) GOARCH=$(2) $(if $(filter release,$(3)),CGO_ENABLED=0 ) \
-		$(GO) build $(if $(filter release,$(3)),$(GO_RELEASE_FLAGS),$(GO_DEBUG_FLAGS)) \
-		-o $$@ $(GO_PKG)
+$(call artifact,$(1),$(2),$(3),$(4)): $(call go_deps_for,$(1)) | $(call artifact_dir,$(2),$(3),$(4))
+	@echo "build $(1) $(2)/$(3)/$(4) -> $$@"
+	@GOOS=$(2) GOARCH=$(3) $(if $(filter release,$(4)),CGO_ENABLED=0 ) \
+		$(GO) build $(if $(filter release,$(4)),$(GO_RELEASE_FLAGS),$(GO_DEBUG_FLAGS)) \
+		-o $$@ $(call pkg_for,$(1))
 endef
 
 # Selector helpers: every partial selector expands to the matching full
 # artifact list. token{1,2,3} pulls dash-separated parts out of $@.
-all_for_os         = $(foreach a,$(ARCH_LIST),$(foreach v,$(BUILD_VARIANTS),$(call artifact,$(1),$(a),$(v))))
-all_for_arch       = $(foreach o,$(OS_LIST),$(foreach v,$(BUILD_VARIANTS),$(call artifact,$(o),$(1),$(v))))
-all_for_variant    = $(foreach o,$(OS_LIST),$(foreach a,$(ARCH_LIST),$(call artifact,$(o),$(a),$(1))))
-all_for_os_arch    = $(foreach v,$(BUILD_VARIANTS),$(call artifact,$(1),$(2),$(v)))
-all_for_os_variant = $(foreach a,$(ARCH_LIST),$(call artifact,$(1),$(a),$(2)))
-all_for_arch_variant = $(foreach o,$(OS_LIST),$(call artifact,$(o),$(1),$(2)))
+all_for_os         = $(foreach app,$(BUILD_APPS),$(foreach a,$(ARCH_LIST),$(foreach v,$(BUILD_VARIANTS),$(call artifact,$(app),$(1),$(a),$(v)))))
+all_for_arch       = $(foreach app,$(BUILD_APPS),$(foreach o,$(OS_LIST),$(foreach v,$(BUILD_VARIANTS),$(call artifact,$(app),$(o),$(1),$(v)))))
+all_for_variant    = $(foreach app,$(BUILD_APPS),$(foreach o,$(OS_LIST),$(foreach a,$(ARCH_LIST),$(call artifact,$(app),$(o),$(a),$(1)))))
+all_for_os_arch    = $(foreach app,$(BUILD_APPS),$(foreach v,$(BUILD_VARIANTS),$(call artifact,$(app),$(1),$(2),$(v))))
+all_for_os_variant = $(foreach app,$(BUILD_APPS),$(foreach a,$(ARCH_LIST),$(call artifact,$(app),$(1),$(a),$(2))))
+all_for_arch_variant = $(foreach app,$(BUILD_APPS),$(foreach o,$(OS_LIST),$(call artifact,$(app),$(o),$(1),$(2))))
 token1 = $(word 1,$(subst -, ,$(1)))
 token2 = $(word 2,$(subst -, ,$(1)))
 token3 = $(word 3,$(subst -, ,$(1)))
@@ -84,7 +88,7 @@ all: $(FULL_TARGETS)
 
 clean:
 	rm -rf $(OUTPUT_DIR)
-	rm -f $(APP_NAME) coverage.out coverage.html
+	rm -f $(APP_NAME) $(BUILD_APPS) coverage.out coverage.html
 	rm -rf dist/
 
 $(ALL_DIRS):
@@ -109,9 +113,9 @@ $(ARCH_VARIANT_PAIRS):
 	@$(MAKE) $(call all_for_arch_variant,$(call token1,$@),$(call token2,$@))
 
 $(FULL_KEYS):
-	@$(MAKE) $(call artifact,$(call token1,$@),$(call token2,$@),$(call token3,$@))
+	@$(MAKE) $(foreach app,$(BUILD_APPS),$(call artifact,$(app),$(call token1,$@),$(call token2,$@),$(call token3,$@)))
 
-$(foreach os,$(OS_LIST),$(foreach arch,$(ARCH_LIST),$(foreach var,$(BUILD_VARIANTS),$(eval $(call BUILD_RULE,$(os),$(arch),$(var))))))
+$(foreach app,$(BUILD_APPS),$(foreach os,$(OS_LIST),$(foreach arch,$(ARCH_LIST),$(foreach var,$(BUILD_VARIANTS),$(eval $(call BUILD_RULE,$(app),$(os),$(arch),$(var)))))))
 
 # --- housekeeping ---------------------------------------------------------
 $(ROUTER_UI_STAMP): $(ROUTER_UI_FILES)
@@ -205,8 +209,9 @@ help:
 	@echo "  make <os>-<variant>          build all ARCH for that pair"
 	@echo "  make <arch>-<variant>        build all OS for that pair"
 	@echo "  make <os>-<arch>-<variant>   build a single artifact"
-	@echo "  make clean                   remove $(OUTPUT_DIR)/, dist/, $(APP_NAME)"
-	@echo "Artifacts: $(OUTPUT_DIR)/<os-label>-<arch>/<variant>/$(APP_NAME)[.exe]"
+	@echo "  make clean                   remove $(OUTPUT_DIR)/, dist/, generated app binaries"
+	@echo "Artifacts: $(OUTPUT_DIR)/<os-label>-<arch>/<variant>/<app>[.exe]"
+	@echo "Apps: $(BUILD_APPS)"
 	@echo "  note: darwin builds are written under $(OUTPUT_DIR)/macos-<arch>/..."
 	@echo "Version: $(VERSION)"
 	@echo

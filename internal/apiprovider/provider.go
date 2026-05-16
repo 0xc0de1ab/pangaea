@@ -1304,8 +1304,21 @@ type openAIChatStreamChoice struct {
 }
 
 type openAIChatStreamDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string                     `json:"role,omitempty"`
+	Content   string                     `json:"content,omitempty"`
+	ToolCalls []openAIChatStreamToolCall `json:"tool_calls,omitempty"`
+}
+
+type openAIChatStreamToolCall struct {
+	Index    int                  `json:"index"`
+	ID       string               `json:"id,omitempty"`
+	Type     string               `json:"type,omitempty"`
+	Function openAIStreamFunction `json:"function"`
+}
+
+type openAIStreamFunction struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type openAIChatStreamErrorBody struct {
@@ -1405,6 +1418,22 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 				return false, err
 			}
 		}
+		for _, piece := range choice.Delta.ToolCalls {
+			idx := piece.Index
+			if idx < 0 {
+				idx = 0
+			}
+			tc := ensureOpenAIToolCallSlot(&response.Message.ToolCalls, idx)
+			mergeOpenAIStreamToolPiece(tc, piece)
+			delta := openAIStreamToolPieceToCanonical(piece)
+			event := compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventToolCallDelta, ToolCallDelta: &delta}
+			if err := event.Validate(); err != nil {
+				continue
+			}
+			if err := emit(event); err != nil {
+				return false, err
+			}
+		}
 		if choice.FinishReason != "" {
 			response.StopReason = choice.FinishReason
 		}
@@ -1431,6 +1460,53 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 		}
 	}
 	return false, nil
+}
+
+func ensureOpenAIToolCallSlot(calls *[]compat.ToolCall, idx int) *compat.ToolCall {
+	for len(*calls) <= idx {
+		*calls = append(*calls, compat.ToolCall{
+			Index: len(*calls),
+			Type:  compat.ToolCallFunction,
+		})
+	}
+	tc := &(*calls)[idx]
+	tc.Index = idx
+	if tc.Type == "" {
+		tc.Type = compat.ToolCallFunction
+	}
+	return tc
+}
+
+func mergeOpenAIStreamToolPiece(tc *compat.ToolCall, piece openAIChatStreamToolCall) {
+	if piece.ID != "" {
+		tc.ID = piece.ID
+	}
+	if piece.Type != "" {
+		tc.Type = compat.ToolCallType(piece.Type)
+	}
+	if tc.Type == "" {
+		tc.Type = compat.ToolCallFunction
+	}
+	if piece.Function.Name != "" {
+		tc.Name = piece.Function.Name
+	}
+	if piece.Function.Arguments != "" {
+		tc.Arguments += piece.Function.Arguments
+	}
+}
+
+func openAIStreamToolPieceToCanonical(piece openAIChatStreamToolCall) compat.ToolCall {
+	toolType := compat.ToolCallType(piece.Type)
+	if toolType == "" && (piece.ID != "" || piece.Function.Name != "" || piece.Function.Arguments != "") {
+		toolType = compat.ToolCallFunction
+	}
+	return compat.ToolCall{
+		Index:     piece.Index,
+		ID:        piece.ID,
+		Type:      toolType,
+		Name:      piece.Function.Name,
+		Arguments: piece.Function.Arguments,
+	}
 }
 
 type anthropicStreamDeltaPayload struct {

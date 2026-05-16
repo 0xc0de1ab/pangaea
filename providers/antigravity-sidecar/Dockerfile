@@ -1,5 +1,8 @@
 ARG GO_IMAGE=golang:1.25-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG ANTIGRAVITY_BUNDLE_IMAGE=pangaea/provider-antigravity-sidecar:bundle
+
+FROM ${ANTIGRAVITY_BUNDLE_IMAGE} AS antigravity-bundle
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
@@ -67,7 +70,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && mkdir -p /var/lib/pangaea/home/antigravity /var/lib/antigravity/state/User/globalStorage /run/pangaea /work /opt/antigravity-server \
   && chown -R 1000:1000 /var/lib/pangaea /var/lib/antigravity /run/pangaea /work /home/pangaea /opt/antigravity-server
 
-COPY providers/antigravity-runtime/server-bundle/ /opt/antigravity-server/
+COPY --from=antigravity-bundle /opt/antigravity-server/ /opt/antigravity-server/
 COPY --from=build /out/pangaeactl /usr/local/bin/pangaeactl
 COPY --from=proxy-build /out/antigravity-compat-proxy /usr/local/bin/antigravity-compat-proxy
 COPY providers/antigravity-sidecar/provider-entrypoint.sh /usr/local/bin/provider-entrypoint

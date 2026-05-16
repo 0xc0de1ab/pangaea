@@ -200,29 +200,149 @@ func ParseToolCalls(responseText string) []models.ToolCall {
 	matches := re.FindAllStringSubmatch(parseText, -1)
 	for i, match := range matches {
 		if len(match) > 1 {
-			var tc models.ToolCall
-			var raw map[string]interface{}
-			if err := json.Unmarshal([]byte(match[1]), &raw); err == nil {
-				tc.Index = i
-				tc.ID = fmt.Sprintf("call_%d_%d", time.Now().Unix(), i)
-				tc.Type = "function"
-				name := raw["name"]
-				if name == nil { name = raw["tool_name"] }
-				tc.Function.Name = fmt.Sprintf("%v", name)
-				args := raw["arguments"]
-				if args == nil { args = raw["parameters"] }
-				switch v := args.(type) {
-				case string:
-					tc.Function.Arguments = v
-				default:
-					argsBytes, _ := json.Marshal(v)
-					tc.Function.Arguments = string(argsBytes)
-				}
+			if tc, ok := parseToolCallObject(match[1], i); ok {
 				toolCalls = append(toolCalls, tc)
 			}
 		}
 	}
+	if len(toolCalls) > 0 {
+		return toolCalls
+	}
+	for _, payload := range candidateToolJSONPayloads(parseText) {
+		if calls := parseToolCallPayload(payload); len(calls) > 0 {
+			return calls
+		}
+	}
 	return toolCalls
+}
+
+func candidateToolJSONPayloads(text string) []string {
+	var out []string
+	fenceRe := regexp.MustCompile("(?is)```(?:json)?\\s*([\\[{][\\s\\S]*?[\\]}])\\s*```")
+	for _, match := range fenceRe.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			out = append(out, strings.TrimSpace(match[1]))
+		}
+	}
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func parseToolCallPayload(payload string) []models.ToolCall {
+	var raw any
+	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
+		return nil
+	}
+	return parseToolCallValue(raw)
+}
+
+func parseToolCallValue(value any) []models.ToolCall {
+	switch v := value.(type) {
+	case []any:
+		var out []models.ToolCall
+		for _, item := range v {
+			out = append(out, parseToolCallValue(item)...)
+		}
+		reindexToolCalls(out)
+		return out
+	case map[string]any:
+		if nested, ok := v["tool_calls"]; ok {
+			out := parseToolCallValue(nested)
+			reindexToolCalls(out)
+			return out
+		}
+		if nested, ok := v["tools"]; ok {
+			out := parseToolCallValue(nested)
+			reindexToolCalls(out)
+			return out
+		}
+		if tc, ok := toolCallFromMap(v, 0); ok {
+			return []models.ToolCall{tc}
+		}
+	}
+	return nil
+}
+
+func parseToolCallObject(payload string, index int) (models.ToolCall, bool) {
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
+		return models.ToolCall{}, false
+	}
+	return toolCallFromMap(raw, index)
+}
+
+func toolCallFromMap(raw map[string]any, index int) (models.ToolCall, bool) {
+	if function, ok := raw["function"].(map[string]any); ok {
+		merged := map[string]any{}
+		for k, v := range raw {
+			merged[k] = v
+		}
+		for k, v := range function {
+			merged[k] = v
+		}
+		raw = merged
+	}
+	name := firstStringValue(raw, "name", "tool_name", "tool", "function_name")
+	if name == "" {
+		return models.ToolCall{}, false
+	}
+	args := firstAnyValue(raw, "arguments", "parameters", "input", "args")
+	arguments := "{}"
+	switch v := args.(type) {
+	case nil:
+	case string:
+		if strings.TrimSpace(v) != "" {
+			arguments = v
+		}
+	default:
+		argsBytes, _ := json.Marshal(v)
+		arguments = string(argsBytes)
+	}
+	id := firstStringValue(raw, "id", "call_id", "tool_call_id")
+	if id == "" {
+		id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), index)
+	}
+	return models.ToolCall{
+		Index: index,
+		ID:    id,
+		Type:  "function",
+		Function: models.ToolFunction{
+			Name:      name,
+			Arguments: arguments,
+		},
+	}, true
+}
+
+func firstStringValue(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := raw[key]; ok {
+			if text := strings.TrimSpace(fmt.Sprintf("%v", value)); text != "" && text != "<nil>" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func firstAnyValue(raw map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := raw[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func reindexToolCalls(calls []models.ToolCall) {
+	for i := range calls {
+		calls[i].Index = i
+		if calls[i].ID == "" {
+			calls[i].ID = fmt.Sprintf("call_%d_%d", time.Now().Unix(), i)
+		}
+	}
 }
 
 func TranscodeOpenAITools(tools []models.Tool) []models.ToolDefinition {

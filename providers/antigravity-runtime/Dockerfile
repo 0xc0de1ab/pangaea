@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1.7
 ARG GO_IMAGE=golang:1.25-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG ANTIGRAVITY_BUNDLE_IMAGE=pangaea/provider-antigravity-sidecar:bundle
+
+FROM ${ANTIGRAVITY_BUNDLE_IMAGE} AS antigravity-bundle
 
 FROM ${GO_IMAGE} AS proxy-build
 WORKDIR /src
@@ -51,7 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdg-utils \
   && rm -rf /var/lib/apt/lists/*
 
-COPY providers/antigravity-runtime/server-bundle/ /opt/antigravity-server/
+COPY --from=antigravity-bundle /opt/antigravity-server/ /opt/antigravity-server/
 COPY --from=proxy-build /out/antigravity-compat-proxy /usr/local/bin/antigravity-compat-proxy
 COPY providers/antigravity-runtime/runtime-entrypoint.sh /usr/local/bin/antigravity-runtime-entrypoint
 
