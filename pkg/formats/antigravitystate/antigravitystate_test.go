@@ -26,6 +26,10 @@ func makeTimestampMessage(seconds int64) []byte {
 	return out
 }
 
+func testAccessToken(seed string) string {
+	return "ya29." + strings.Repeat(seed, 64)
+}
+
 func makeStateBytes(t *testing.T, email string, exp time.Time, token string) []byte {
 	t.Helper()
 	userJSON, err := json.Marshal(map[string]any{"email": email})
@@ -40,7 +44,7 @@ func makeStateBytes(t *testing.T, email string, exp time.Time, token string) []b
 
 func TestParseHappyPath(t *testing.T) {
 	exp := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	raw := makeStateBytes(t, "user@example.com", exp, "ya29.X")
+	raw := makeStateBytes(t, "user@example.com", exp, testAccessToken("A"))
 	snap, err := (Format{}).Parse(raw)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -61,7 +65,7 @@ func TestParseHappyPath(t *testing.T) {
 }
 
 func TestValidateTreatsStaleExpiryAsRouteable(t *testing.T) {
-	raw := makeStateBytes(t, "user@example.com", time.Now().Add(time.Minute), "ya29.Y")
+	raw := makeStateBytes(t, "user@example.com", time.Now().Add(time.Minute), testAccessToken("B"))
 	snap, err := (Format{}).Parse(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -80,14 +84,14 @@ func TestParseRejectsUnrelatedBytes(t *testing.T) {
 }
 
 func TestRedactDoesNotLeakToken(t *testing.T) {
-	raw := makeStateBytes(t, "user@example.com", time.Now().Add(time.Hour), "ya29.Z")
+	raw := makeStateBytes(t, "user@example.com", time.Now().Add(time.Hour), testAccessToken("C"))
 	snap, err := (Format{}).Parse(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sum := (Format{}).Redact(snap)
 	encoded, _ := json.Marshal(sum)
-	if strings.Contains(string(encoded), "ya29.Z") {
+	if strings.Contains(string(encoded), testAccessToken("C")) {
 		t.Fatalf("redacted summary leaks token: %s", encoded)
 	}
 	if sum.TokenTail4 == "" {

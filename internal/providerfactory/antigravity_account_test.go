@@ -3,6 +3,7 @@ package providerfactory
 import (
 	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,7 +66,7 @@ func TestAntigravityAccountFromStateScansMultipleUserStatusOccurrences(t *testin
 
 func TestAntigravityOAuthExpiryFromState(t *testing.T) {
 	want := time.Date(2026, 4, 29, 0, 0, 23, 0, time.UTC)
-	tokenInfo := append([]byte("ya29.X"), []byte{0x12, 0x06}...)
+	tokenInfo := append([]byte("ya29."+strings.Repeat("A", 64)), []byte{0x12, 0x06}...)
 	tokenInfo = append(tokenInfo, []byte("Bearer")...)
 	tokenInfo = append(tokenInfo, []byte{0x22, 0x06, 0x08}...)
 	tokenInfo = append(tokenInfo, testAntigravityVarint(uint64(want.Unix()))...)

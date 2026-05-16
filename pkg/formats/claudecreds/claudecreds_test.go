@@ -18,8 +18,8 @@ import (
 )
 
 // goldenJSON is a representative valid credentials file (specs §9.1 schema).
-// Token strings carry the canonical sk-ant-* prefixes so the test exercises
-// the same shape downstream redactors will see in production.
+// Token strings are synthetic placeholders so repository scans do not confuse
+// fixtures for live credentials.
 const goldenJSON = `{
   "claudeAiOauth": {
     "accessToken": "test-claude-WXYZ",
