@@ -1,17 +1,23 @@
-import { useMemo } from "react";
-import { AlertTriangle, Clock3, RadioTower, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Clock3, RadioTower, Settings2, ShieldAlert } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { MetricTile } from "../components/MetricTile";
 import { Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { capacityRows, deriveIncidents, failedTraceRate, providerAccountLabel, quotaPressure, quotaPressureLabel } from "../lib/derive";
-import { age, compactNumber, fmtTime, hasText, middleEllipsis, n, scopeLabel } from "../lib/format";
+import { age, compactNumber, cx, fmtTime, hasText, middleEllipsis, n, scopeLabel } from "../lib/format";
 import type { Incident, ProviderRegistration, QuotaSnapshot, RequestTrace } from "../lib/types";
 
+const overviewCapacityPageSizeOptions = [5, 10, 25, 50];
+
 export function Overview({ data, queries, search }: DashboardViewProps) {
+  const [capacityPageIndex, setCapacityPageIndex] = useState(0);
+  const [capacityPageSize, setCapacityPageSize] = useState(10);
+  const [capacitySettingsOpen, setCapacitySettingsOpen] = useState(false);
   const incidents = useMemo(() => deriveIncidents(data).filter((incident) => hasText(incident, search)), [data, search]);
   const capacity = useMemo(() => capacityRows(data.providers).filter((row) => hasText(row, search)), [data.providers, search]);
+  const capacityPageCount = Math.max(1, Math.ceil(capacity.length / capacityPageSize));
   const providerCount = data.providers.length;
   const ready = data.providers.filter((provider) => provider.health?.status === "ready").length;
   const degraded = data.providers.filter((provider) => provider.health?.status === "degraded" || provider.health?.status === "draining").length;
@@ -25,6 +31,14 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
     .filter((provider) => hasText(provider, search));
   const quotaRisk = data.quotas.filter((quota) => quotaPressure(quota) >= 0.7).filter((quota) => hasText(quota, search));
   const recentFailures = data.traces.filter((trace) => trace.status !== "completed").filter((trace) => hasText(trace, search)).slice(0, 12);
+
+  useEffect(() => {
+    setCapacityPageIndex(0);
+  }, [search, capacityPageSize]);
+
+  useEffect(() => {
+    setCapacityPageIndex((value) => Math.min(value, capacityPageCount - 1));
+  }, [capacityPageCount]);
 
   const incidentColumns: DashboardColumn<Incident>[] = [
     {
@@ -115,12 +129,33 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
             </div>
           </Section>
 
-          <Section title="Capacity Matrix" subtitle="Grouped by service and reported model" error={queries.providers.error}>
-            <DataTable rows={capacity} columns={capacityColumns} empty="No provider capacity is available" compact />
-          </Section>
-
-          <Section title="Recent Route Failures" subtitle="Rejected, failed, and upstream-error traces" error={queries.traces.error}>
-            <DataTable rows={recentFailures} columns={failureColumns} empty="No recent route failures" compact />
+          <Section
+            title="Capacity Matrix"
+            subtitle={`${n(capacity.length)} rows grouped by service and reported model`}
+            error={queries.providers.error}
+            actions={
+              <OverviewCapacityPageSizeMenu
+                pageSize={capacityPageSize}
+                open={capacitySettingsOpen}
+                onOpenChange={setCapacitySettingsOpen}
+                onPageSizeChange={setCapacityPageSize}
+              />
+            }
+          >
+            <DataTable
+              rows={capacity}
+              columns={capacityColumns}
+              empty="No provider capacity is available"
+              compact
+              pagination={{ pageIndex: capacityPageIndex, pageSize: capacityPageSize }}
+            />
+            <OverviewCapacityPagination
+              pageIndex={capacityPageIndex}
+              pageCount={capacityPageCount}
+              pageSize={capacityPageSize}
+              total={capacity.length}
+              onPageChange={setCapacityPageIndex}
+            />
           </Section>
         </div>
 
@@ -137,6 +172,83 @@ export function Overview({ data, queries, search }: DashboardViewProps) {
             <DataTable rows={quotaRisk} columns={quotaColumns} empty="No quota pressure" compact />
           </Section>
         </div>
+      </div>
+
+      <Section title="Recent Route Failures" subtitle="Rejected, failed, and upstream-error traces" error={queries.traces.error}>
+        <DataTable rows={recentFailures} columns={failureColumns} empty="No recent route failures" compact />
+      </Section>
+    </div>
+  );
+}
+
+function OverviewCapacityPageSizeMenu({
+  pageSize,
+  open,
+  onOpenChange,
+  onPageSizeChange,
+}: {
+  pageSize: number;
+  open: boolean;
+  onOpenChange: (value: boolean) => void;
+  onPageSizeChange: (value: number) => void;
+}) {
+  return (
+    <div className="table-settings">
+      <button className="icon-button" type="button" aria-label="Capacity matrix settings" aria-expanded={open} onClick={() => onOpenChange(!open)}>
+        <Settings2 aria-hidden="true" size={16} />
+      </button>
+      {open ? (
+        <div className="table-settings-popover" role="dialog" aria-label="Capacity matrix page size">
+          <strong>Rows per page</strong>
+          <div className="page-size-options">
+            {overviewCapacityPageSizeOptions.map((option) => (
+              <button
+                key={option}
+                className={cx("page-size-option", option === pageSize && "selected")}
+                type="button"
+                onClick={() => {
+                  onPageSizeChange(option);
+                  onOpenChange(false);
+                }}
+              >
+                {n(option)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OverviewCapacityPagination({
+  pageIndex,
+  pageCount,
+  pageSize,
+  total,
+  onPageChange,
+}: {
+  pageIndex: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (value: number) => void;
+}) {
+  const start = total === 0 ? 0 : pageIndex * pageSize + 1;
+  const end = Math.min(total, (pageIndex + 1) * pageSize);
+  return (
+    <div className="table-pagination">
+      <span>
+        {n(start)}-{n(end)} of {n(total)} rows
+      </span>
+      <div className="pagination-actions">
+        <span>Page {n(pageIndex + 1)} / {n(pageCount)}</span>
+        <button className="icon-button small" type="button" aria-label="Previous capacity matrix page" disabled={pageIndex === 0} onClick={() => onPageChange(Math.max(0, pageIndex - 1))}>
+          <ChevronLeft aria-hidden="true" size={15} />
+        </button>
+        <button className="icon-button small" type="button" aria-label="Next capacity matrix page" disabled={pageIndex >= pageCount - 1} onClick={() => onPageChange(Math.min(pageCount - 1, pageIndex + 1))}>
+          <ChevronRight aria-hidden="true" size={15} />
+        </button>
       </div>
     </div>
   );

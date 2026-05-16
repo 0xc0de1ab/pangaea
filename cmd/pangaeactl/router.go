@@ -89,6 +89,7 @@ func newRouterServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Notifier.Telegram.Endpoint, "telegram-endpoint", "", "Telegram Bot API endpoint override")
 	cmd.Flags().BoolVar(&opts.Notifier.Telegram.DisableNotification, "telegram-disable-notification", false, "send Telegram notifications silently")
 	cmd.Flags().DurationVar(&opts.Notifier.Interval, "notifier-interval", time.Hour, "router notifier periodic interval")
+	cmd.Flags().DurationVar(&opts.Notifier.StartupGrace, "notifier-startup-grace", 0, "maximum time to wait for provider/auth/usage state before sending startup notification")
 	return cmd
 }
 
@@ -359,6 +360,11 @@ func loadRouterNotifierEnvDefaults(opts v2router.RouterNotifierOptions) v2router
 	if value := stringEnvDefaultAny("", "ROUTER_NOTIFIER_INTERVAL", "NOTIFIER_INTERVAL", "TELEGRAM_NOTIFIER_INTERVAL"); value != "" {
 		if parsed, err := time.ParseDuration(value); err == nil {
 			opts.Interval = parsed
+		}
+	}
+	if value := stringEnvDefaultAny("", "ROUTER_NOTIFIER_STARTUP_GRACE", "NOTIFIER_STARTUP_GRACE", "TELEGRAM_NOTIFIER_STARTUP_GRACE"); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			opts.StartupGrace = parsed
 		}
 	}
 	return opts

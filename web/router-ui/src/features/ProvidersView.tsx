@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Activity, Box, Clipboard, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RefreshCw, Trash2 } from "lucide-react";
+import { Activity, Box, Clipboard, Database, HeartPulse, KeyRound, ListChecks, MessageSquare, PauseCircle, PlayCircle, RadioTower, RefreshCw, Trash2, Unplug } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
@@ -12,8 +12,9 @@ import { EndpointDataWorkbench, type EndpointDataWorkbenchTarget } from "./Endpo
 import { api } from "../lib/api";
 import { providerAccountLabel, providerInstanceID, providerUsageMap, sessionSet, serviceHostAccount } from "../lib/derive";
 import { age, copyText, cx, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
+import { isAliasProviderModel, isGroupProviderModel } from "../lib/model-flags";
 import { providerServiceEndpoints, serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
-import type { ProviderIdentity, ProviderModel, ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
+import type { ProviderIdentity, ProviderRegistration, ProviderUsageSnapshot } from "../lib/types";
 import dockerIcon from "../assets/icons/docker-mark-ocean-blue.svg";
 import kubernetesIcon from "../assets/icons/kubernetes.svg";
 
@@ -189,19 +190,46 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
     },
     { id: "host", header: "Host", sortValue: (row) => row.identity.host_name, cell: (row) => <HostCell identity={row.identity} />, width: "172px" },
     { id: "account", header: "Account", sortValue: (row) => providerAccountLabel(row), cell: (row) => providerAccountLabel(row), width: "190px" },
-    { id: "health", header: "Health", sortValue: (row) => row.health?.status, cell: (row) => <StatusBadge value={row.health?.status} title={row.health?.reason} />, width: "128px" },
-    { id: "auth", header: "Auth", sortValue: (row) => row.auth?.status, cell: (row) => <StatusBadge value={row.auth?.status} title={row.auth?.last_refresh_error} />, width: "132px" },
+    {
+      id: "health",
+      header: "H",
+      sortValue: (row) => row.health?.status,
+      cell: (row) => <StatusBadge value={row.health?.status} title={providerHealthTitle(row)} icon={HeartPulse} iconOnly />,
+      width: "48px",
+      align: "center",
+    },
+    {
+      id: "auth",
+      header: "A",
+      sortValue: (row) => row.auth?.status,
+      cell: (row) => <StatusBadge value={row.auth?.status} title={providerAuthTitle(row)} icon={KeyRound} iconOnly />,
+      width: "48px",
+      align: "center",
+    },
     {
       id: "sessions",
-      header: "Sessions",
+      header: "C/D",
       sortValue: (row) => Number(control.has(providerInstanceID(row))) + Number(dataSession.has(providerInstanceID(row))),
       cell: (row) => (
-        <div className="session-pair">
-          <StatusBadge value={control.has(providerInstanceID(row)) ? "control" : "no control"} tone={control.has(providerInstanceID(row)) ? "ok" : "warn"} />
-          <StatusBadge value={dataSession.has(providerInstanceID(row)) ? "data" : "no data"} tone={dataSession.has(providerInstanceID(row)) ? "ok" : "danger"} />
+        <div className="session-pair session-icon-pair">
+          <StatusBadge
+            value={control.has(providerInstanceID(row)) ? "control connected" : "control missing"}
+            tone={control.has(providerInstanceID(row)) ? "ok" : "warn"}
+            title={sessionTitle("Control", control.has(providerInstanceID(row)), row)}
+            icon={RadioTower}
+            iconOnly
+          />
+          <StatusBadge
+            value={dataSession.has(providerInstanceID(row)) ? "data connected" : "data missing"}
+            tone={dataSession.has(providerInstanceID(row)) ? "ok" : "danger"}
+            title={sessionTitle("Data", dataSession.has(providerInstanceID(row)), row)}
+            icon={Database}
+            iconOnly
+          />
         </div>
       ),
-      width: "210px",
+      width: "74px",
+      align: "center",
     },
     { id: "models", header: "Models", sortValue: (row) => row.models?.length ?? 0, cell: (row) => n(row.models?.length ?? 0), align: "right", width: "80px" },
     { id: "queue", header: "Queue", sortValue: (row) => row.limits?.queue_depth ?? 0, cell: (row) => n(row.limits?.queue_depth ?? 0), align: "right", width: "76px" },
@@ -242,15 +270,17 @@ export function ProvidersView({ data, queries, search, token, onAction, refresh 
         error={queries.providers.error}
         actions={
           <>
-            <label className="trace-select-all">
-              <input
-                type="checkbox"
-                checked={allVisibleDeletableSelected}
-                disabled={deletableRows.length === 0}
-                onChange={(event) => toggleVisibleDeleteSelected(event.currentTarget.checked)}
-              />
-              <span>Select disconnected</span>
-            </label>
+            <button
+              className={cx("button secondary", allVisibleDeletableSelected && "selected")}
+              type="button"
+              disabled={deletableRows.length === 0}
+              title={deletableRows.length === 0 ? "No disconnected providers visible" : `${allVisibleDeletableSelected ? "Clear" : "Select"} ${n(deletableRows.length)} disconnected providers`}
+              aria-pressed={allVisibleDeletableSelected}
+              onClick={() => toggleVisibleDeleteSelected(!allVisibleDeletableSelected)}
+            >
+              <Unplug aria-hidden="true" size={15} />
+              {allVisibleDeletableSelected ? "Clear disconnected" : "Select disconnected"}
+            </button>
             <button className="button danger" type="button" disabled={selectedDeleteCount === 0} onClick={deleteSelectedProviders}>
               <Trash2 aria-hidden="true" size={15} />
               Delete {selectedDeleteCount ? n(selectedDeleteCount) : ""}
@@ -334,6 +364,38 @@ function providerDetailChangeValues(provider: ProviderRegistration, usage: Provi
     "load:usageAge": usage?.updated_at || usage?.usage?.observed_at || "",
     "capabilities:list": (provider.capabilities ?? []).join("|"),
   };
+}
+
+function providerHealthTitle(provider: ProviderRegistration) {
+  return compactTooltipLines([
+    `Health: ${provider.health?.status || "unknown"}`,
+    provider.health?.reason ? `Reason: ${provider.health.reason}` : "",
+    provider.health?.checked_at ? `Checked: ${fmtTime(provider.health.checked_at)}` : "",
+  ]);
+}
+
+function providerAuthTitle(provider: ProviderRegistration) {
+  return compactTooltipLines([
+    `Auth: ${provider.auth?.status || "unknown"}`,
+    provider.auth?.last_refresh_error ? `Error: ${provider.auth.last_refresh_error}` : "",
+    provider.auth?.expires_at ? `Expires: ${fmtTime(provider.auth.expires_at)}` : "",
+    provider.auth?.last_refresh_at ? `Last refresh: ${fmtTime(provider.auth.last_refresh_at)}` : "",
+    provider.auth?.selected_source ? `Source: ${provider.auth.selected_source}` : "",
+    typeof provider.auth?.refreshable === "boolean" ? `Refreshable: ${provider.auth.refreshable ? "yes" : "no"}` : "",
+  ]);
+}
+
+function sessionTitle(kind: "Control" | "Data", connected: boolean, provider: ProviderRegistration) {
+  return compactTooltipLines([
+    `${kind} session: ${connected ? "connected" : "missing"}`,
+    `Provider: ${providerInstanceID(provider)}`,
+    `Node: ${provider.identity.node_id}`,
+    provider.identity.host_name ? `Host: ${provider.identity.host_name}` : "",
+  ]);
+}
+
+function compactTooltipLines(lines: Array<string | undefined>) {
+  return lines.map((line) => line?.trim()).filter(Boolean).join("\n");
 }
 
 function useChangedHighlights(scopeKey: string, values: Record<string, string>, active: boolean, durationMs = 2_000) {
@@ -627,32 +689,6 @@ function ProviderDetail({ provider, controlConnected, dataConnected, usage, chan
       </div>
     </div>
   );
-}
-
-function isGroupProviderModel(service: string | undefined, model: ProviderModel) {
-  return model.kind === "group" || Boolean(model.group_members?.length) || isProviderAutoGroupModel(service, model.id);
-}
-
-function isAliasProviderModel(model: ProviderModel) {
-  return model.kind === "alias" || model.id === "antigravity-default";
-}
-
-function isProviderAutoGroupModel(service: string | undefined, modelID: string | undefined) {
-  if ((modelID ?? "").trim().toLowerCase() !== "auto") {
-    return false;
-  }
-  const key = (service ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
-  return [
-    "github-copilot",
-    "github-copilot-sidecar",
-    "github-copilot-acp",
-    "github-copilot-sdk",
-    "githubcopilot",
-    "copilot",
-    "copilot-sidecar",
-    "copilot-acp",
-    "copilot-sdk",
-  ].includes(key);
 }
 
 function DetailValue({ children, changed, changeKey, className }: { children: ReactNode; changed: Set<string>; changeKey: string; className?: string }) {

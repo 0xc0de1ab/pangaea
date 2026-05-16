@@ -10,6 +10,7 @@ import type {
   SessionSnapshot,
 } from "./types";
 import { accountLabel, pct } from "./format";
+import { isAliasProviderModel, isGroupProviderModel } from "./model-flags";
 
 export function providerInstanceID(provider: ProviderRegistration) {
   return provider.identity.provider_instance_id;
@@ -173,6 +174,9 @@ export function capacityRows(providers: ProviderRegistration[]) {
       activeStreams: number;
       queueDepth: number;
       hosts: Set<string>;
+      groupModel: boolean;
+      aliasModel: boolean;
+      groupMembers: Set<string>;
     }
   >();
   for (const provider of providers) {
@@ -192,9 +196,17 @@ export function capacityRows(providers: ProviderRegistration[]) {
           activeStreams: 0,
           queueDepth: 0,
           hosts: new Set<string>(),
+          groupModel: false,
+          aliasModel: false,
+          groupMembers: new Set<string>(),
         };
       row.providers += 1;
       row.hosts.add(provider.identity.host_name);
+      row.groupModel = row.groupModel || isGroupProviderModel(provider.identity.service, model);
+      row.aliasModel = row.aliasModel || isAliasProviderModel(model);
+      for (const member of model.group_members ?? []) {
+        row.groupMembers.add(member);
+      }
       const status = provider.health?.status || "unknown";
       if (status === "ready") row.ready += 1;
       if (status === "degraded" || status === "draining" || status === "auth-updating") row.degraded += 1;

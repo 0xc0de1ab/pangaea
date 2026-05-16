@@ -70,6 +70,48 @@ func TestRenderRouterTelegramSummaryIncludesProviderQuota(t *testing.T) {
 	}
 }
 
+func TestWaitRouterNotifierStartupReadyWaitsForProviderState(t *testing.T) {
+	registry := provider.NewRegistry()
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		waitRouterNotifierStartupReady(context.Background(), engine, time.Second)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("startup wait returned before provider state was available")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := engine.UpsertProvider(registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("startup wait did not return after provider state became available")
+	}
+}
+
+func TestWaitRouterNotifierStartupReadyHonorsTimeout(t *testing.T) {
+	registry := provider.NewRegistry()
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	start := time.Now()
+	waitRouterNotifierStartupReady(context.Background(), engine, 25*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("startup wait ignored timeout: %s", elapsed)
+	}
+}
+
 func TestRenderRouterTelegramProviderCommandIncludesListAndQuota(t *testing.T) {
 	now := time.Date(2026, 5, 11, 1, 0, 0, 0, time.Local)
 	codexReset := time.Date(2026, 5, 11, 6, 0, 0, 0, time.Local)

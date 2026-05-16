@@ -1,13 +1,15 @@
-import { AlertTriangle, CheckCircle2, CircleDot, HelpCircle, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleDot, HelpCircle, XCircle, type LucideIcon } from "lucide-react";
 import { cx } from "../lib/format";
 
 type StatusBadgeProps = {
   value?: string;
   tone?: "ok" | "warn" | "danger" | "unknown";
   title?: string;
+  icon?: LucideIcon;
+  iconOnly?: boolean;
 };
 
-function inferTone(value?: string): NonNullable<StatusBadgeProps["tone"]> {
+export function inferStatusTone(value?: string): NonNullable<StatusBadgeProps["tone"]> {
   if (!value) {
     return "unknown";
   }
@@ -23,13 +25,14 @@ function inferTone(value?: string): NonNullable<StatusBadgeProps["tone"]> {
   return "unknown";
 }
 
-export function StatusBadge({ value, tone, title }: StatusBadgeProps) {
-  const resolved = tone ?? inferTone(value);
-  const Icon = resolved === "ok" ? CheckCircle2 : resolved === "warn" ? AlertTriangle : resolved === "danger" ? XCircle : value ? CircleDot : HelpCircle;
+export function StatusBadge({ value, tone, title, icon, iconOnly }: StatusBadgeProps) {
+  const resolved = tone ?? inferStatusTone(value);
+  const Icon = icon ?? (resolved === "ok" ? CheckCircle2 : resolved === "warn" ? AlertTriangle : resolved === "danger" ? XCircle : value ? CircleDot : HelpCircle);
+  const label = value || "unknown";
   return (
-    <span className={cx("status-badge", `status-${resolved}`)} title={title}>
+    <span className={cx("status-badge", iconOnly && "status-icon-only", `status-${resolved}`)} title={title || label} aria-label={iconOnly ? label : undefined}>
       <Icon aria-hidden="true" size={14} />
-      <span>{value || "unknown"}</span>
+      {iconOnly ? null : <span>{label}</span>}
     </span>
   );
 }

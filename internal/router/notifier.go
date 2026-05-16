@@ -20,13 +20,15 @@ const (
 	maxNotifierHistory        = 256
 	defaultRouterNotifyPeriod = time.Hour
 	minRouterNotifyPeriod     = time.Minute
+	defaultRouterStartupGrace = 45 * time.Second
 	telegramCommandPollTO     = 25
 	telegramCommandRetryDelay = 5 * time.Second
 )
 
 type RouterNotifierOptions struct {
-	Telegram RouterTelegramNotifierOptions
-	Interval time.Duration
+	Telegram     RouterTelegramNotifierOptions
+	Interval     time.Duration
+	StartupGrace time.Duration
 }
 
 type RouterTelegramNotifierOptions struct {
@@ -69,6 +71,7 @@ func StartRouterNotifiers(ctx context.Context, engine *Engine, opts RouterNotifi
 		return func() {}
 	}
 	opts.Interval = normalizeRouterNotifyInterval(opts.Interval)
+	opts.StartupGrace = normalizeRouterStartupGrace(opts.StartupGrace)
 	notifiers := make([]routerNotifier, 0, 1)
 	if opts.Telegram.Enabled {
 		notifiers = append(notifiers, newRouterTelegramNotifier(opts.Telegram))
@@ -94,6 +97,7 @@ func StartRouterNotifiers(ctx context.Context, engine *Engine, opts RouterNotifi
 		for _, notifier := range notifiers {
 			notifier.register(engine)
 		}
+		waitRouterNotifierStartupReady(notifierCtx, engine, opts.StartupGrace)
 		runRouterNotifierTick(notifierCtx, engine, notifiers, "startup")
 		ticker := time.NewTicker(opts.Interval)
 		defer ticker.Stop()
@@ -121,6 +125,42 @@ func StartRouterNotifiers(ctx context.Context, engine *Engine, opts RouterNotifi
 		cancel()
 		wg.Wait()
 	}
+}
+
+func normalizeRouterStartupGrace(value time.Duration) time.Duration {
+	if value < 0 {
+		return 0
+	}
+	if value == 0 {
+		return defaultRouterStartupGrace
+	}
+	return value
+}
+
+func waitRouterNotifierStartupReady(ctx context.Context, engine *Engine, timeout time.Duration) {
+	if engine == nil || timeout <= 0 || routerNotifierHasState(engine) {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if routerNotifierHasState(engine) {
+				return
+			}
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+func routerNotifierHasState(engine *Engine) bool {
+	return len(engine.Providers()) > 0 || len(engine.AuthRecords()) > 0 || len(engine.ProviderUsages()) > 0
 }
 
 type routerNotifier interface {

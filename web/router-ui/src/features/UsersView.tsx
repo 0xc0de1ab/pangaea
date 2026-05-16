@@ -1,12 +1,12 @@
 import type { FormEvent } from "react";
-import { useMemo, useState } from "react";
-import { Edit3, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Edit3, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
-import { fmtTime, hasText } from "../lib/format";
+import { cx, fmtTime, hasText, n } from "../lib/format";
 import type { RouterUser } from "../lib/types";
 
 type UserFormState = {
@@ -22,13 +22,26 @@ const emptyForm: UserFormState = {
   role: "user",
   enabled: true,
 };
+const userPageSizeOptions = [10, 25, 50, 100];
 
 export function UsersView({ data, queries, search, token, refresh }: DashboardViewProps) {
   const [form, setForm] = useState<UserFormState>(emptyForm);
   const [editingEmail, setEditingEmail] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const rows = useMemo(() => data.users.filter((user) => hasText(user, search)), [data.users, search]);
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+
+  useEffect(() => {
+    setPageIndex(0);
+  }, [search, pageSize]);
+
+  useEffect(() => {
+    setPageIndex((value) => Math.min(value, pageCount - 1));
+  }, [pageCount]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -131,13 +144,21 @@ export function UsersView({ data, queries, search, token, refresh }: DashboardVi
     <div className="view-stack">
       <Section
         title="Users"
-        subtitle="Google OAuth accounts allowed to enter the dashboard and manage their own routing rules"
+        subtitle={`${n(rows.length)} Google OAuth accounts allowed to enter the dashboard and manage their own routing rules`}
         error={queries.users.error}
         actions={
-          <button className="button secondary" type="button" onClick={refresh}>
-            <RefreshCw aria-hidden="true" size={15} />
-            Refresh
-          </button>
+          <>
+            <UserPageSizeMenu
+              pageSize={pageSize}
+              open={settingsOpen}
+              onOpenChange={setSettingsOpen}
+              onPageSizeChange={setPageSize}
+            />
+            <button className="button secondary" type="button" onClick={refresh}>
+              <RefreshCw aria-hidden="true" size={15} />
+              Refresh
+            </button>
+          </>
         }
       >
         <form className="user-form" onSubmit={submit}>
@@ -171,8 +192,95 @@ export function UsersView({ data, queries, search, token, refresh }: DashboardVi
           ) : null}
         </form>
         {error ? <div className="inline-error">{error}</div> : null}
-        <DataTable rows={rows} columns={columns} empty="No users are registered" getRowId={(row) => row.email} compact />
+        <DataTable
+          rows={rows}
+          columns={columns}
+          empty="No users are registered"
+          getRowId={(row) => row.email}
+          compact
+          pagination={{ pageIndex, pageSize }}
+        />
+        <UserPagination
+          pageIndex={pageIndex}
+          pageCount={pageCount}
+          pageSize={pageSize}
+          total={rows.length}
+          onPageChange={setPageIndex}
+        />
       </Section>
+    </div>
+  );
+}
+
+function UserPageSizeMenu({
+  pageSize,
+  open,
+  onOpenChange,
+  onPageSizeChange,
+}: {
+  pageSize: number;
+  open: boolean;
+  onOpenChange: (value: boolean) => void;
+  onPageSizeChange: (value: number) => void;
+}) {
+  return (
+    <div className="table-settings">
+      <button className="icon-button" type="button" aria-label="Users table settings" aria-expanded={open} onClick={() => onOpenChange(!open)}>
+        <Settings2 aria-hidden="true" size={16} />
+      </button>
+      {open ? (
+        <div className="table-settings-popover" role="dialog" aria-label="Users table page size">
+          <strong>Rows per page</strong>
+          <div className="page-size-options">
+            {userPageSizeOptions.map((option) => (
+              <button
+                key={option}
+                className={cx("page-size-option", option === pageSize && "selected")}
+                type="button"
+                onClick={() => {
+                  onPageSizeChange(option);
+                  onOpenChange(false);
+                }}
+              >
+                {n(option)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function UserPagination({
+  pageIndex,
+  pageCount,
+  pageSize,
+  total,
+  onPageChange,
+}: {
+  pageIndex: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (value: number) => void;
+}) {
+  const start = total === 0 ? 0 : pageIndex * pageSize + 1;
+  const end = Math.min(total, (pageIndex + 1) * pageSize);
+  return (
+    <div className="table-pagination">
+      <span>
+        {n(start)}-{n(end)} of {n(total)} users
+      </span>
+      <div className="pagination-actions">
+        <span>Page {n(pageIndex + 1)} / {n(pageCount)}</span>
+        <button className="icon-button small" type="button" aria-label="Previous users page" disabled={pageIndex === 0} onClick={() => onPageChange(Math.max(0, pageIndex - 1))}>
+          <ChevronLeft aria-hidden="true" size={15} />
+        </button>
+        <button className="icon-button small" type="button" aria-label="Next users page" disabled={pageIndex >= pageCount - 1} onClick={() => onPageChange(Math.min(pageCount - 1, pageIndex + 1))}>
+          <ChevronRight aria-hidden="true" size={15} />
+        </button>
+      </div>
     </div>
   );
 }

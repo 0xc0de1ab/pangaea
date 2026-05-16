@@ -1,16 +1,17 @@
 import type { DragEvent, FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Copy, GripVertical, Play, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Copy, GripVertical, Play, Plus, RefreshCw, Save, Search, Settings2, Trash2 } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
 import { capacityRows } from "../lib/derive";
-import { copyText, hasText, middleEllipsis, n } from "../lib/format";
+import { copyText, cx, hasText, middleEllipsis, n } from "../lib/format";
 import type { RouteDecision, RouteRequest, RoutingFilter, RoutingRule, RoutingRuleDryRunResponse, RoutingRuleStep } from "../lib/types";
 
 type DraftRule = Omit<RoutingRule, "id" | "created_at" | "updated_at"> & { id?: string };
+type CapacityRow = ReturnType<typeof capacityRows>[number];
 
 const emptyFilter: RoutingFilter = {
   id: "any",
@@ -26,12 +27,293 @@ const emptyRule: DraftRule = {
   description: "",
   filters: [emptyFilter],
 };
+const capacityPageSizeOptions = [10, 25, 50, 100];
 
 export function RoutesView({ data, queries, search, token, refresh }: DashboardViewProps) {
-  const [draft, setDraft] = useState<DraftRule>(emptyRule);
-  const [editingID, setEditingID] = useState("");
+  const [error, setError] = useState("");
+  const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
+  const [capacityModelQuery, setCapacityModelQuery] = useState("");
+  const [capacityPageIndex, setCapacityPageIndex] = useState(0);
+  const [capacityPageSize, setCapacityPageSize] = useState(25);
+  const [capacitySettingsOpen, setCapacitySettingsOpen] = useState(false);
+  const allCapacity = useMemo(() => capacityRows(data.providers).filter((row) => hasText(row, search)), [data.providers, search]);
+  const capacity = useMemo(() => {
+    const query = capacityModelQuery.trim().toLowerCase();
+    if (!query) {
+      return allCapacity;
+    }
+    return allCapacity.filter((row) => row.model.toLowerCase().includes(query));
+  }, [allCapacity, capacityModelQuery]);
+  const capacityPageCount = Math.max(1, Math.ceil(capacity.length / capacityPageSize));
+  const rules = useMemo(() => data.routingRules.filter((rule) => hasText(rule, search)), [data.routingRules, search]);
+
+  useEffect(() => {
+    setCapacityPageIndex(0);
+  }, [capacityModelQuery, search, capacityPageSize]);
+
+  useEffect(() => {
+    setCapacityPageIndex((value) => Math.min(value, capacityPageCount - 1));
+  }, [capacityPageCount]);
+
+  const edit = useCallback((rule: RoutingRule) => {
+    setEditingRule(rule);
+    setError("");
+  }, []);
+
+  const deleteRule = useCallback(async (rule: RoutingRule) => {
+    if (!window.confirm(`Delete route rule ${rule.name}?`)) {
+      return;
+    }
+    setError("");
+    try {
+      await api.deleteRoutingRule(rule.id, token);
+      if (editingRule?.id === rule.id) {
+        setEditingRule(null);
+      }
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete routing rule");
+    }
+  }, [editingRule?.id, refresh, token]);
+
+  const cancelEditing = useCallback(() => {
+    setEditingRule(null);
+  }, []);
+
+  const savedRule = useCallback(() => {
+    setEditingRule(null);
+    refresh();
+  }, [refresh]);
+
+  const ruleColumns = useMemo<DashboardColumn<RoutingRule>[]>(() => [
+    {
+      id: "name",
+      header: "Rule",
+      sortValue: (row) => row.name,
+      cell: (row) => (
+        <div className="stacked-cell">
+          <strong>{row.name}</strong>
+          <span>{routeURL(row)}</span>
+        </div>
+      ),
+    },
+    { id: "scope", header: "Scope", sortValue: (row) => row.scope, cell: (row) => <StatusBadge value={row.scope} tone={row.scope === "public" ? "ok" : "unknown"} />, width: "110px" },
+    { id: "owner", header: "Owner", sortValue: (row) => row.owner_email || "", cell: (row) => row.owner_email || "all users", width: "220px" },
+    { id: "filters", header: "Filters", sortValue: (row) => row.filters?.length ?? 0, cell: (row) => n(row.filters?.length ?? 0), align: "right", width: "90px" },
+    {
+      id: "actions",
+      header: "Actions",
+      cell: (row) => (
+        <div className="row-actions">
+          <button className="button compact" type="button" onClick={() => edit(row)}>Edit</button>
+          <button className="icon-button small" type="button" aria-label={`Copy URL for ${row.name}`} onClick={() => copyText(routeURL(row))}>
+            <Copy aria-hidden="true" size={14} />
+          </button>
+          <button className="icon-button small danger-text" type="button" aria-label={`Delete ${row.name}`} onClick={() => void deleteRule(row)}>
+            <Trash2 aria-hidden="true" size={14} />
+          </button>
+        </div>
+      ),
+      width: "170px",
+    },
+  ], [deleteRule, edit]);
+
+  const capacityColumns = useMemo<DashboardColumn<CapacityRow>[]>(() => [
+    { id: "service", header: "Service", sortValue: (row) => row.service, cell: (row) => row.service, width: "110px" },
+    {
+      id: "model",
+      header: "Model",
+      headerExtra: <CapacityModelFilter value={capacityModelQuery} onChange={setCapacityModelQuery} />,
+      sortValue: (row) => row.model,
+      cell: (row) => <CapacityModelCell row={row} />,
+    },
+    { id: "hosts", header: "Hosts", sortValue: (row) => row.hosts.size, cell: (row) => n(row.hosts.size), align: "right", width: "76px" },
+    { id: "providers", header: "Providers", sortValue: (row) => row.providers, cell: (row) => n(row.providers), align: "right", width: "92px" },
+    { id: "ready", header: "Ready", sortValue: (row) => row.ready, cell: (row) => n(row.ready), align: "right", width: "76px" },
+    { id: "degraded", header: "Degraded", sortValue: (row) => row.degraded, cell: (row) => n(row.degraded), align: "right", width: "92px" },
+    { id: "down", header: "Down", sortValue: (row) => row.down, cell: (row) => n(row.down), align: "right", width: "76px" },
+    { id: "queue", header: "Queue", sortValue: (row) => row.queueDepth, cell: (row) => n(row.queueDepth), align: "right", width: "76px" },
+  ], [capacityModelQuery]);
+
+  return (
+    <div className="view-stack">
+      <Section
+        title="Routing Rules"
+        subtitle="Public and per-user filter chains for named route URLs"
+        error={queries.routingRules.error}
+        actions={
+          <button className="button secondary" type="button" onClick={refresh}>
+            <RefreshCw aria-hidden="true" size={15} />
+            Refresh
+          </button>
+        }
+      >
+        <DataTable rows={rules} columns={ruleColumns} empty="No routing rules are defined" getRowId={(row) => row.id} compact />
+        {error ? <div className="inline-error">{error}</div> : null}
+      </Section>
+
+      <RoutingRuleWorkspace
+        editingRule={editingRule}
+        models={data.models}
+        token={token}
+        onCancel={cancelEditing}
+        onSaved={savedRule}
+      />
+
+      <Section
+        title="Capacity By Model"
+        subtitle={`${n(capacity.length)} of ${n(allCapacity.length)} model capacity rows`}
+        error={queries.providers.error}
+        actions={
+          <CapacityPageSizeMenu
+            pageSize={capacityPageSize}
+            open={capacitySettingsOpen}
+            onOpenChange={setCapacitySettingsOpen}
+            onPageSizeChange={setCapacityPageSize}
+          />
+        }
+      >
+        <DataTable
+          rows={capacity}
+          columns={capacityColumns}
+          empty="No provider capacity is available"
+          compact
+          pagination={{ pageIndex: capacityPageIndex, pageSize: capacityPageSize }}
+        />
+        <CapacityPagination
+          pageIndex={capacityPageIndex}
+          pageCount={capacityPageCount}
+          pageSize={capacityPageSize}
+          total={capacity.length}
+          onPageChange={setCapacityPageIndex}
+        />
+      </Section>
+    </div>
+  );
+}
+
+function CapacityModelCell({ row }: { row: CapacityRow }) {
+  const groupMembers = Array.from(row.groupMembers ?? []);
+  const title = [
+    row.groupModel ? `Group model${groupMembers.length ? `: ${groupMembers.join(", ")}` : ""}` : "",
+    row.aliasModel ? "Alias model" : "",
+  ].filter(Boolean).join(" / ");
+  return (
+    <span className={cx("model-name-line", "capacity-model-name")} title={title || row.model}>
+      {row.groupModel ? <span className="model-group-badge mini" title="Group model">G</span> : null}
+      {row.aliasModel ? <span className="model-alias-badge mini" title="Alias model">A</span> : null}
+      <span className="mono">{middleEllipsis(row.model, 26, 12)}</span>
+    </span>
+  );
+}
+
+function CapacityModelFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="table-header-search" onClick={(event) => event.stopPropagation()}>
+      <Search aria-hidden="true" size={13} />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+        placeholder="Search model"
+        aria-label="Search model name"
+      />
+    </label>
+  );
+}
+
+function CapacityPageSizeMenu({
+  pageSize,
+  open,
+  onOpenChange,
+  onPageSizeChange,
+}: {
+  pageSize: number;
+  open: boolean;
+  onOpenChange: (value: boolean) => void;
+  onPageSizeChange: (value: number) => void;
+}) {
+  return (
+    <div className="table-settings">
+      <button className="icon-button" type="button" aria-label="Capacity table settings" aria-expanded={open} onClick={() => onOpenChange(!open)}>
+        <Settings2 aria-hidden="true" size={16} />
+      </button>
+      {open ? (
+        <div className="table-settings-popover" role="dialog" aria-label="Capacity table page size">
+          <strong>Rows per page</strong>
+          <div className="page-size-options">
+            {capacityPageSizeOptions.map((option) => (
+              <button
+                key={option}
+                className={cx("page-size-option", option === pageSize && "selected")}
+                type="button"
+                onClick={() => {
+                  onPageSizeChange(option);
+                  onOpenChange(false);
+                }}
+              >
+                {n(option)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CapacityPagination({
+  pageIndex,
+  pageCount,
+  pageSize,
+  total,
+  onPageChange,
+}: {
+  pageIndex: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (value: number) => void;
+}) {
+  const start = total === 0 ? 0 : pageIndex * pageSize + 1;
+  const end = Math.min(total, (pageIndex + 1) * pageSize);
+  return (
+    <div className="table-pagination capacity-pagination">
+      <span>
+        {n(start)}-{n(end)} of {n(total)} rows
+      </span>
+      <div className="pagination-actions">
+        <span>Page {n(pageIndex + 1)} / {n(pageCount)}</span>
+        <button className="icon-button small" type="button" aria-label="Previous capacity page" disabled={pageIndex === 0} onClick={() => onPageChange(Math.max(0, pageIndex - 1))}>
+          <ChevronLeft aria-hidden="true" size={15} />
+        </button>
+        <button className="icon-button small" type="button" aria-label="Next capacity page" disabled={pageIndex >= pageCount - 1} onClick={() => onPageChange(Math.min(pageCount - 1, pageIndex + 1))}>
+          <ChevronRight aria-hidden="true" size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const RoutingRuleWorkspace = memo(function RoutingRuleWorkspace({
+  editingRule,
+  models,
+  token,
+  onCancel,
+  onSaved,
+}: {
+  editingRule: RoutingRule | null;
+  models: DashboardViewProps["data"]["models"];
+  token?: string;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [draft, setDraft] = useState<DraftRule>(() => draftFromRule(editingRule));
+  const draftNameRef = useRef(draft.name);
+  const [nameResetID, setNameResetID] = useState(0);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [model, setModel] = useState(data.models[0]?.id || "");
+  const [model, setModel] = useState(models[0]?.id || "");
   const [dialect, setDialect] = useState<RouteRequest["api_dialect"]>("openai");
   const [stream, setStream] = useState(true);
   const [dryRun, setDryRun] = useState<RoutingRuleDryRunResponse | null>(null);
@@ -39,16 +321,34 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
-  const capacity = useMemo(() => capacityRows(data.providers).filter((row) => hasText(row, search)), [data.providers, search]);
-  const rules = useMemo(() => data.routingRules.filter((rule) => hasText(rule, search)), [data.routingRules, search]);
-  const ruleNameValid = validRoutingRuleName(draft.name);
+  const editingID = editingRule?.id || "";
+  const decision = dryRun?.decision ?? null;
+  const updateDraftNameRef = useCallback((value: string) => {
+    draftNameRef.current = value;
+  }, []);
+
+  const scoreColumns = useMemo<DashboardColumn<NonNullable<RouteDecision["scores"]>[number]>[]>(() => [
+    { id: "provider", header: "Provider", sortValue: (row) => row.provider_instance_id || row.provider_type, cell: (row) => <span className="mono">{middleEllipsis(row.provider_instance_id || row.provider_type || "")}</span> },
+    { id: "score", header: "Score", sortValue: (row) => row.score, cell: (row) => n(row.score), align: "right", width: "76px" },
+    { id: "reason", header: "Reason", sortValue: (row) => row.reason, cell: (row) => row.reason || "" },
+  ], []);
 
   useEffect(() => {
-    if (model || data.models.length === 0) {
+    const nextDraft = draftFromRule(editingRule);
+    draftNameRef.current = nextDraft.name;
+    setDraft(nextDraft);
+    setNameResetID((value) => value + 1);
+    setDryRun(null);
+    setError("");
+    setDragIndex(null);
+  }, [editingRule]);
+
+  useEffect(() => {
+    if (model || models.length === 0) {
       return;
     }
-    setModel(data.models[0]?.id || "");
-  }, [data.models, model]);
+    setModel(models[0]?.id || "");
+  }, [models, model]);
 
   useEffect(() => {
     const steps = dryRun?.steps ?? [];
@@ -69,38 +369,32 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
     return () => window.clearInterval(timer);
   }, [dryRun]);
 
-  function edit(rule: RoutingRule) {
-    setEditingID(rule.id);
-    setDraft({
-      id: rule.id,
-      name: rule.name,
-      scope: rule.scope,
-      owner_email: rule.owner_email || "",
-      description: rule.description || "",
-      filters: rule.filters?.length ? rule.filters : [emptyFilter],
-    });
-    setDryRun(null);
-  }
-
   function resetDraft() {
-    setEditingID("");
-    setDraft(emptyRule);
-    setDryRun(null);
+    onCancel();
   }
 
   async function saveRule(event: FormEvent) {
     event.preventDefault();
-    setSaving(true);
     setError("");
+    const current = currentDraft(draft, draftNameRef.current);
+    if (!validRoutingRuleName(current.name)) {
+      setError("Route rule name must be URL-safe: A-Z, a-z, 0-9, '.', '_', '~', or '-'.");
+      return;
+    }
+    setSaving(true);
     try {
-      const payload = materializeDraft(draft);
+      const payload = materializeDraft(current);
       if (editingID) {
         await api.updateRoutingRule(editingID, payload, token);
       } else {
         await api.createRoutingRule(payload, token);
       }
-      resetDraft();
-      refresh();
+      const nextDraft = draftFromRule(null);
+      draftNameRef.current = nextDraft.name;
+      setDraft(nextDraft);
+      setNameResetID((value) => value + 1);
+      setDryRun(null);
+      onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save routing rule");
     } finally {
@@ -108,36 +402,25 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
     }
   }
 
-  async function deleteRule(rule: RoutingRule) {
-    if (!window.confirm(`Delete route rule ${rule.name}?`)) {
-      return;
-    }
-    setError("");
-    try {
-      await api.deleteRoutingRule(rule.id, token);
-      if (editingID === rule.id) {
-        resetDraft();
-      }
-      refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete routing rule");
-    }
-  }
-
   async function submitDryRun(event: FormEvent) {
     event.preventDefault();
-    setRunning(true);
     setError("");
     setDryRun(null);
+    const current = currentDraft(draft, draftNameRef.current);
+    if (!validRoutingRuleName(current.name)) {
+      setError("Route rule name must be URL-safe before running a simulation.");
+      return;
+    }
+    setRunning(true);
     try {
       const result = await api.dryRunRoutingRule({
-        rule: materializeDraft(draft),
+        rule: materializeDraft(current),
         request: {
           model: model.trim(),
           api_dialect: dialect,
           stream,
-          routing_rule_name: draft.name,
-          routing_rule_owner: draft.owner_email,
+          routing_rule_name: current.name,
+          routing_rule_owner: current.owner_email,
         },
       }, token);
       setDryRun(result);
@@ -205,211 +488,196 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
     setDragIndex(null);
   }
 
-  const ruleColumns: DashboardColumn<RoutingRule>[] = [
-    {
-      id: "name",
-      header: "Rule",
-      sortValue: (row) => row.name,
-      cell: (row) => (
-        <div className="stacked-cell">
-          <strong>{row.name}</strong>
-          <span>{routeURL(row)}</span>
-        </div>
-      ),
-    },
-    { id: "scope", header: "Scope", sortValue: (row) => row.scope, cell: (row) => <StatusBadge value={row.scope} tone={row.scope === "public" ? "ok" : "unknown"} />, width: "110px" },
-    { id: "owner", header: "Owner", sortValue: (row) => row.owner_email || "", cell: (row) => row.owner_email || "all users", width: "220px" },
-    { id: "filters", header: "Filters", sortValue: (row) => row.filters?.length ?? 0, cell: (row) => n(row.filters?.length ?? 0), align: "right", width: "90px" },
-    {
-      id: "actions",
-      header: "Actions",
-      cell: (row) => (
-        <div className="row-actions">
-          <button className="button compact" type="button" onClick={() => edit(row)}>Edit</button>
-          <button className="icon-button small" type="button" aria-label={`Copy URL for ${row.name}`} onClick={() => copyText(routeURL(row))}>
-            <Copy aria-hidden="true" size={14} />
-          </button>
-          <button className="icon-button small danger-text" type="button" aria-label={`Delete ${row.name}`} onClick={() => void deleteRule(row)}>
-            <Trash2 aria-hidden="true" size={14} />
-          </button>
-        </div>
-      ),
-      width: "170px",
-    },
-  ];
-
-  const capacityColumns: DashboardColumn<(typeof capacity)[number]>[] = [
-    { id: "service", header: "Service", sortValue: (row) => row.service, cell: (row) => row.service, width: "110px" },
-    { id: "model", header: "Model", sortValue: (row) => row.model, cell: (row) => <span className="mono">{middleEllipsis(row.model, 26, 12)}</span> },
-    { id: "hosts", header: "Hosts", sortValue: (row) => row.hosts.size, cell: (row) => n(row.hosts.size), align: "right", width: "76px" },
-    { id: "providers", header: "Providers", sortValue: (row) => row.providers, cell: (row) => n(row.providers), align: "right", width: "92px" },
-    { id: "ready", header: "Ready", sortValue: (row) => row.ready, cell: (row) => n(row.ready), align: "right", width: "76px" },
-    { id: "degraded", header: "Degraded", sortValue: (row) => row.degraded, cell: (row) => n(row.degraded), align: "right", width: "92px" },
-    { id: "down", header: "Down", sortValue: (row) => row.down, cell: (row) => n(row.down), align: "right", width: "76px" },
-    { id: "queue", header: "Queue", sortValue: (row) => row.queueDepth, cell: (row) => n(row.queueDepth), align: "right", width: "76px" },
-  ];
-
-  const decision = dryRun?.decision ?? null;
-  const scoreColumns: DashboardColumn<NonNullable<RouteDecision["scores"]>[number]>[] = [
-    { id: "provider", header: "Provider", sortValue: (row) => row.provider_instance_id || row.provider_type, cell: (row) => <span className="mono">{middleEllipsis(row.provider_instance_id || row.provider_type || "")}</span> },
-    { id: "score", header: "Score", sortValue: (row) => row.score, cell: (row) => n(row.score), align: "right", width: "76px" },
-    { id: "reason", header: "Reason", sortValue: (row) => row.reason, cell: (row) => row.reason || "" },
-  ];
-
   return (
-    <div className="view-stack">
-      <Section
-        title="Routing Rules"
-        subtitle="Public and per-user filter chains for named route URLs"
-        error={queries.routingRules.error}
-        actions={
-          <button className="button secondary" type="button" onClick={refresh}>
-            <RefreshCw aria-hidden="true" size={15} />
-            Refresh
-          </button>
-        }
-      >
-        <DataTable rows={rules} columns={ruleColumns} empty="No routing rules are defined" getRowId={(row) => row.id} compact />
-      </Section>
-
-      <div className="split-grid route-editor-grid">
-        <Section title={editingID ? "Edit Rule" : "New Rule"} subtitle="Drag filters to define priority. The Any filter is the catch-all fallback.">
-          <form className="route-rule-form" onSubmit={saveRule}>
-            <div className="route-rule-fields">
-              <label className="field">
-                <span>Name</span>
-                <input
-                  value={draft.name}
-                  onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))}
-                  placeholder="default-route"
-                  pattern="[A-Za-z0-9._~-]+"
-                  maxLength={128}
-                  title="Use only A-Z, a-z, 0-9, '.', '_', '~', or '-'"
-                />
-              </label>
-              <label className="field">
-                <span>Scope</span>
-                <select value={draft.scope} onChange={(event) => setDraft((value) => ({ ...value, scope: event.target.value, owner_email: event.target.value === "public" ? "" : value.owner_email }))}>
-                  <option value="public">Public</option>
-                  <option value="user">User</option>
-                </select>
-              </label>
-              <label className="field">
-                <span>Owner</span>
-                <input value={draft.owner_email || ""} onChange={(event) => setDraft((value) => ({ ...value, owner_email: event.target.value }))} disabled={draft.scope === "public"} placeholder="user@example.com" />
-              </label>
-            </div>
+    <div className="split-grid route-editor-grid">
+      <Section title={editingID ? "Edit Rule" : "New Rule"} subtitle="Drag filters to define priority. The Any filter is the catch-all fallback.">
+        <form className="route-rule-form" onSubmit={saveRule}>
+          <div className="route-rule-fields">
             <label className="field">
-              <span>Description</span>
-              <input value={draft.description || ""} onChange={(event) => setDraft((value) => ({ ...value, description: event.target.value }))} placeholder="Human-readable purpose" />
-            </label>
-
-            <div className="filter-chain">
-              {draft.filters.map((filter, index) => (
-                <div
-                  key={`${filter.id || filter.type}-${index}`}
-                  className="filter-card"
-                  draggable
-                  onDragStart={() => setDragIndex(index)}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => onDropFilter(event, index)}
-                >
-                  <div className="filter-card-head">
-                    <GripVertical aria-hidden="true" size={16} />
-                    <strong>{index + 1}. {filter.label || filter.type}</strong>
-                    <StatusBadge value={filter.type} tone={filter.type === "any" ? "ok" : "warn"} />
-                    <div className="row-actions">
-                      <button className="icon-button small" type="button" aria-label="Move filter up" disabled={index === 0} onClick={() => moveFilter(index, index - 1)}>
-                        <ArrowUp aria-hidden="true" size={14} />
-                      </button>
-                      <button className="icon-button small" type="button" aria-label="Move filter down" disabled={index === draft.filters.length - 1} onClick={() => moveFilter(index, index + 1)}>
-                        <ArrowDown aria-hidden="true" size={14} />
-                      </button>
-                      <button className="icon-button small danger-text" type="button" aria-label="Remove filter" disabled={draft.filters.length === 1} onClick={() => removeFilter(index)}>
-                        <Trash2 aria-hidden="true" size={14} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="filter-fields">
-                    <label className="field">
-                      <span>Type</span>
-                      <select value={filter.type} onChange={(event) => updateFilter(index, { type: event.target.value })}>
-                        <option value="any">Any</option>
-                        <option value="criteria">Criteria</option>
-                      </select>
-                    </label>
-                    <label className="field">
-                      <span>Label</span>
-                      <input value={filter.label || ""} onChange={(event) => updateFilter(index, { label: event.target.value })} />
-                    </label>
-                    <CriteriaField label="Service" value={filter.criteria?.services} onChange={(value) => updateFilterCriteria(index, "services", value)} />
-                    <CriteriaField label="Protocol" value={filter.criteria?.api_dialects} onChange={(value) => updateFilterCriteria(index, "api_dialects", value)} />
-                    <CriteriaField label="Provider Type" value={filter.criteria?.provider_types} onChange={(value) => updateFilterCriteria(index, "provider_types", value)} />
-                    <CriteriaField label="Model" value={filter.criteria?.models} onChange={(value) => updateFilterCriteria(index, "models", value)} />
-                    <CriteriaField label="Account" value={filter.criteria?.accounts} onChange={(value) => updateFilterCriteria(index, "accounts", value)} />
-                    <CriteriaField label="Node" value={filter.criteria?.node_ids} onChange={(value) => updateFilterCriteria(index, "node_ids", value)} />
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="form-actions">
-              <button className="button secondary" type="button" onClick={addFilter}>
-                <Plus aria-hidden="true" size={15} />
-                Filter
-              </button>
-              <button className="button primary" type="submit" disabled={saving || !ruleNameValid}>
-                <Save aria-hidden="true" size={15} />
-                Save
-              </button>
-              {editingID ? <button className="button ghost" type="button" onClick={resetDraft}>Cancel</button> : null}
-            </div>
-          </form>
-        </Section>
-
-        <Section title="Dry Run" subtitle="Simulate provider selection through the current filter chain">
-          <form className="route-dry-run-form" onSubmit={submitDryRun}>
-            <label className="field">
-              <span>Model</span>
-              <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-5-codex" />
+              <span>Name</span>
+              <RuleNameInput
+                initialName={draft.name}
+                resetID={nameResetID}
+                onValueChange={updateDraftNameRef}
+              />
             </label>
             <label className="field">
-              <span>Protocol</span>
-              <select value={dialect} onChange={(event) => setDialect(event.target.value)}>
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="gemini">Gemini</option>
+              <span>Scope</span>
+              <select value={draft.scope} onChange={(event) => setDraft((value) => ({ ...value, scope: event.target.value, owner_email: event.target.value === "public" ? "" : value.owner_email }))}>
+                <option value="public">Public</option>
+                <option value="user">User</option>
               </select>
             </label>
-            <label className="check-row inline">
-              <input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} />
-              <span>stream</span>
+            <label className="field">
+              <span>Owner</span>
+              <input value={draft.owner_email || ""} onChange={(event) => setDraft((value) => ({ ...value, owner_email: event.target.value }))} disabled={draft.scope === "public"} placeholder="user@example.com" />
             </label>
-            <button className="button primary" type="submit" disabled={running || !model.trim() || !ruleNameValid}>
-              <Play aria-hidden="true" size={15} />
-              Dry run
-            </button>
-          </form>
-          {error ? <div className="inline-error">{error}</div> : null}
-          {decision ? (
-            <div className="decision-panel">
-              <div className="decision-head">
-                <StatusBadge value={decision.allowed ? "allowed" : "rejected"} tone={decision.allowed ? "ok" : "danger"} />
-                <span className="mono">{decision.routing_rule_id || decision.route_id || "inline rule"}</span>
-                <strong>{decision.selected || decision.reason || ""}</strong>
-              </div>
-              <RouteStepAnimation steps={dryRun?.steps ?? []} activeStep={activeStep} />
-              <DataTable rows={decision.scores ?? []} columns={scoreColumns} empty="No score rows returned" compact />
-            </div>
-          ) : null}
-        </Section>
-      </div>
+          </div>
+          <label className="field">
+            <span>Description</span>
+            <input value={draft.description || ""} onChange={(event) => setDraft((value) => ({ ...value, description: event.target.value }))} placeholder="Human-readable purpose" />
+          </label>
 
-      <Section title="Capacity By Model" subtitle="Current provider pool grouped by service and reported model" error={queries.providers.error}>
-        <DataTable rows={capacity} columns={capacityColumns} empty="No provider capacity is available" compact />
+          <div className="filter-chain">
+            {draft.filters.map((filter, index) => (
+              <div
+                key={`${filter.id || filter.type}-${index}`}
+                className="filter-card"
+                draggable
+                onDragStart={() => setDragIndex(index)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => onDropFilter(event, index)}
+              >
+                <div className="filter-card-head">
+                  <GripVertical aria-hidden="true" size={16} />
+                  <strong>{index + 1}. {filter.label || filter.type}</strong>
+                  <StatusBadge value={filter.type} tone={filter.type === "any" ? "ok" : "warn"} />
+                  <div className="row-actions">
+                    <button className="icon-button small" type="button" aria-label="Move filter up" disabled={index === 0} onClick={() => moveFilter(index, index - 1)}>
+                      <ArrowUp aria-hidden="true" size={14} />
+                    </button>
+                    <button className="icon-button small" type="button" aria-label="Move filter down" disabled={index === draft.filters.length - 1} onClick={() => moveFilter(index, index + 1)}>
+                      <ArrowDown aria-hidden="true" size={14} />
+                    </button>
+                    <button className="icon-button small danger-text" type="button" aria-label="Remove filter" disabled={draft.filters.length === 1} onClick={() => removeFilter(index)}>
+                      <Trash2 aria-hidden="true" size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="filter-fields">
+                  <label className="field">
+                    <span>Type</span>
+                    <select value={filter.type} onChange={(event) => updateFilter(index, { type: event.target.value })}>
+                      <option value="any">Any</option>
+                      <option value="criteria">Criteria</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Label</span>
+                    <input value={filter.label || ""} onChange={(event) => updateFilter(index, { label: event.target.value })} />
+                  </label>
+                  <CriteriaField label="Service" value={filter.criteria?.services} onChange={(value) => updateFilterCriteria(index, "services", value)} />
+                  <CriteriaField label="Protocol" value={filter.criteria?.api_dialects} onChange={(value) => updateFilterCriteria(index, "api_dialects", value)} />
+                  <CriteriaField label="Provider Type" value={filter.criteria?.provider_types} onChange={(value) => updateFilterCriteria(index, "provider_types", value)} />
+                  <CriteriaField label="Model" value={filter.criteria?.models} onChange={(value) => updateFilterCriteria(index, "models", value)} />
+                  <CriteriaField label="Account" value={filter.criteria?.accounts} onChange={(value) => updateFilterCriteria(index, "accounts", value)} />
+                  <CriteriaField label="Node" value={filter.criteria?.node_ids} onChange={(value) => updateFilterCriteria(index, "node_ids", value)} />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="form-actions">
+            <button className="button secondary" type="button" onClick={addFilter}>
+              <Plus aria-hidden="true" size={15} />
+              Filter
+            </button>
+            <button className="button primary" type="submit" disabled={saving}>
+              <Save aria-hidden="true" size={15} />
+              Save
+            </button>
+            {editingID ? <button className="button ghost" type="button" onClick={resetDraft}>Cancel</button> : null}
+          </div>
+        </form>
+      </Section>
+
+      <Section title="Dry Run" subtitle="Simulate provider selection through the current filter chain">
+        <form className="route-dry-run-form" onSubmit={submitDryRun}>
+          <label className="field">
+            <span>Model</span>
+            <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="gpt-5-codex" />
+          </label>
+          <label className="field">
+            <span>Protocol</span>
+            <select value={dialect} onChange={(event) => setDialect(event.target.value)}>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="gemini">Gemini</option>
+            </select>
+          </label>
+          <label className="check-row inline">
+            <input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} />
+            <span>stream</span>
+          </label>
+          <button className="button primary" type="submit" disabled={running || !model.trim()}>
+            <Play aria-hidden="true" size={15} />
+            Dry run
+          </button>
+        </form>
+        {error ? <div className="inline-error">{error}</div> : null}
+        {decision ? (
+          <div className="decision-panel">
+            <div className="decision-head">
+              <StatusBadge value={decision.allowed ? "allowed" : "rejected"} tone={decision.allowed ? "ok" : "danger"} />
+              <span className="mono">{decision.routing_rule_id || decision.route_id || "inline rule"}</span>
+              <strong>{decision.selected || decision.reason || ""}</strong>
+            </div>
+            <RouteStepAnimation steps={dryRun?.steps ?? []} activeStep={activeStep} />
+            <DataTable rows={decision.scores ?? []} columns={scoreColumns} empty="No score rows returned" compact />
+          </div>
+        ) : null}
       </Section>
     </div>
   );
+});
+
+function draftFromRule(rule: RoutingRule | null): DraftRule {
+  if (!rule) {
+    return {
+      ...emptyRule,
+      filters: [...emptyRule.filters],
+    };
+  }
+  return {
+    id: rule.id,
+    name: rule.name,
+    scope: rule.scope,
+    owner_email: rule.owner_email || "",
+    description: rule.description || "",
+    filters: rule.filters?.length ? rule.filters : [emptyFilter],
+  };
+}
+
+const RuleNameInput = memo(function RuleNameInput({
+  initialName,
+  resetID,
+  onValueChange,
+}: {
+  initialName: string;
+  resetID: number;
+  onValueChange: (value: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.value = initialName;
+    }
+    onValueChange(initialName);
+  }, [initialName, onValueChange, resetID]);
+
+  return (
+    <input
+      ref={inputRef}
+      defaultValue={initialName}
+      onInput={(event) => {
+        onValueChange(event.currentTarget.value);
+      }}
+      placeholder="default-route"
+      maxLength={128}
+      title="Use only A-Z, a-z, 0-9, '.', '_', '~', or '-'"
+      autoComplete="off"
+      autoCorrect="off"
+      spellCheck={false}
+    />
+  );
+});
+
+function currentDraft(draft: DraftRule, name: string): DraftRule {
+  return {
+    ...draft,
+    name,
+  };
 }
 
 function CriteriaField({ label, value, onChange }: { label: string; value?: string[]; onChange: (value: string) => void }) {

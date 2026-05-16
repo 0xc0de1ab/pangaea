@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -203,7 +203,25 @@ export default function App() {
 
   const adminQueriesEnabled = !oauthLoginRequired && (Boolean(adminToken) || (sessionKnown && (!oauthEnabled || Boolean(oauthUser))));
   const queries = useDashboardQueries(adminToken || undefined, authVersion, adminQueriesEnabled, canManageUsers);
-  const data = useMemo(() => dataFromQueries(queries), [queries]);
+  const data = useMemo(() => dataFromQueries(queries), [
+    queries.health.data,
+    queries.providers.data,
+    queries.nodes.data,
+    queries.containers.data,
+    queries.usage.data,
+    queries.auth.data,
+    queries.controlSessions.data,
+    queries.dataSessions.data,
+    queries.traces.data,
+    queries.audit.data,
+    queries.notifiers.data,
+    queries.notificationHistory.data,
+    queries.quotas.data,
+    queries.apiKeys.data,
+    queries.models.data,
+    queries.users.data,
+    queries.routingRules.data,
+  ]);
   const errorCount = queryErrorCount(queries);
   const isFetching = Object.values(queries).some((query) => query.isFetching);
 
@@ -220,9 +238,9 @@ export default function App() {
     queryClient.clear();
   }
 
-  function refresh() {
+  const refresh = useCallback(function refresh() {
     void queryClient.invalidateQueries();
-  }
+  }, [queryClient]);
 
   function startGoogleLogin() {
     const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;

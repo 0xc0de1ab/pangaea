@@ -98,6 +98,12 @@ export function RequestsView({ data, queries, search, token, onAction, refresh }
     {
       id: "select",
       header: "Sel",
+      headerAction: {
+        disabled: rows.length === 0,
+        onLongPress: () => toggleVisible(!allVisibleSelected),
+        pressed: allVisibleSelected,
+        title: allVisibleSelected ? "Long press to clear this page selection" : "Long press to select this page",
+      },
       cell: (row) => (
         <input
           type="checkbox"
@@ -143,10 +149,6 @@ export function RequestsView({ data, queries, search, token, onAction, refresh }
         error={pageError || queries.traces.error}
         actions={
           <>
-            <label className="trace-select-all">
-              <input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleVisible(event.currentTarget.checked)} />
-              <span>Select page</span>
-            </label>
             <button className="button danger" type="button" disabled={selectedCount === 0} onClick={deleteSelected}>
               <Trash2 aria-hidden="true" size={15} />
               Delete {selectedCount ? n(selectedCount) : ""}
