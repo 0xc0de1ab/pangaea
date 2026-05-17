@@ -108,7 +108,7 @@ type ModelQuota struct {
 
 func (q ModelQuota) MarshalJSON() ([]byte, error) {
 	type modelQuotaJSON struct {
-		RemainingPct float64    `json:"remaining_pct,omitempty"`
+		RemainingPct float64    `json:"remaining_pct"`
 		ResetAt      *time.Time `json:"reset_at,omitempty"`
 		Source       string     `json:"source,omitempty"`
 	}

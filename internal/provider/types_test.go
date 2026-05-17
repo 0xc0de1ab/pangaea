@@ -88,6 +88,16 @@ func TestModelQuotaMarshalOmitsZeroResetAt(t *testing.T) {
 	}
 }
 
+func TestModelQuotaMarshalKeepsZeroRemainingPct(t *testing.T) {
+	data, err := json.Marshal(ModelQuota{RemainingPct: 0, Source: "model quota"})
+	if err != nil {
+		t.Fatalf("marshal quota: %v", err)
+	}
+	if !strings.Contains(string(data), `"remaining_pct":0`) {
+		t.Fatalf("zero remaining_pct should remain visible: %s", data)
+	}
+}
+
 func TestAuthStateMarshalOmitsZeroTimes(t *testing.T) {
 	data, err := json.Marshal(AuthState{Status: AuthHealthy, Refreshable: false})
 	if err != nil {

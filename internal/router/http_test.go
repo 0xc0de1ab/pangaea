@@ -18,6 +18,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/providersim"
 	"github.com/0xc0de1ab/pangaea/internal/quota"
 	"github.com/0xc0de1ab/pangaea/internal/security"
+	"github.com/0xc0de1ab/pangaea/pkg/formats"
 )
 
 func TestHTTPModels(t *testing.T) {
@@ -429,6 +430,11 @@ func TestHTTPProviderUsage(t *testing.T) {
 		InputTokens:  20,
 		OutputTokens: 10,
 		TotalTokens:  30,
+		NativeSummary: formats.UsageReport{
+			Windows: []formats.UsageWindow{
+				{Label: "5h limit", RemainingPct: 0, ResetAt: observedAt.Add(2 * time.Hour), Unit: "5h window"},
+			},
+		},
 	}, observedAt); err != nil {
 		t.Fatalf("update provider usage: %v", err)
 	}
@@ -459,6 +465,9 @@ func TestHTTPProviderUsage(t *testing.T) {
 	}
 	if got.Usage.Subscription == nil || got.Usage.Subscription.Name != "Enterprise" {
 		t.Fatalf("usage response lost subscription: %#v", got.Usage)
+	}
+	if !strings.Contains(rec.Body.String(), `"label":"5h limit"`) || !strings.Contains(rec.Body.String(), `"remaining_pct":0`) {
+		t.Fatalf("usage response should keep exhausted quota window visible: %s", rec.Body.String())
 	}
 }
 

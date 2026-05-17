@@ -86,7 +86,7 @@ type UsageWindow struct {
 	Used  int64 `json:"used,omitempty"`
 	Limit int64 `json:"limit,omitempty"`
 	// RemainingPct is 0..100 left in this window.
-	RemainingPct float64 `json:"remaining_pct,omitempty"`
+	RemainingPct float64 `json:"remaining_pct"`
 	// Unit labels Used/Limit when present (e.g. "messages", "requests").
 	Unit string `json:"unit,omitempty"`
 	// ResetAt is when this bucket rolls over.
