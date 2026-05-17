@@ -104,6 +104,7 @@ func (e *Engine) removeProviderAuth(providerInstanceID string) (int, int) {
 		if len(kept) == 0 {
 			delete(e.authRecords, authID)
 			delete(e.authRaw, authID)
+			delete(e.authRawMeta, authID)
 			recordsRemoved++
 			e.appendAuthEventLocked(AuthEvent{
 				AuthID:             authID,
@@ -139,6 +140,7 @@ func (e *Engine) removeProviderAuth(providerInstanceID string) (int, int) {
 			record.HasDownload = false
 			record.DownloadURL = ""
 			delete(e.authRaw, authID)
+			delete(e.authRawMeta, authID)
 		}
 		e.authRecords[authID] = record
 		e.appendAuthEventLocked(AuthEvent{

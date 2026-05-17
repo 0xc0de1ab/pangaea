@@ -193,6 +193,9 @@ func copyAuthToHostMountIfPossible(spec runtime.CopySpec, mounts []runtime.Mount
 	uid, gid := copySpecOwner(spec, mount)
 	if err := chownIfRequested(filepath.Dir(hostPath), uid, gid); err != nil {
 		if errors.Is(err, os.ErrPermission) {
+			if chmodErr := chmodAuthFallbackDirs(mount.Source, filepath.Dir(hostPath)); chmodErr != nil {
+				return false, chmodErr
+			}
 			return false, nil
 		}
 		return false, err
@@ -227,6 +230,9 @@ func copyAuthToHostMountIfPossible(spec runtime.CopySpec, mounts []runtime.Mount
 	}
 	if err := chownIfRequested(tmpPath, uid, gid); err != nil {
 		if errors.Is(err, os.ErrPermission) {
+			if chmodErr := chmodAuthFallbackDirs(mount.Source, filepath.Dir(hostPath)); chmodErr != nil {
+				return false, chmodErr
+			}
 			return false, nil
 		}
 		return false, err
@@ -292,8 +298,28 @@ func chownIfRequested(path string, uid int, gid int) error {
 	if gid <= 0 {
 		gid = -1
 	}
-	if err := os.Chown(path, uid, gid); err != nil && !os.IsPermission(err) {
+	if err := os.Chown(path, uid, gid); err != nil {
 		return err
+	}
+	return nil
+}
+
+func chmodAuthFallbackDirs(root string, dir string) error {
+	root = filepath.Clean(root)
+	dir = filepath.Clean(dir)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return os.Chmod(dir, 0o777)
+	}
+	current := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		if err := os.Chmod(current, 0o777); err != nil {
+			return err
+		}
 	}
 	return nil
 }

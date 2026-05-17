@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -17,6 +18,17 @@ import (
 const maxAuthEvents = 512
 
 const authEventProviderHeartbeat = "provider.heartbeat.auth"
+
+type authRawMetadata struct {
+	Auth               provider.AuthState
+	Fingerprint        string
+	Source             string
+	Filename           string
+	Format             string
+	ProviderInstanceID string
+	ObservedAt         time.Time
+	UpdatedAt          time.Time
+}
 
 type AuthRecord struct {
 	ID                 string              `json:"id"`
@@ -183,6 +195,9 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 	if e.authRaw == nil {
 		e.authRaw = make(map[string][]byte)
 	}
+	if e.authRawMeta == nil {
+		e.authRawMeta = make(map[string]authRawMetadata)
+	}
 	record := e.authRecords[authID]
 	previous := record
 	if record.ID == "" {
@@ -209,10 +224,23 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 	record.ObservedAt = observedAt
 	record.ReportedAt = observedAt
 	record.UpdatedAt = now
-	if len(raw) > 0 {
+	if len(raw) > 0 && shouldStoreAuthRaw(e.authRawMeta[authID], auth, observedAt) {
 		record.HasDownload = true
 		record.DownloadURL = "/router/v1/auth/" + url.PathEscape(authID) + "/download"
 		e.authRaw[authID] = append([]byte(nil), raw...)
+		e.authRawMeta[authID] = authRawMetadata{
+			Auth:               auth,
+			Fingerprint:        fingerprint,
+			Source:             firstNonEmpty(source, auth.SelectedSource),
+			Filename:           filename,
+			Format:             format,
+			ProviderInstanceID: providerInstanceID,
+			ObservedAt:         observedAt,
+			UpdatedAt:          now,
+		}
+	} else if len(e.authRaw[authID]) > 0 {
+		record.HasDownload = true
+		record.DownloadURL = "/router/v1/auth/" + url.PathEscape(authID) + "/download"
 	}
 	record.Replicas = upsertAuthReplica(record.Replicas, replica)
 	e.authRecords[authID] = record
@@ -234,6 +262,80 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 			At:                 observedAt,
 		})
 	}
+}
+
+func (e *Engine) ScheduleAuthSyncForProvider(providerInstanceID string, reason string) {
+	pushes := e.authPushesForProvider(providerInstanceID, reason)
+	for _, push := range pushes {
+		push := push
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = e.SendAuthPush(ctx, push)
+		}()
+	}
+}
+
+func (e *Engine) authPushesForProvider(providerInstanceID string, reason string) []control.AuthPush {
+	if e == nil || e.registry == nil || strings.TrimSpace(providerInstanceID) == "" {
+		return nil
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return nil
+	}
+	account := accountWithFallback(registration.Identity.Account, registration.Auth.Account)
+	authID := authRecordID(registration.Identity.Service, account, providerInstanceID)
+	return e.authPushesForRecord(authID, providerInstanceID, reason)
+}
+
+func (e *Engine) authPushesForRecord(authID string, _ string, reason string) []control.AuthPush {
+	if e == nil || e.registry == nil || strings.TrimSpace(authID) == "" {
+		return nil
+	}
+	e.authMu.RLock()
+	record, ok := e.authRecords[authID]
+	raw := append([]byte(nil), e.authRaw[authID]...)
+	meta := e.authRawMeta[authID]
+	replicas := append([]AuthReplica(nil), record.Replicas...)
+	e.authMu.RUnlock()
+	if !ok || len(raw) == 0 || !authStatusCanBePushed(meta.Auth.Status) {
+		return nil
+	}
+	pushes := []control.AuthPush{}
+	for _, replica := range replicas {
+		if replica.ProviderInstanceID == "" || replica.ProviderInstanceID == meta.ProviderInstanceID {
+			continue
+		}
+		target, ok := e.registry.Get(replica.ProviderInstanceID)
+		if !ok || !hasCapability(target.Capabilities, provider.CapabilityAuthFile) {
+			continue
+		}
+		if target.Health.Status == provider.HealthAuthUpdating || target.Auth.Status == provider.AuthRefreshing {
+			continue
+		}
+		if replica.Fingerprint != "" && meta.Fingerprint != "" &&
+			replica.Fingerprint == meta.Fingerprint && authStatusCanBePushed(replica.Status) {
+			continue
+		}
+		auth := meta.Auth
+		auth.Account = accountWithFallback(record.Account, auth.Account)
+		if auth.SelectedSource == "" {
+			auth.SelectedSource = "router"
+		}
+		pushes = append(pushes, control.AuthPush{
+			ProviderInstanceID: replica.ProviderInstanceID,
+			AccountID:          record.Account.ID,
+			Auth:               auth,
+			Fingerprint:        meta.Fingerprint,
+			Source:             firstNonEmpty(meta.Source, "router"),
+			Filename:           canonicalAuthFilename(record.Service, meta.Format, meta.Filename),
+			Format:             meta.Format,
+			Raw:                append([]byte(nil), raw...),
+			Reason:             firstNonEmpty(reason, "sync latest auth for same service account"),
+		})
+	}
+	return pushes
 }
 
 func (e *Engine) AuthRecords() []AuthRecord {
@@ -261,6 +363,37 @@ func (e *Engine) AuthRecords() []AuthRecord {
 		}
 	})
 	return out
+}
+
+func shouldStoreAuthRaw(current authRawMetadata, auth provider.AuthState, observedAt time.Time) bool {
+	if current.Fingerprint == "" {
+		return true
+	}
+	if !authStatusCanBePushed(auth.Status) {
+		return false
+	}
+	if !authStatusCanBePushed(current.Auth.Status) {
+		return true
+	}
+	if !auth.ExpiresAt.IsZero() && current.Auth.ExpiresAt.IsZero() {
+		return true
+	}
+	if !auth.ExpiresAt.IsZero() && !current.Auth.ExpiresAt.IsZero() && auth.ExpiresAt.After(current.Auth.ExpiresAt) {
+		return true
+	}
+	if auth.ExpiresAt.Equal(current.Auth.ExpiresAt) && observedAt.After(current.ObservedAt) {
+		return true
+	}
+	return false
+}
+
+func authStatusCanBePushed(status provider.AuthStatus) bool {
+	switch status {
+	case provider.AuthHealthy, provider.AuthRefreshSoon:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Engine) AuthEvents(authID string) []AuthEvent {

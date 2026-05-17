@@ -72,6 +72,7 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 			return err
 		}
 		engine.RecordProviderAuthHeartbeat(heartbeat.ProviderInstanceID, heartbeat.Auth, heartbeat.ReportedAt)
+		engine.ScheduleAuthSyncForProvider(heartbeat.ProviderInstanceID, "provider heartbeat reported auth drift; syncing latest account auth")
 		return nil
 	case control.MessageTypeProviderInventoryReport:
 		report, err := control.Decode[control.ProviderInventoryReport](env, control.MessageTypeProviderInventoryReport)
@@ -91,6 +92,7 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 			return err
 		}
 		engine.RecordProviderAuthReport(report.ProviderInstanceID, report.Auth, report.ReportedAt)
+		engine.ScheduleAuthSyncForProvider(report.ProviderInstanceID, "provider reported auth drift; syncing latest account auth")
 		return nil
 	case control.MessageTypeProviderUsageReport:
 		report, err := control.Decode[control.ProviderUsageReport](env, control.MessageTypeProviderUsageReport)
@@ -121,6 +123,7 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 			return err
 		}
 		engine.RecordAuthSnapshot(snapshot)
+		engine.ScheduleAuthSyncForProvider(snapshot.ProviderInstanceID, "provider observed auth snapshot; syncing latest account auth")
 		return nil
 	case control.MessageTypeAuthRefreshResult:
 		result, err := control.Decode[control.AuthRefreshResult](env, control.MessageTypeAuthRefreshResult)
@@ -149,6 +152,7 @@ func applyControlEnvelope(engine *Engine, env control.Envelope) error {
 		}
 		result.Auth = auth
 		engine.RecordAuthRefreshResult(result)
+		engine.ScheduleAuthSyncForProvider(result.ProviderInstanceID, "provider refresh result updated auth; syncing latest account auth")
 		engine.completeAuthRefreshResult(result)
 		return nil
 	case control.MessageTypeNodeHello:

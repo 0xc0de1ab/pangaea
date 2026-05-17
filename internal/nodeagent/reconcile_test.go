@@ -529,6 +529,59 @@ func TestReconcileProviderContainerCopiesAuthToPersistentHostMountBeforeStart(t 
 	}
 }
 
+func TestCopyAuthToHostMountFallsBackWhenChownDenied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can chown arbitrary bind mount owners")
+	}
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "host", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte(`{"token":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "state")
+	copied, err := copyAuthToHostMountIfPossible(runtime.CopySpec{
+		HostPath:      authPath,
+		ContainerPath: "/var/lib/pangaea/auth/codex/auth.json",
+		FileMode:      0o600,
+	}, []runtime.MountSpec{{
+		Type:          "bind",
+		Source:        filepath.Join(statePath, "var-lib-pangaea"),
+		Target:        "/var/lib/pangaea",
+		Directory:     true,
+		OwnerUID:      os.Geteuid() + 100000,
+		OwnerGID:      os.Getegid() + 100000,
+		DirectoryMode: 0o700,
+	}})
+	if err != nil {
+		t.Fatalf("copy auth to host mount: %v", err)
+	}
+	if copied {
+		t.Fatal("copy should fall back to runtime copy when chown is denied")
+	}
+	authDir := filepath.Join(statePath, "var-lib-pangaea", "auth", "codex")
+	authParent := filepath.Dir(authDir)
+	parentInfo, err := os.Stat(authParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parentInfo.Mode().Perm(); got != 0o777 {
+		t.Fatalf("fallback auth parent mode = %v, want 0777", got)
+	}
+	info, err := os.Stat(authDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o777 {
+		t.Fatalf("fallback auth dir mode = %v, want 0777", got)
+	}
+	if _, err := os.Stat(filepath.Join(authDir, "auth.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("auth file should not be host-copied on fallback, err=%v", err)
+	}
+}
+
 func TestReconcileProviderContainerSkipsPullWhenImagePullPolicyNever(t *testing.T) {
 	rt := &fakeContainerRuntime{}
 	_, err := ReconcileProviderContainer(context.Background(), rt, ProviderSpec{
