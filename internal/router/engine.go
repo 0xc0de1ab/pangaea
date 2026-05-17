@@ -19,40 +19,43 @@ var ErrRouterNotReady = errors.New("router not ready")
 
 const staleRateLimitDegradedAfter = 30 * time.Second
 
+const authEventUsageQuotaWindowReset = "usage.quota.window.reset"
+
 type Engine struct {
-	policy             RoutingPolicy
-	registry           *provider.Registry
-	ledger             *quota.Ledger
-	invoker            Invoker
-	availability       ProviderAvailability
-	usageMu            sync.RWMutex
-	usages             map[string]ProviderUsageSnapshot
-	traceMu            sync.RWMutex
-	traces             map[string]RequestTrace
-	traceIDs           []string
-	auditMu            sync.RWMutex
-	auditEvents        map[string]AuditEvent
-	auditIDs           []string
-	auditSeq           uint64
-	authMu             sync.RWMutex
-	authRecords        map[string]AuthRecord
-	authRaw            map[string][]byte
-	authRawMeta        map[string]authRawMetadata
-	authEvents         []AuthEvent
-	notifierMu         sync.RWMutex
-	notifierStatuses   map[string]NotifierStatus
-	notifierHistory    []NotifierDelivery
-	notifierSeq        uint64
-	usersMu            sync.RWMutex
-	users              map[string]RouterUser
-	rulesMu            sync.RWMutex
-	routingRules       map[string]RoutingRule
-	nodeMu             sync.RWMutex
-	nodes              map[string]NodeSnapshot
-	containers         map[string]ContainerSnapshot
-	controlMu          sync.RWMutex
-	controlSessions    map[string]*controlSession
-	pendingAuthRefresh map[string]chan control.AuthRefreshResult
+	policy              RoutingPolicy
+	registry            *provider.Registry
+	ledger              *quota.Ledger
+	invoker             Invoker
+	availability        ProviderAvailability
+	usageMu             sync.RWMutex
+	usages              map[string]ProviderUsageSnapshot
+	traceMu             sync.RWMutex
+	traces              map[string]RequestTrace
+	traceIDs            []string
+	auditMu             sync.RWMutex
+	auditEvents         map[string]AuditEvent
+	auditIDs            []string
+	auditSeq            uint64
+	authMu              sync.RWMutex
+	authRecords         map[string]AuthRecord
+	authRaw             map[string][]byte
+	authRawMeta         map[string]authRawMetadata
+	authEvents          []AuthEvent
+	notifierMu          sync.RWMutex
+	notifierStatuses    map[string]NotifierStatus
+	notifierHistory     []NotifierDelivery
+	notifierSeq         uint64
+	usersMu             sync.RWMutex
+	users               map[string]RouterUser
+	rulesMu             sync.RWMutex
+	routingRules        map[string]RoutingRule
+	nodeMu              sync.RWMutex
+	nodes               map[string]NodeSnapshot
+	containers          map[string]ContainerSnapshot
+	controlMu           sync.RWMutex
+	controlSessions     map[string]*controlSession
+	pendingAuthRefresh  map[string]chan control.AuthRefreshResult
+	pendingAuthRequests map[string]control.AuthRefreshRequest
 }
 
 type RouteExecutionRequest struct {
@@ -103,22 +106,23 @@ func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.
 		ledger = quota.NewLedger()
 	}
 	return &Engine{
-		policy:             policy,
-		registry:           registry,
-		ledger:             ledger,
-		usages:             make(map[string]ProviderUsageSnapshot),
-		traces:             make(map[string]RequestTrace),
-		auditEvents:        make(map[string]AuditEvent),
-		authRecords:        make(map[string]AuthRecord),
-		authRaw:            make(map[string][]byte),
-		authRawMeta:        make(map[string]authRawMetadata),
-		notifierStatuses:   make(map[string]NotifierStatus),
-		users:              make(map[string]RouterUser),
-		routingRules:       make(map[string]RoutingRule),
-		nodes:              make(map[string]NodeSnapshot),
-		containers:         make(map[string]ContainerSnapshot),
-		controlSessions:    make(map[string]*controlSession),
-		pendingAuthRefresh: make(map[string]chan control.AuthRefreshResult),
+		policy:              policy,
+		registry:            registry,
+		ledger:              ledger,
+		usages:              make(map[string]ProviderUsageSnapshot),
+		traces:              make(map[string]RequestTrace),
+		auditEvents:         make(map[string]AuditEvent),
+		authRecords:         make(map[string]AuthRecord),
+		authRaw:             make(map[string][]byte),
+		authRawMeta:         make(map[string]authRawMetadata),
+		notifierStatuses:    make(map[string]NotifierStatus),
+		users:               make(map[string]RouterUser),
+		routingRules:        make(map[string]RoutingRule),
+		nodes:               make(map[string]NodeSnapshot),
+		containers:          make(map[string]ContainerSnapshot),
+		controlSessions:     make(map[string]*controlSession),
+		pendingAuthRefresh:  make(map[string]chan control.AuthRefreshResult),
+		pendingAuthRequests: make(map[string]control.AuthRefreshRequest),
 	}, nil
 }
 
@@ -391,11 +395,15 @@ func (e *Engine) UpdateProviderUsage(providerInstanceID string, usage provider.U
 		UpdatedAt:          now,
 	}
 	e.usageMu.Lock()
-	defer e.usageMu.Unlock()
 	if e.usages == nil {
 		e.usages = make(map[string]ProviderUsageSnapshot)
 	}
+	previous, hadPrevious := e.usages[providerInstanceID]
 	e.usages[providerInstanceID] = snapshot
+	e.usageMu.Unlock()
+	if hadPrevious {
+		e.recordUsageWindowChanges(registration, previous, snapshot)
+	}
 	return nil
 }
 
@@ -426,6 +434,214 @@ func (e *Engine) ProviderUsages() []ProviderUsageSnapshot {
 		}
 	})
 	return out
+}
+
+func (e *Engine) providerUsagesInRecordOrder() []ProviderUsageSnapshot {
+	if e == nil {
+		return nil
+	}
+	e.usageMu.RLock()
+	defer e.usageMu.RUnlock()
+	out := make([]ProviderUsageSnapshot, 0, len(e.usages))
+	for _, usage := range e.usages {
+		out = append(out, usage)
+	}
+	return out
+}
+
+func (e *Engine) restoreProviderUsages(usages []ProviderUsageSnapshot) {
+	if e == nil || len(usages) == 0 {
+		return
+	}
+	e.usageMu.Lock()
+	defer e.usageMu.Unlock()
+	if e.usages == nil {
+		e.usages = make(map[string]ProviderUsageSnapshot, len(usages))
+	}
+	for _, usage := range usages {
+		if strings.TrimSpace(usage.ProviderInstanceID) == "" {
+			continue
+		}
+		e.usages[usage.ProviderInstanceID] = usage
+	}
+}
+
+func (e *Engine) restoreAuthEvents(events []AuthEvent) {
+	if e == nil || len(events) == 0 {
+		return
+	}
+	e.authMu.Lock()
+	defer e.authMu.Unlock()
+	if len(events) > maxAuthEvents {
+		events = events[len(events)-maxAuthEvents:]
+	}
+	e.authEvents = make([]AuthEvent, 0, len(events))
+	for _, event := range events {
+		if event.AuthID == "" || event.Type == "" {
+			continue
+		}
+		if len(event.Details) > 0 {
+			event.Details = cloneStringMap(event.Details)
+		}
+		e.authEvents = append(e.authEvents, event)
+	}
+}
+
+func (e *Engine) recordUsageWindowChanges(registration provider.Registration, previous ProviderUsageSnapshot, next ProviderUsageSnapshot) {
+	if e == nil {
+		return
+	}
+	previousWindows := quotaWindowMap(routerProviderQuotaWindows(registration, previous))
+	nextWindows := quotaWindowMap(routerProviderQuotaWindows(registration, next))
+	if len(previousWindows) == 0 || len(nextWindows) == 0 {
+		return
+	}
+	for key, nextWindow := range nextWindows {
+		previousWindow, ok := previousWindows[key]
+		if !ok || !isQuotaWindowReset(previousWindow, nextWindow, next.ReportedAt) {
+			continue
+		}
+		e.recordUsageWindowResetAuthEvent(registration, previous, next, previousWindow, nextWindow)
+	}
+}
+
+func quotaWindowMap(windows []routerQuotaWindow) map[string]routerQuotaWindow {
+	out := make(map[string]routerQuotaWindow, len(windows))
+	for _, window := range windows {
+		key := quotaWindowKey(window)
+		if key == "" {
+			continue
+		}
+		out[key] = window
+	}
+	return out
+}
+
+func quotaWindowKey(window routerQuotaWindow) string {
+	label := strings.ToLower(strings.TrimSpace(window.Label))
+	if label == "" {
+		return ""
+	}
+	source := strings.ToLower(strings.TrimSpace(window.Source))
+	unit := strings.ToLower(strings.TrimSpace(window.Unit))
+	return label + "|" + source + "|" + unit
+}
+
+func isQuotaWindowReset(previous routerQuotaWindow, next routerQuotaWindow, reportedAt time.Time) bool {
+	if previous.ResetAt.IsZero() || next.ResetAt.IsZero() {
+		return false
+	}
+	if !next.ResetAt.After(previous.ResetAt.Add(time.Minute)) {
+		return false
+	}
+	if previous.Used > 0 && next.Used < previous.Used {
+		return true
+	}
+	if next.Limit > 0 && previous.Limit > 0 && next.Used < previous.Used {
+		return true
+	}
+	if next.RemainingPct > previous.RemainingPct+0.01 {
+		return true
+	}
+	if !reportedAt.IsZero() && !previous.ResetAt.After(reportedAt.Add(time.Minute)) {
+		return true
+	}
+	return false
+}
+
+func (e *Engine) recordUsageWindowResetAuthEvent(registration provider.Registration, previous ProviderUsageSnapshot, next ProviderUsageSnapshot, previousWindow routerQuotaWindow, nextWindow routerQuotaWindow) {
+	identity := registration.Identity
+	account := identity.Account.MergeMissingFrom(registration.Auth.Account)
+	authID := authRecordID(identity.Service, account, identity.ProviderInstanceID)
+	at := next.ReportedAt
+	if at.IsZero() {
+		at = next.UpdatedAt
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	label := firstNonEmpty(strings.TrimSpace(nextWindow.Label), strings.TrimSpace(previousWindow.Label), "quota window")
+	message := fmt.Sprintf(
+		"Quota window %q reset: reset_at moved from %s to %s; usage moved from %s to %s.",
+		label,
+		formatAuthEventTime(previousWindow.ResetAt),
+		formatAuthEventTime(nextWindow.ResetAt),
+		describeQuotaWindowUsage(previousWindow),
+		describeQuotaWindowUsage(nextWindow),
+	)
+	details := map[string]string{
+		"window":               label,
+		"source":               firstNonEmpty(nextWindow.Source, previousWindow.Source),
+		"previous_reset_at":    previousWindow.ResetAt.UTC().Format(time.RFC3339),
+		"new_reset_at":         nextWindow.ResetAt.UTC().Format(time.RFC3339),
+		"previous_usage":       describeQuotaWindowUsage(previousWindow),
+		"new_usage":            describeQuotaWindowUsage(nextWindow),
+		"previous_reported_at": formatOptionalAuthEventTime(previous.ReportedAt),
+		"new_reported_at":      formatOptionalAuthEventTime(next.ReportedAt),
+	}
+	if previousWindow.Unit != "" || nextWindow.Unit != "" {
+		details["unit"] = firstNonEmpty(nextWindow.Unit, previousWindow.Unit)
+	}
+	if previousWindow.RemainingPct != 0 || nextWindow.RemainingPct != 0 {
+		details["previous_remaining_pct"] = fmt.Sprintf("%.1f", previousWindow.RemainingPct)
+		details["new_remaining_pct"] = fmt.Sprintf("%.1f", nextWindow.RemainingPct)
+		details["previous_used_pct"] = fmt.Sprintf("%.1f", 100-previousWindow.RemainingPct)
+		details["new_used_pct"] = fmt.Sprintf("%.1f", 100-nextWindow.RemainingPct)
+	}
+	if previousWindow.Limit > 0 || nextWindow.Limit > 0 || previousWindow.Used > 0 || nextWindow.Used > 0 {
+		details["previous_used"] = fmt.Sprintf("%d", previousWindow.Used)
+		details["previous_limit"] = fmt.Sprintf("%d", previousWindow.Limit)
+		details["new_used"] = fmt.Sprintf("%d", nextWindow.Used)
+		details["new_limit"] = fmt.Sprintf("%d", nextWindow.Limit)
+	}
+	e.authMu.Lock()
+	defer e.authMu.Unlock()
+	e.appendAuthEventLocked(AuthEvent{
+		AuthID:             authID,
+		Type:               authEventUsageQuotaWindowReset,
+		Service:            identity.Service,
+		Account:            account,
+		ProviderType:       identity.ProviderType,
+		ProviderInstanceID: identity.ProviderInstanceID,
+		NodeID:             identity.NodeID,
+		HostName:           identity.HostName,
+		Status:             registration.Auth.Status,
+		Source:             firstNonEmpty(next.Usage.Source, previous.Usage.Source),
+		Message:            message,
+		Details:            details,
+		At:                 at,
+	})
+}
+
+func describeQuotaWindowUsage(window routerQuotaWindow) string {
+	if window.Limit > 0 {
+		unit := strings.TrimSpace(window.Unit)
+		if unit != "" {
+			return fmt.Sprintf("%d/%d %s used, %.1f%% remaining", window.Used, window.Limit, unit, window.RemainingPct)
+		}
+		return fmt.Sprintf("%d/%d used, %.1f%% remaining", window.Used, window.Limit, window.RemainingPct)
+	}
+	if window.RemainingPct != 0 {
+		return fmt.Sprintf("%.1f%% used, %.1f%% remaining", 100-window.RemainingPct, window.RemainingPct)
+	}
+	if window.Used > 0 {
+		return fmt.Sprintf("%d used", window.Used)
+	}
+	return "0.0% used, 100.0% remaining"
+}
+
+func formatAuthEventTime(value time.Time) string {
+	if value.IsZero() {
+		return "unknown"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func formatOptionalAuthEventTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (e *Engine) ReserveRoute(request RouteExecutionRequest) (RouteExecution, error) {

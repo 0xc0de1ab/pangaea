@@ -364,7 +364,11 @@ func handleSimulatorAuthRefreshRequest(ctx context.Context, client *controlClien
 	result := control.AuthRefreshResult{
 		RefreshID:          request.RefreshID,
 		ProviderInstanceID: request.ProviderInstanceID,
-		ReportedAt:         time.Now().UTC(),
+		Reason:             request.Reason,
+		Metadata: mergeSimulatorAuthRefreshMetadata(request.Metadata, control.AuthRefreshMetadata{
+			ExecutionMethod: "simulator",
+		}),
+		ReportedAt: time.Now().UTC(),
 	}
 	if request.ProviderInstanceID != registration.Identity.ProviderInstanceID {
 		result.OK = false
@@ -381,6 +385,31 @@ func handleSimulatorAuthRefreshRequest(ctx context.Context, client *controlClien
 		result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: "simulator auth refresh did not produce healthy auth"}
 	}
 	return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+request.RefreshID, result)
+}
+
+func mergeSimulatorAuthRefreshMetadata(base control.AuthRefreshMetadata, extra control.AuthRefreshMetadata) control.AuthRefreshMetadata {
+	if base.Trigger == "" {
+		base.Trigger = extra.Trigger
+	}
+	if base.Initiator == "" {
+		base.Initiator = extra.Initiator
+	}
+	if base.RequestMethod == "" {
+		base.RequestMethod = extra.RequestMethod
+	}
+	if base.ExecutionMethod == "" {
+		base.ExecutionMethod = extra.ExecutionMethod
+	}
+	if base.Command == "" {
+		base.Command = extra.Command
+	}
+	if base.Endpoint == "" {
+		base.Endpoint = extra.Endpoint
+	}
+	if base.Trigger == "" {
+		base.Trigger = "manual"
+	}
+	return base
 }
 
 func handleSimulatorAuthPush(ctx context.Context, client *controlClientConn, sim *providersim.Simulator, push control.AuthPush) error {

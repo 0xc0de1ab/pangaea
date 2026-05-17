@@ -9,14 +9,16 @@ import (
 const RouterStateSnapshotVersion = "router-state/v1"
 
 type StateSnapshot struct {
-	Version             string                 `json:"version"`
-	SavedAt             time.Time              `json:"saved_at"`
-	Traces              []RequestTrace         `json:"traces,omitempty"`
-	Quotas              []quota.SnapshotRecord `json:"quotas,omitempty"`
-	Users               []RouterUser           `json:"users,omitempty"`
-	RoutingRules        []RoutingRule          `json:"routing_rules,omitempty"`
-	Notifiers           []NotifierStatus       `json:"notifiers,omitempty"`
-	NotificationHistory []NotifierDelivery     `json:"notification_history,omitempty"`
+	Version             string                  `json:"version"`
+	SavedAt             time.Time               `json:"saved_at"`
+	Traces              []RequestTrace          `json:"traces,omitempty"`
+	Quotas              []quota.SnapshotRecord  `json:"quotas,omitempty"`
+	Usages              []ProviderUsageSnapshot `json:"usages,omitempty"`
+	AuthEvents          []AuthEvent             `json:"auth_events,omitempty"`
+	Users               []RouterUser            `json:"users,omitempty"`
+	RoutingRules        []RoutingRule           `json:"routing_rules,omitempty"`
+	Notifiers           []NotifierStatus        `json:"notifiers,omitempty"`
+	NotificationHistory []NotifierDelivery      `json:"notification_history,omitempty"`
 }
 
 func (e *Engine) SnapshotState(now time.Time) StateSnapshot {
@@ -28,6 +30,8 @@ func (e *Engine) SnapshotState(now time.Time) StateSnapshot {
 		SavedAt:             now.UTC(),
 		Traces:              e.requestTracesInRecordOrder(defaultRequestTraceLimit),
 		Quotas:              e.ledgerSnapshots(),
+		Usages:              e.providerUsagesInRecordOrder(),
+		AuthEvents:          e.authEventsInRecordOrder(maxAuthEvents),
 		Users:               e.ListUsers(),
 		RoutingRules:        e.ListRoutingRules(),
 		Notifiers:           e.NotifierStatuses(),
@@ -41,6 +45,12 @@ func (e *Engine) RestoreState(snapshot StateSnapshot) {
 	}
 	if len(snapshot.Quotas) > 0 && e.ledger != nil {
 		_ = e.ledger.RestoreSnapshots(snapshot.Quotas)
+	}
+	if len(snapshot.Usages) > 0 {
+		e.restoreProviderUsages(snapshot.Usages)
+	}
+	if len(snapshot.AuthEvents) > 0 {
+		e.restoreAuthEvents(snapshot.AuthEvents)
 	}
 	if len(snapshot.Traces) > 0 {
 		e.traceMu.Lock()

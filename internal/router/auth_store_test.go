@@ -37,6 +37,7 @@ func TestAuthDownloadUsesGitHubCopilotConfigFilename(t *testing.T) {
 		time.Now().UTC(),
 		"auth.snapshot",
 		"copilot auth snapshot",
+		nil,
 	)
 
 	records := engine.AuthRecords()
@@ -82,6 +83,7 @@ func TestAuthRecordsNormalizeGenericGitHubCopilotFilename(t *testing.T) {
 		time.Now().UTC(),
 		"auth.snapshot",
 		"copilot auth snapshot",
+		nil,
 	)
 
 	records := engine.AuthRecords()

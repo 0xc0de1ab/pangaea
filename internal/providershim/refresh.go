@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,10 @@ import (
 
 type AuthRefresher interface {
 	RefreshAuth(context.Context, control.AuthRefreshRequest, provider.Registration) (provider.AuthState, error)
+}
+
+type AuthRefreshMetadataReporter interface {
+	AuthRefreshMetadata() control.AuthRefreshMetadata
 }
 
 type AuthRefresherFunc func(context.Context, control.AuthRefreshRequest, provider.Registration) (provider.AuthState, error)
@@ -127,6 +132,16 @@ func (r *CommandAuthRefresher) RefreshAuth(ctx context.Context, request control.
 	return r.authStateFromFile(ctx, auth)
 }
 
+func (r *CommandAuthRefresher) AuthRefreshMetadata() control.AuthRefreshMetadata {
+	if r == nil {
+		return control.AuthRefreshMetadata{}
+	}
+	return control.AuthRefreshMetadata{
+		ExecutionMethod: "command",
+		Command:         safeRefreshCommandLabel(r.command),
+	}
+}
+
 func (r *CommandAuthRefresher) authStateFromFile(ctx context.Context, auth provider.AuthState) (provider.AuthState, error) {
 	raw, err := os.ReadFile(r.authPath)
 	if err != nil {
@@ -215,6 +230,37 @@ func LoginShellRefreshCommand(binary string, args ...string) []string {
 	out := []string{"bash", "-lc", command, binary + "-refresh"}
 	out = append(out, args...)
 	return out
+}
+
+func safeRefreshCommandLabel(command []string) string {
+	if len(command) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(command))
+	for i, part := range command {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if i == 0 {
+			parts = append(parts, filepath.Base(part))
+			continue
+		}
+		lower := strings.ToLower(part)
+		if strings.Contains(lower, "token") || strings.Contains(lower, "secret") || strings.Contains(lower, "password") || strings.Contains(lower, "key=") {
+			parts = append(parts, "<redacted>")
+			continue
+		}
+		if len(part) > 96 {
+			parts = append(parts, part[:96]+"...")
+			continue
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) > 8 {
+		parts = append(parts[:8], fmt.Sprintf("...(+%d args)", len(parts)-8))
+	}
+	return strings.Join(parts, " ")
 }
 
 func shellQuote(value string) string {

@@ -713,6 +713,11 @@ func maybeStaticAutoAuthRefresh(ctx context.Context, client *controlClientConn, 
 		RefreshID:          refreshID,
 		ProviderInstanceID: registration.Identity.ProviderInstanceID,
 		Reason:             "auto refresh threshold reached",
+		Metadata: control.AuthRefreshMetadata{
+			Trigger:       "automatic",
+			Initiator:     "provider-shim.auto_refresh",
+			RequestMethod: "internal",
+		},
 	})
 	return client.sendAndWaitAck(ctx, control.MessageTypeAuthRefreshResult, "auth_refresh_result_"+refreshID, result)
 }
@@ -767,17 +772,48 @@ func executeStaticAuthRefresh(ctx context.Context, state *staticControlState, re
 		}
 	}
 	state.setAuth(auth)
+	metadata := request.Metadata
+	if reporter, ok := refresher.(AuthRefreshMetadataReporter); ok {
+		metadata = mergeAuthRefreshMetadata(metadata, reporter.AuthRefreshMetadata())
+	}
+	if metadata.Trigger == "" {
+		metadata.Trigger = "manual"
+	}
 	result := control.AuthRefreshResult{
 		RefreshID:          request.RefreshID,
 		ProviderInstanceID: registration.Identity.ProviderInstanceID,
 		Auth:               auth,
 		OK:                 ok,
+		Reason:             request.Reason,
+		Metadata:           metadata,
 		ReportedAt:         time.Now().UTC(),
 	}
 	if refreshErr != nil {
 		result.Error = &control.ErrorPayload{Code: "refresh_failed", Message: refreshErr.Error()}
 	}
 	return result
+}
+
+func mergeAuthRefreshMetadata(base control.AuthRefreshMetadata, extra control.AuthRefreshMetadata) control.AuthRefreshMetadata {
+	if base.Trigger == "" {
+		base.Trigger = extra.Trigger
+	}
+	if base.Initiator == "" {
+		base.Initiator = extra.Initiator
+	}
+	if base.RequestMethod == "" {
+		base.RequestMethod = extra.RequestMethod
+	}
+	if base.ExecutionMethod == "" {
+		base.ExecutionMethod = extra.ExecutionMethod
+	}
+	if base.Command == "" {
+		base.Command = extra.Command
+	}
+	if base.Endpoint == "" {
+		base.Endpoint = extra.Endpoint
+	}
+	return base
 }
 
 func cloneProviderModels(models []provider.Model) []provider.Model {

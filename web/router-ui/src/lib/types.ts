@@ -218,6 +218,7 @@ export type AuthEvent = {
   fingerprint?: string;
   source?: string;
   message?: string;
+  details?: Record<string, string>;
   at?: string;
 };
 

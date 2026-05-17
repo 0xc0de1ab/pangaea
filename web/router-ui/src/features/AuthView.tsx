@@ -196,6 +196,7 @@ function AuthTimeline({ events }: { events: AuthEvent[] }) {
               <span>{fmtTime(event.at)}</span>
             </div>
             <p>{event.message || authEventMessage(event)}</p>
+            {event.details && Object.keys(event.details).length ? <AuthEventDetails details={event.details} /> : null}
             <div className="auth-event-meta">
               <span>{event.host_name || ""}</span>
               <span className="mono">{event.provider_instance_id || ""}</span>
@@ -205,6 +206,23 @@ function AuthTimeline({ events }: { events: AuthEvent[] }) {
         </article>
       ))}
     </div>
+  );
+}
+
+function AuthEventDetails({ details }: { details: Record<string, string> }) {
+  const entries = Object.entries(details).filter(([, value]) => value !== "");
+  if (!entries.length) {
+    return null;
+  }
+  return (
+    <dl className="auth-event-details">
+      {entries.map(([key, value]) => (
+        <div key={key}>
+          <dt>{key.replaceAll("_", " ")}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -236,6 +254,9 @@ function authEventMessage(event: AuthEvent) {
   }
   if (event.type === "auth.download") {
     return "Operator downloaded the latest auth file.";
+  }
+  if (event.type === "usage.quota.window.reset") {
+    return "Provider quota rolling window changed.";
   }
   return "Auth state changed.";
 }

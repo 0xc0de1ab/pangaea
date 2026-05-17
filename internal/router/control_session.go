@@ -60,6 +60,15 @@ func (e *Engine) RequestAuthRefresh(ctx context.Context, request control.AuthRef
 	if strings.TrimSpace(request.RefreshID) == "" {
 		request.RefreshID = newControlRequestID("refresh", request.ProviderInstanceID)
 	}
+	if request.Metadata.Trigger == "" {
+		request.Metadata.Trigger = "manual"
+	}
+	if request.Metadata.Initiator == "" {
+		request.Metadata.Initiator = "router.http"
+	}
+	if request.Metadata.RequestMethod == "" {
+		request.Metadata.RequestMethod = "api"
+	}
 	if request.DeadlineAt.IsZero() {
 		if deadline, ok := ctx.Deadline(); ok {
 			request.DeadlineAt = deadline.UTC()
@@ -78,12 +87,16 @@ func (e *Engine) RequestAuthRefresh(ctx context.Context, request control.AuthRef
 	if e.pendingAuthRefresh == nil {
 		e.pendingAuthRefresh = make(map[string]chan control.AuthRefreshResult)
 	}
+	if e.pendingAuthRequests == nil {
+		e.pendingAuthRequests = make(map[string]control.AuthRefreshRequest)
+	}
 	if _, exists := e.pendingAuthRefresh[request.RefreshID]; exists {
 		e.controlMu.Unlock()
 		return control.AuthRefreshResult{}, fmt.Errorf("%w: duplicate refresh id %q", control.ErrInvalidPayload, request.RefreshID)
 	}
 	resultCh := make(chan control.AuthRefreshResult, 1)
 	e.pendingAuthRefresh[request.RefreshID] = resultCh
+	e.pendingAuthRequests[request.RefreshID] = request
 	e.controlMu.Unlock()
 	defer e.removePendingAuthRefresh(request.RefreshID)
 
@@ -259,6 +272,17 @@ func (e *Engine) removePendingAuthRefresh(refreshID string) {
 	e.controlMu.Lock()
 	defer e.controlMu.Unlock()
 	delete(e.pendingAuthRefresh, refreshID)
+	delete(e.pendingAuthRequests, refreshID)
+}
+
+func (e *Engine) pendingAuthRefreshRequest(refreshID string) (control.AuthRefreshRequest, bool) {
+	if e == nil || strings.TrimSpace(refreshID) == "" {
+		return control.AuthRefreshRequest{}, false
+	}
+	e.controlMu.RLock()
+	defer e.controlMu.RUnlock()
+	request, ok := e.pendingAuthRequests[refreshID]
+	return request, ok
 }
 
 func (e *Engine) markProviderAuthRefreshing(providerInstanceID string) error {

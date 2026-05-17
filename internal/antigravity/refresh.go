@@ -109,6 +109,13 @@ func (r *AuthRefresher) RefreshAuth(ctx context.Context, request control.AuthRef
 	return r.authStateFromFile(ctx, auth)
 }
 
+func (r *AuthRefresher) AuthRefreshMetadata() control.AuthRefreshMetadata {
+	return control.AuthRefreshMetadata{
+		ExecutionMethod: "provider-api",
+		Endpoint:        "ls-core:/v1/account,/v1/models/status",
+	}
+}
+
 func (r *AuthRefresher) refreshContext(ctx context.Context, request control.AuthRefreshRequest) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()

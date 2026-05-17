@@ -182,21 +182,33 @@ type AuthPush struct {
 	DeadlineAt         time.Time          `json:"deadline_at,omitempty"`
 }
 
+type AuthRefreshMetadata struct {
+	Trigger         string `json:"trigger,omitempty"`
+	Initiator       string `json:"initiator,omitempty"`
+	RequestMethod   string `json:"request_method,omitempty"`
+	ExecutionMethod string `json:"execution_method,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Endpoint        string `json:"endpoint,omitempty"`
+}
+
 type AuthRefreshRequest struct {
-	RefreshID          string    `json:"refresh_id"`
-	ProviderInstanceID string    `json:"provider_instance_id"`
-	AccountID          string    `json:"account_id,omitempty"`
-	Reason             string    `json:"reason,omitempty"`
-	DeadlineAt         time.Time `json:"deadline_at,omitempty"`
+	RefreshID          string              `json:"refresh_id"`
+	ProviderInstanceID string              `json:"provider_instance_id"`
+	AccountID          string              `json:"account_id,omitempty"`
+	Reason             string              `json:"reason,omitempty"`
+	Metadata           AuthRefreshMetadata `json:"metadata,omitempty"`
+	DeadlineAt         time.Time           `json:"deadline_at,omitempty"`
 }
 
 type AuthRefreshResult struct {
-	RefreshID          string             `json:"refresh_id"`
-	ProviderInstanceID string             `json:"provider_instance_id"`
-	Auth               provider.AuthState `json:"auth"`
-	OK                 bool               `json:"ok"`
-	Error              *ErrorPayload      `json:"error,omitempty"`
-	ReportedAt         time.Time          `json:"reported_at,omitempty"`
+	RefreshID          string              `json:"refresh_id"`
+	ProviderInstanceID string              `json:"provider_instance_id"`
+	Auth               provider.AuthState  `json:"auth"`
+	OK                 bool                `json:"ok"`
+	Reason             string              `json:"reason,omitempty"`
+	Metadata           AuthRefreshMetadata `json:"metadata,omitempty"`
+	Error              *ErrorPayload       `json:"error,omitempty"`
+	ReportedAt         time.Time           `json:"reported_at,omitempty"`
 }
 
 type ProviderDrain struct {

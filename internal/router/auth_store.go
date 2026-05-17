@@ -86,18 +86,19 @@ type AuthEvent struct {
 	Fingerprint        string              `json:"fingerprint,omitempty"`
 	Source             string              `json:"source,omitempty"`
 	Message            string              `json:"message,omitempty"`
+	Details            map[string]string   `json:"details,omitempty"`
 	At                 time.Time           `json:"at"`
 }
 
 func (e *Engine) RecordProviderAuthReport(providerInstanceID string, auth provider.AuthState, reportedAt time.Time) {
-	e.recordAuth(providerInstanceID, auth, "", "", "", nil, "", reportedAt, "provider.auth.report", "")
+	e.recordAuth(providerInstanceID, auth, "", "", "", nil, "", reportedAt, "provider.auth.report", "", nil)
 }
 
 func (e *Engine) RecordProviderAuthHeartbeat(providerInstanceID string, auth provider.AuthState, reportedAt time.Time) {
 	if auth.Status == "" {
 		return
 	}
-	e.recordAuth(providerInstanceID, auth, "", "", "", nil, "", reportedAt, authEventProviderHeartbeat, "")
+	e.recordAuth(providerInstanceID, auth, "", "", "", nil, "", reportedAt, authEventProviderHeartbeat, "", nil)
 }
 
 func (e *Engine) RecordAuthSnapshot(snapshot control.AuthSnapshot) {
@@ -108,23 +109,178 @@ func (e *Engine) RecordAuthSnapshot(snapshot control.AuthSnapshot) {
 	if auth.SelectedSource == "" && snapshot.Source != "" {
 		auth.SelectedSource = snapshot.Source
 	}
-	e.recordAuth(snapshot.ProviderInstanceID, auth, snapshot.Fingerprint, snapshot.Source, snapshot.Filename, snapshot.Raw, snapshot.Format, coalesceTime(snapshot.ObservedAt, snapshot.ReportedAt), "auth.snapshot", "provider observed auth snapshot")
+	e.recordAuth(snapshot.ProviderInstanceID, auth, snapshot.Fingerprint, snapshot.Source, snapshot.Filename, snapshot.Raw, snapshot.Format, coalesceTime(snapshot.ObservedAt, snapshot.ReportedAt), "auth.snapshot", "provider observed auth snapshot", e.authUsageEventDetails(snapshot.ProviderInstanceID))
 }
 
 func (e *Engine) RecordAuthRefreshResult(result control.AuthRefreshResult) {
-	message := ""
+	pending, _ := e.pendingAuthRefreshRequest(result.RefreshID)
+	result = mergeAuthRefreshResultWithRequest(result, pending)
+	message := authRefreshResultMessage(result)
 	if result.Error != nil {
-		message = result.Error.Message
+		message = firstNonEmpty(message, result.Error.Message)
 	}
 	eventType := "auth.refresh.result"
 	if !result.OK {
 		eventType = "auth.refresh.failed"
 	}
-	e.recordAuth(result.ProviderInstanceID, result.Auth, "", result.Auth.SelectedSource, "", nil, "", result.ReportedAt, eventType, message)
+	details := authRefreshResultDetails(result)
+	mergeDetails(details, e.authUsageEventDetails(result.ProviderInstanceID))
+	e.recordAuth(result.ProviderInstanceID, result.Auth, "", result.Auth.SelectedSource, "", nil, "", result.ReportedAt, eventType, message, details)
 }
 
 func (e *Engine) RecordAuthPush(push control.AuthPush, message string) {
-	e.recordAuth(push.ProviderInstanceID, push.Auth, push.Fingerprint, push.Source, push.Filename, push.Raw, push.Format, time.Now().UTC(), "auth.push.sent", message)
+	details := map[string]string{
+		"trigger":        "automatic",
+		"request_method": "router-push",
+		"reason":         push.Reason,
+	}
+	mergeDetails(details, e.authUsageEventDetails(push.ProviderInstanceID))
+	e.recordAuth(push.ProviderInstanceID, push.Auth, push.Fingerprint, push.Source, push.Filename, push.Raw, push.Format, time.Now().UTC(), "auth.push.sent", message, details)
+}
+
+func mergeAuthRefreshResultWithRequest(result control.AuthRefreshResult, request control.AuthRefreshRequest) control.AuthRefreshResult {
+	if result.Reason == "" {
+		result.Reason = request.Reason
+	}
+	result.Metadata = mergeControlAuthRefreshMetadata(request.Metadata, result.Metadata)
+	if result.Metadata.Trigger == "" {
+		if strings.HasPrefix(result.RefreshID, "auto_refresh_") {
+			result.Metadata.Trigger = "automatic"
+		} else {
+			result.Metadata.Trigger = "manual"
+		}
+	}
+	return result
+}
+
+func mergeControlAuthRefreshMetadata(base control.AuthRefreshMetadata, extra control.AuthRefreshMetadata) control.AuthRefreshMetadata {
+	if base.Trigger == "" {
+		base.Trigger = extra.Trigger
+	}
+	if base.Initiator == "" {
+		base.Initiator = extra.Initiator
+	}
+	if base.RequestMethod == "" {
+		base.RequestMethod = extra.RequestMethod
+	}
+	if base.ExecutionMethod == "" {
+		base.ExecutionMethod = extra.ExecutionMethod
+	}
+	if base.Command == "" {
+		base.Command = extra.Command
+	}
+	if base.Endpoint == "" {
+		base.Endpoint = extra.Endpoint
+	}
+	return base
+}
+
+func authRefreshResultMessage(result control.AuthRefreshResult) string {
+	status := "completed"
+	if !result.OK {
+		status = "failed"
+	}
+	trigger := firstNonEmpty(result.Metadata.Trigger, "manual")
+	method := firstNonEmpty(result.Metadata.ExecutionMethod, result.Metadata.RequestMethod, "unknown-method")
+	reason := strings.TrimSpace(result.Reason)
+	if reason != "" {
+		return fmt.Sprintf("Auth refresh %s via %s %s: %s.", status, trigger, method, reason)
+	}
+	return fmt.Sprintf("Auth refresh %s via %s %s.", status, trigger, method)
+}
+
+func authRefreshResultDetails(result control.AuthRefreshResult) map[string]string {
+	details := map[string]string{
+		"refresh_id": result.RefreshID,
+		"ok":         fmt.Sprintf("%t", result.OK),
+		"reason":     result.Reason,
+	}
+	metadata := result.Metadata
+	if metadata.Trigger != "" {
+		details["trigger"] = metadata.Trigger
+	}
+	if metadata.Initiator != "" {
+		details["initiator"] = metadata.Initiator
+	}
+	if metadata.RequestMethod != "" {
+		details["request_method"] = metadata.RequestMethod
+	}
+	if metadata.ExecutionMethod != "" {
+		details["execution_method"] = metadata.ExecutionMethod
+	}
+	if metadata.Command != "" {
+		details["command"] = metadata.Command
+	}
+	if metadata.Endpoint != "" {
+		details["endpoint"] = metadata.Endpoint
+	}
+	if result.Error != nil {
+		details["error_code"] = result.Error.Code
+		details["error"] = result.Error.Message
+	}
+	return details
+}
+
+func (e *Engine) authUsageEventDetails(providerInstanceID string) map[string]string {
+	if e == nil || strings.TrimSpace(providerInstanceID) == "" {
+		return nil
+	}
+	e.usageMu.RLock()
+	usage, ok := e.usages[providerInstanceID]
+	e.usageMu.RUnlock()
+	if !ok {
+		return nil
+	}
+	registration, ok := e.registry.Get(providerInstanceID)
+	if !ok {
+		return nil
+	}
+	windows := routerProviderQuotaWindows(registration, usage)
+	details := map[string]string{
+		"quota_source": usage.Usage.Source,
+	}
+	if !usage.ReportedAt.IsZero() {
+		details["quota_reported_at"] = usage.ReportedAt.UTC().Format(time.RFC3339)
+	}
+	if !usage.Usage.ObservedAt.IsZero() {
+		details["quota_observed_at"] = usage.Usage.ObservedAt.UTC().Format(time.RFC3339)
+	}
+	if usage.Usage.PlanTier != "" {
+		details["quota_plan_tier"] = usage.Usage.PlanTier
+	}
+	if usage.Usage.Subscription != nil {
+		details["quota_subscription"] = firstNonEmpty(usage.Usage.Subscription.Name, usage.Usage.Subscription.Tier, usage.Usage.Subscription.PaidTier, usage.Usage.Subscription.RateLimitTier)
+	}
+	for i, window := range windows {
+		if i >= 6 {
+			details["quota_windows_omitted"] = fmt.Sprintf("%d", len(windows)-i)
+			break
+		}
+		prefix := fmt.Sprintf("quota_window_%d", i+1)
+		details[prefix] = window.Label
+		details[prefix+"_usage"] = describeQuotaWindowUsage(window)
+		if !window.ResetAt.IsZero() {
+			details[prefix+"_reset_at"] = window.ResetAt.UTC().Format(time.RFC3339)
+		}
+		if window.Source != "" {
+			details[prefix+"_source"] = window.Source
+		}
+	}
+	return details
+}
+
+func mergeDetails(dst map[string]string, src map[string]string) {
+	if len(src) == 0 {
+		return
+	}
+	if dst == nil {
+		return
+	}
+	for key, value := range src {
+		if _, exists := dst[key]; !exists {
+			dst[key] = value
+		}
+	}
 }
 
 func (e *Engine) RecordAuthDownload(authID string) {
@@ -151,7 +307,7 @@ func (e *Engine) RecordAuthDownload(authID string) {
 	})
 }
 
-func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, fingerprint string, source string, filename string, raw []byte, format string, observedAt time.Time, eventType string, message string) {
+func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, fingerprint string, source string, filename string, raw []byte, format string, observedAt time.Time, eventType string, message string, details map[string]string) {
 	if e == nil || strings.TrimSpace(providerInstanceID) == "" {
 		return
 	}
@@ -259,6 +415,7 @@ func (e *Engine) recordAuth(providerInstanceID string, auth provider.AuthState, 
 			Fingerprint:        fingerprint,
 			Source:             firstNonEmpty(source, auth.SelectedSource),
 			Message:            message,
+			Details:            details,
 			At:                 observedAt,
 		})
 	}
@@ -412,6 +569,29 @@ func (e *Engine) AuthEvents(authID string) []AuthEvent {
 	return out
 }
 
+func (e *Engine) authEventsInRecordOrder(limit int) []AuthEvent {
+	if e == nil {
+		return nil
+	}
+	if limit <= 0 || limit > maxAuthEvents {
+		limit = maxAuthEvents
+	}
+	e.authMu.RLock()
+	defer e.authMu.RUnlock()
+	start := 0
+	if len(e.authEvents) > limit {
+		start = len(e.authEvents) - limit
+	}
+	out := make([]AuthEvent, 0, len(e.authEvents)-start)
+	for _, event := range e.authEvents[start:] {
+		if len(event.Details) > 0 {
+			event.Details = cloneStringMap(event.Details)
+		}
+		out = append(out, event)
+	}
+	return out
+}
+
 func (e *Engine) AuthDownload(authID string) ([]byte, string, bool) {
 	if e == nil {
 		return nil, "", false
@@ -435,6 +615,9 @@ func (e *Engine) appendAuthEventLocked(event AuthEvent) {
 	}
 	if event.ID == "" {
 		event.ID = fmt.Sprintf("auth_event_%s_%06d", event.At.UTC().Format("20060102150405.000000000"), len(e.authEvents)+1)
+	}
+	if len(event.Details) > 0 {
+		event.Details = cloneStringMap(event.Details)
 	}
 	e.authEvents = append(e.authEvents, event)
 	if len(e.authEvents) > maxAuthEvents {
