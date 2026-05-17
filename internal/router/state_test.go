@@ -20,6 +20,8 @@ func TestEngineSnapshotAndRestoreState(t *testing.T) {
 	}
 	engine.recordRequestTrace(RequestTrace{
 		RequestID:      "req_state_1",
+		RouteRequest:   RouteRequest{RoutingRuleName: "mine", RoutingRuleOwner: "user@example.test", UserID: "user@example.test"},
+		Decision:       RouteDecision{RoutingRuleID: "user:user@example.test:mine"},
 		Status:         "completed",
 		StartedAt:      time.Unix(1, 0),
 		CompletedAt:    time.Unix(2, 0),
@@ -53,7 +55,7 @@ func TestEngineSnapshotAndRestoreState(t *testing.T) {
 		CompletedAt: time.Unix(2, 1),
 	})
 	snapshot := engine.SnapshotState(time.Unix(3, 0))
-	if snapshot.Version != RouterStateSnapshotVersion || len(snapshot.Traces) != 1 || len(snapshot.Quotas) != 1 || len(snapshot.Users) != 1 || len(snapshot.RoutingRules) != 1 || len(snapshot.Notifiers) != 1 || len(snapshot.NotificationHistory) != 1 {
+	if snapshot.Version != RouterStateSnapshotVersion || len(snapshot.Traces) != 1 || len(snapshot.RoutingRuleStats) != 1 || len(snapshot.Quotas) != 1 || len(snapshot.Users) != 1 || len(snapshot.RoutingRules) != 1 || len(snapshot.Notifiers) != 1 || len(snapshot.NotificationHistory) != 1 {
 		t.Fatalf("unexpected snapshot: %#v", snapshot)
 	}
 
@@ -78,6 +80,9 @@ func TestEngineSnapshotAndRestoreState(t *testing.T) {
 	}
 	if rule, ok := restored.FindRoutingRule(RoutingRuleScopeUser, "user@example.test", "mine"); !ok || rule.Name != "mine" {
 		t.Fatalf("routing rule was not restored: %#v ok=%v", rule, ok)
+	}
+	if stats := restored.RoutingRuleStats()["user:user@example.test:mine"]; stats.Requests != 1 || stats.Tokens != 5 {
+		t.Fatalf("routing rule stats were not restored: %#v", stats)
 	}
 	notifierStatuses := restored.NotifierStatuses()
 	if len(notifierStatuses) != 1 || notifierStatuses[0].ID != "telegram" {

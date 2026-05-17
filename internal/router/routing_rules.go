@@ -19,14 +19,23 @@ const (
 )
 
 type RoutingRule struct {
-	ID          string           `json:"id"`
-	Name        string           `json:"name"`
-	Scope       RoutingRuleScope `json:"scope"`
-	OwnerEmail  string           `json:"owner_email,omitempty"`
-	Description string           `json:"description,omitempty"`
-	Filters     []RoutingFilter  `json:"filters"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Scope       RoutingRuleScope  `json:"scope"`
+	OwnerEmail  string            `json:"owner_email,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Filters     []RoutingFilter   `json:"filters"`
+	Stats       *RoutingRuleStats `json:"stats,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+type RoutingRuleStats struct {
+	Requests        int64      `json:"requests,omitempty"`
+	Tokens          int64      `json:"tokens,omitempty"`
+	ActualTokens    int64      `json:"actual_tokens,omitempty"`
+	EstimatedTokens int64      `json:"estimated_tokens,omitempty"`
+	LastUsedAt      *time.Time `json:"last_used_at,omitempty"`
 }
 
 type RoutingFilter struct {
@@ -94,6 +103,96 @@ func (e *Engine) ListRoutingRules() []RoutingRule {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+func (e *Engine) RoutingRuleStats() map[string]RoutingRuleStats {
+	out := map[string]RoutingRuleStats{}
+	if e == nil {
+		return out
+	}
+	e.routeStatsMu.RLock()
+	defer e.routeStatsMu.RUnlock()
+	for ruleID, stat := range e.routeStats {
+		out[ruleID] = cloneRoutingRuleStats(stat)
+	}
+	return out
+}
+
+func (e *Engine) recordRoutingRuleTraceStats(trace RequestTrace) {
+	if e == nil {
+		return
+	}
+	ruleID := routingRuleIDForTrace(trace)
+	if ruleID == "" {
+		return
+	}
+	stat := RoutingRuleStats{Requests: 1}
+	if trace.ActualUsage.Tokens > 0 {
+		stat.ActualTokens = trace.ActualUsage.Tokens
+		stat.Tokens = trace.ActualUsage.Tokens
+	} else if trace.EstimatedUsage.Tokens > 0 {
+		stat.EstimatedTokens = trace.EstimatedUsage.Tokens
+		stat.Tokens = trace.EstimatedUsage.Tokens
+	}
+	usedAt := trace.CompletedAt
+	if usedAt.IsZero() {
+		usedAt = trace.StartedAt
+	}
+	if !usedAt.IsZero() {
+		next := usedAt
+		stat.LastUsedAt = &next
+	}
+	e.addRoutingRuleStats(ruleID, stat)
+}
+
+func (e *Engine) addRoutingRuleStats(ruleID string, delta RoutingRuleStats) {
+	if e == nil || strings.TrimSpace(ruleID) == "" {
+		return
+	}
+	e.routeStatsMu.Lock()
+	defer e.routeStatsMu.Unlock()
+	if e.routeStats == nil {
+		e.routeStats = make(map[string]RoutingRuleStats)
+	}
+	stat := e.routeStats[ruleID]
+	stat.Requests += delta.Requests
+	stat.Tokens += delta.Tokens
+	stat.ActualTokens += delta.ActualTokens
+	stat.EstimatedTokens += delta.EstimatedTokens
+	if delta.LastUsedAt != nil && (stat.LastUsedAt == nil || delta.LastUsedAt.After(*stat.LastUsedAt)) {
+		next := *delta.LastUsedAt
+		stat.LastUsedAt = &next
+	}
+	e.routeStats[ruleID] = stat
+}
+
+func cloneRoutingRuleStats(stat RoutingRuleStats) RoutingRuleStats {
+	if stat.LastUsedAt != nil {
+		next := *stat.LastUsedAt
+		stat.LastUsedAt = &next
+	}
+	return stat
+}
+
+func routingRuleIDForTrace(trace RequestTrace) string {
+	if id := strings.TrimSpace(trace.Decision.RoutingRuleID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(trace.Decision.RouteID); strings.HasPrefix(id, "public:") || strings.HasPrefix(id, "user:") {
+		return id
+	}
+	if id := strings.TrimSpace(trace.RouteRequest.RoutingRuleID); id != "" {
+		return id
+	}
+	name := strings.TrimSpace(trace.RouteRequest.RoutingRuleName)
+	if name == "" || !validRoutingRuleName(name) {
+		return ""
+	}
+	owner := firstNonEmpty(trace.RouteRequest.RoutingRuleOwner, trace.RouteRequest.UserID)
+	if owner != "" && !strings.EqualFold(owner, string(RoutingRuleScopePublic)) {
+		return routingRuleID(RoutingRuleScopeUser, owner, name)
+	}
+	return routingRuleID(RoutingRuleScopePublic, "", name)
 }
 
 func (e *Engine) GetRoutingRule(id string) (RoutingRule, bool) {
@@ -175,6 +274,9 @@ func (e *Engine) DeleteRoutingRule(id string) bool {
 		return false
 	}
 	delete(e.routingRules, id)
+	e.routeStatsMu.Lock()
+	delete(e.routeStats, id)
+	e.routeStatsMu.Unlock()
 	return true
 }
 
@@ -216,6 +318,8 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 	}
 	required = uniqueCapabilities(required)
 	registrations := e.routingRegistrations()
+	providerHistory := e.routingRuleProviderTraceStats(rule.ID)
+	now := time.Now().UTC()
 	decision := RouteDecision{
 		Allowed:              false,
 		RouteID:              rule.ID,
@@ -251,7 +355,26 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 		}
 		sort.SliceStable(scored, func(i, j int) bool {
 			if scored[i].score == scored[j].score {
-				return scored[i].registration.Identity.ProviderInstanceID < scored[j].registration.Identity.ProviderInstanceID
+				if less, ok := compareCandidateQuotaReset(scored[i], scored[j], request.Model, now); ok {
+					return less
+				}
+				leftID := scored[i].registration.Identity.ProviderInstanceID
+				rightID := scored[j].registration.Identity.ProviderInstanceID
+				leftHistory := providerHistory[leftID]
+				rightHistory := providerHistory[rightID]
+				if leftHistory.Requests != rightHistory.Requests {
+					return leftHistory.Requests < rightHistory.Requests
+				}
+				if !leftHistory.LastUsedAt.Equal(rightHistory.LastUsedAt) {
+					if leftHistory.LastUsedAt.IsZero() {
+						return true
+					}
+					if rightHistory.LastUsedAt.IsZero() {
+						return false
+					}
+					return leftHistory.LastUsedAt.Before(rightHistory.LastUsedAt)
+				}
+				return leftID < rightID
 			}
 			return scored[i].score > scored[j].score
 		})
@@ -286,6 +409,55 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 		decision.Rejections = []RouteRejection{{Reason: ErrNoProvider.Error()}}
 	}
 	return decision, steps
+}
+
+type routingRuleProviderTraceStat struct {
+	Requests   int
+	LastUsedAt time.Time
+}
+
+func (e *Engine) routingRuleProviderTraceStats(ruleID string) map[string]routingRuleProviderTraceStat {
+	out := map[string]routingRuleProviderTraceStat{}
+	if e == nil || strings.TrimSpace(ruleID) == "" {
+		return out
+	}
+	e.traceMu.RLock()
+	defer e.traceMu.RUnlock()
+	for _, trace := range e.traces {
+		if routingRuleIDForTrace(trace) != ruleID {
+			continue
+		}
+		providerID := routingRuleTraceProviderID(trace)
+		if providerID == "" {
+			continue
+		}
+		stat := out[providerID]
+		stat.Requests++
+		usedAt := trace.CompletedAt
+		if usedAt.IsZero() {
+			usedAt = trace.StartedAt
+		}
+		if !usedAt.IsZero() && (stat.LastUsedAt.IsZero() || usedAt.After(stat.LastUsedAt)) {
+			stat.LastUsedAt = usedAt
+		}
+		out[providerID] = stat
+	}
+	return out
+}
+
+func routingRuleTraceProviderID(trace RequestTrace) string {
+	if trace.Provider != nil {
+		if id := strings.TrimSpace(trace.Provider.ProviderInstanceID); id != "" {
+			return id
+		}
+	}
+	if id := strings.TrimSpace(trace.Decision.Selected); id != "" {
+		return id
+	}
+	if trace.Decision.SelectedProvider != nil {
+		return strings.TrimSpace(trace.Decision.SelectedProvider.Identity.ProviderInstanceID)
+	}
+	return ""
 }
 
 func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest, required []provider.Capability, registration provider.Registration) string {
@@ -362,6 +534,7 @@ func normalizeRoutingRule(rule RoutingRule) (RoutingRule, error) {
 	if rule.Scope == RoutingRuleScopePublic {
 		rule.OwnerEmail = ""
 	}
+	rule.Stats = nil
 	rule.ID = routingRuleID(rule.Scope, rule.OwnerEmail, rule.Name)
 	rule.Filters = normalizedRuleFilters(rule.Filters)
 	return rule, nil

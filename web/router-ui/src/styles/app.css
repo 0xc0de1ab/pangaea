@@ -1366,6 +1366,46 @@ tr:last-child td {
   margin-top: 10px;
 }
 
+.route-history-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.route-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.route-history-heading h3,
+.route-history-block h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.route-history-heading p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.route-history-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(520px, 1.4fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.route-history-block {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
 .decision-head {
   min-height: 38px;
   padding: 0 10px;
@@ -3046,7 +3086,8 @@ tr:last-child td {
   }
 
   .overview-layout,
-  .split-grid {
+  .split-grid,
+  .route-history-grid {
     grid-template-columns: 1fr;
   }
 }

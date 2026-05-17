@@ -130,12 +130,13 @@ func (e *Engine) recordRequestTrace(trace RequestTrace) {
 		return
 	}
 	e.traceMu.Lock()
-	defer e.traceMu.Unlock()
 	if e.traces == nil {
 		e.traces = make(map[string]RequestTrace)
 	}
+	newTrace := false
 	if _, exists := e.traces[trace.RequestID]; !exists {
 		e.traceIDs = append(e.traceIDs, trace.RequestID)
+		newTrace = true
 	}
 	e.traces[trace.RequestID] = trace
 	limit := defaultRequestTraceLimit
@@ -143,6 +144,10 @@ func (e *Engine) recordRequestTrace(trace RequestTrace) {
 		oldest := e.traceIDs[0]
 		e.traceIDs = e.traceIDs[1:]
 		delete(e.traces, oldest)
+	}
+	e.traceMu.Unlock()
+	if newTrace {
+		e.recordRoutingRuleTraceStats(trace)
 	}
 }
 

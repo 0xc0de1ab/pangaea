@@ -290,6 +290,58 @@ func TestRoutingPolicyEvaluateUsesCanonicalModelPriorityList(t *testing.T) {
 	}
 }
 
+func TestRoutingPolicyEvaluatePrefersSoonestQuotaResetOnTie(t *testing.T) {
+	policy := RoutingPolicy{
+		Version: RoutingPolicyVersion,
+		Routes: []Route{
+			{
+				ID: "ag-openai",
+				Match: RouteMatch{
+					Models:      []string{"claude-sonnet-4-6"},
+					APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+				},
+				Candidates: []Candidate{
+					{ProviderType: "antigravity-sidecar", Weight: 10},
+				},
+				Constraints: Constraints{
+					RequiredCapabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+					AuthStatus:           []provider.AuthStatus{provider.AuthHealthy},
+					HealthState:          []provider.HealthStatus{provider.HealthReady},
+				},
+			},
+		},
+	}
+	now := time.Now().UTC()
+	later := registration("ag-a", "antigravity-sidecar", "a@example.test", 10, 0)
+	later.Identity.Service = provider.ServiceAntigravity
+	later.Models = []provider.Model{{
+		ID:           "claude-sonnet-4-6",
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		Quota:        &provider.ModelQuota{RemainingPct: 30, ResetAt: now.Add(4 * time.Hour)},
+	}}
+	sooner := registration("ag-z", "antigravity-sidecar", "z@example.test", 10, 0)
+	sooner.Identity.Service = provider.ServiceAntigravity
+	sooner.Models = []provider.Model{{
+		ID:           "claude-sonnet-4-6",
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		Quota:        &provider.ModelQuota{RemainingPct: 30, ResetAt: now.Add(30 * time.Minute)},
+	}}
+
+	decision := policy.Evaluate(RouteRequest{
+		Model:      "claude-sonnet-4-6",
+		APIDialect: compat.APIDialectOpenAI,
+	}, []provider.Registration{later, sooner})
+	if !decision.Allowed {
+		t.Fatalf("expected policy to route: %#v", decision)
+	}
+	if decision.Selected != "ag-z" {
+		t.Fatalf("expected soonest quota reset provider, got %q decision=%#v", decision.Selected, decision)
+	}
+	if len(decision.FallbackChain) < 2 || decision.FallbackChain[0] != "ag-z" {
+		t.Fatalf("expected fallback chain to prefer soonest reset, got %#v", decision.FallbackChain)
+	}
+}
+
 func TestRoutingPolicyValidateRejectsInvalidCapability(t *testing.T) {
 	policy := validPolicy()
 	policy.ModelAliases["gpt-5-codex"] = ModelAlias{

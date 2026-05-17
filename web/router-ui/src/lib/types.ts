@@ -338,6 +338,13 @@ export type RoutingRule = {
   owner_email?: string;
   description?: string;
   filters: RoutingFilter[];
+  stats?: {
+    requests?: number;
+    tokens?: number;
+    actual_tokens?: number;
+    estimated_tokens?: number;
+    last_used_at?: string;
+  };
   created_at?: string;
   updated_at?: string;
 };

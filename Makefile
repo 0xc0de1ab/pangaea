@@ -7,7 +7,7 @@ VERSION ?= $(shell ./scripts/version.sh "$(VERSION_BASE)")
 # --- cross-build matrix ---------------------------------------------------
 GO_PKG         ?= ./cmd/pangaeactl
 APP_NAME       ?= pangaeactl
-BUILD_APPS     ?= pangaeactl ask-go
+BUILD_APPS     ?= pangaeactl ask
 PROVIDER_CODEX_IMAGE ?= pangaea/provider-codex:dev
 PROVIDER_GEMINI_IMAGE ?= pangaea/provider-gemini:dev
 PROVIDER_CLAUDE_IMAGE ?= pangaea/provider-claude:dev
@@ -45,7 +45,7 @@ ROUTER_UI_FILES := $(shell if [ -d "$(ROUTER_UI_DIR)" ]; then find "$(ROUTER_UI_
 artifact_os  = $(if $(filter darwin,$(1)),macos,$(1))
 artifact_dir = $(OUTPUT_DIR)/$(call artifact_os,$(1))-$(2)/$(3)
 artifact     = $(call artifact_dir,$(2),$(3),$(4))/$(1)$(if $(filter windows,$(2)),.exe,)
-pkg_for      = $(if $(filter ask-go,$(1)),./examples/ask-go,$(if $(filter pangaeactl,$(1)),./cmd/pangaeactl,$(GO_PKG)))
+pkg_for      = $(if $(filter ask,$(1)),./examples/ask-go,$(if $(filter pangaeactl,$(1)),./cmd/pangaeactl,$(GO_PKG)))
 
 OS_ARCH_PAIRS      := $(foreach os,$(OS_LIST),$(foreach arch,$(ARCH_LIST),$(os)-$(arch)))
 OS_VARIANT_PAIRS   := $(foreach os,$(OS_LIST),$(foreach var,$(BUILD_VARIANTS),$(os)-$(var)))

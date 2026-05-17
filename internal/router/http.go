@@ -982,7 +982,7 @@ func registerRouterUserRoutes(r *gin.Engine, opts HTTPOptions) {
 		if !ok {
 			return
 		}
-		rules := routingRulesVisibleTo(engine.ListRoutingRules(), principal)
+		rules := attachRoutingRuleStats(routingRulesVisibleTo(engine.ListRoutingRules(), principal), engine.RoutingRuleStats())
 		c.JSON(http.StatusOK, gin.H{"rules": rules})
 	})
 	r.POST("/router/v1/routing-rules", func(c *gin.Context) {
@@ -1238,6 +1238,21 @@ func routingRulesVisibleTo(rules []RoutingRule, principal RouterHTTPPrincipal) [
 	for _, rule := range rules {
 		if principalCanReadRoutingRule(principal, rule) {
 			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+func attachRoutingRuleStats(rules []RoutingRule, stats map[string]RoutingRuleStats) []RoutingRule {
+	if len(rules) == 0 || len(stats) == 0 {
+		return rules
+	}
+	out := make([]RoutingRule, len(rules))
+	copy(out, rules)
+	for index := range out {
+		if stat, ok := stats[out[index].ID]; ok {
+			next := stat
+			out[index].Stats = &next
 		}
 	}
 	return out

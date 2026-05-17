@@ -7,9 +7,9 @@ import { Section } from "../components/Section";
 import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
 import { capacityRows, providerAccountLabel } from "../lib/derive";
-import { copyText, cx, hasText, middleEllipsis, n } from "../lib/format";
+import { accountLabel, copyText, cx, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
 import { normalizeService } from "../lib/service-endpoints";
-import type { RouteDecision, RouteRequest, RouterUser, RoutingFilter, RoutingRule, RoutingRuleDryRunResponse, RoutingRuleStep } from "../lib/types";
+import type { RequestTrace, RouteDecision, RouteRequest, RouterUser, RoutingFilter, RoutingRule, RoutingRuleDryRunResponse, RoutingRuleStep } from "../lib/types";
 
 type DraftRule = Omit<RoutingRule, "id" | "created_at" | "updated_at"> & { id?: string };
 type CapacityRow = ReturnType<typeof capacityRows>[number];
@@ -45,6 +45,7 @@ const emptyRule: DraftRule = {
   filters: [emptyFilter],
 };
 const capacityPageSizeOptions = [10, 25, 50, 100];
+const routeHistoryLimit = 512;
 const protocolOptions: CriteriaOption[] = [
   { value: "openai", label: "OpenAI", description: "OpenAI-compatible chat/completions, models, and usage routes" },
   { value: "anthropic", label: "Anthropic", description: "Anthropic-compatible messages, models, and usage routes" },
@@ -58,6 +59,10 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
   const [capacityPageIndex, setCapacityPageIndex] = useState(0);
   const [capacityPageSize, setCapacityPageSize] = useState(25);
   const [capacitySettingsOpen, setCapacitySettingsOpen] = useState(false);
+  const [selectedRuleID, setSelectedRuleID] = useState<string | null>(null);
+  const [routeHistoryTraces, setRouteHistoryTraces] = useState<RequestTrace[]>([]);
+  const [routeHistoryLoading, setRouteHistoryLoading] = useState(false);
+  const [routeHistoryError, setRouteHistoryError] = useState("");
   const allCapacity = useMemo(() => capacityRows(data.providers).filter((row) => hasText(row, search)), [data.providers, search]);
   const filterOptions = useMemo(() => routeCriteriaOptions(data.providers, data.models), [data.models, data.providers]);
   const capacity = useMemo(() => {
@@ -69,6 +74,24 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
   }, [allCapacity, capacityModelQuery]);
   const capacityPageCount = Math.max(1, Math.ceil(capacity.length / capacityPageSize));
   const rules = useMemo(() => data.routingRules.filter((rule) => hasText(rule, search)), [data.routingRules, search]);
+  const selectedRule = useMemo(() => data.routingRules.find((rule) => rule.id === selectedRuleID) ?? null, [data.routingRules, selectedRuleID]);
+  const historyTraces = routeHistoryTraces.length > 0 ? routeHistoryTraces : data.traces;
+
+  const loadRouteHistory = useCallback(async () => {
+    if (!selectedRuleID) {
+      return;
+    }
+    setRouteHistoryLoading(true);
+    setRouteHistoryError("");
+    try {
+      const page = await api.tracePage(token, routeHistoryLimit, 0);
+      setRouteHistoryTraces(page.traces ?? []);
+    } catch (err) {
+      setRouteHistoryError(err instanceof Error ? err.message : "Failed to load route history");
+    } finally {
+      setRouteHistoryLoading(false);
+    }
+  }, [selectedRuleID, token]);
 
   useEffect(() => {
     setCapacityPageIndex(0);
@@ -77,6 +100,20 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
   useEffect(() => {
     setCapacityPageIndex((value) => Math.min(value, capacityPageCount - 1));
   }, [capacityPageCount]);
+
+  useEffect(() => {
+    if (selectedRuleID && !data.routingRules.some((rule) => rule.id === selectedRuleID)) {
+      setSelectedRuleID(null);
+    }
+  }, [data.routingRules, selectedRuleID]);
+
+  useEffect(() => {
+    if (!selectedRuleID) {
+      setRouteHistoryError("");
+      return;
+    }
+    void loadRouteHistory();
+  }, [loadRouteHistory, selectedRuleID]);
 
   const edit = useCallback((rule: RoutingRule) => {
     setEditingRule(rule);
@@ -123,11 +160,20 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
     { id: "scope", header: "Scope", sortValue: (row) => row.scope, cell: (row) => <StatusBadge value={row.scope} tone={row.scope === "public" ? "ok" : "unknown"} />, width: "110px" },
     { id: "owner", header: "Owner", sortValue: (row) => row.owner_email || "", cell: (row) => row.owner_email || "all users", width: "220px" },
     { id: "filters", header: "Filters", sortValue: (row) => row.filters?.length ?? 0, cell: (row) => n(row.filters?.length ?? 0), align: "right", width: "90px" },
+    { id: "requests", header: "Requests", sortValue: (row) => row.stats?.requests ?? 0, cell: (row) => n(row.stats?.requests ?? 0), align: "right", width: "104px" },
+    {
+      id: "tokens",
+      header: "Tokens",
+      sortValue: (row) => row.stats?.tokens ?? 0,
+      cell: (row) => <RouteTokenCell rule={row} />,
+      align: "right",
+      width: "108px",
+    },
     {
       id: "actions",
       header: "Actions",
       cell: (row) => (
-        <div className="row-actions">
+        <div className="row-actions" onClick={(event) => event.stopPropagation()}>
           <button className="button compact" type="button" onClick={() => edit(row)}>Edit</button>
           <button className="icon-button small" type="button" aria-label={`Copy URL for ${row.name}`} onClick={() => copyText(routeURL(row))}>
             <Copy aria-hidden="true" size={14} />
@@ -171,8 +217,17 @@ export function RoutesView({ data, queries, search, token, refresh }: DashboardV
           </button>
         }
       >
-        <DataTable rows={rules} columns={ruleColumns} empty="No routing rules are defined" getRowId={(row) => row.id} compact />
+        <DataTable rows={rules} columns={ruleColumns} empty="No routing rules are defined" getRowId={(row) => row.id} onRowClick={(row) => setSelectedRuleID(row.id)} compact />
         {error ? <div className="inline-error">{error}</div> : null}
+        {selectedRule ? (
+          <RouteBackendHistory
+            rule={selectedRule}
+            traces={historyTraces}
+            loading={routeHistoryLoading}
+            error={routeHistoryError}
+            onRefresh={loadRouteHistory}
+          />
+        ) : null}
       </Section>
 
       <RoutingRuleWorkspace
@@ -230,6 +285,236 @@ function CapacityModelCell({ row }: { row: CapacityRow }) {
       <span className="mono">{middleEllipsis(row.model, 26, 12)}</span>
     </span>
   );
+}
+
+function RouteTokenCell({ rule }: { rule: RoutingRule }) {
+  const stats = rule.stats;
+  const tokens = stats?.tokens ?? 0;
+  const actual = stats?.actual_tokens ?? 0;
+  const estimated = stats?.estimated_tokens ?? 0;
+  const parts = [
+    actual ? `actual ${n(actual)}` : "",
+    estimated ? `estimated ${n(estimated)}` : "",
+    stats?.last_used_at ? `last ${fmtTime(stats.last_used_at)}` : "",
+  ].filter(Boolean);
+  return <span title={parts.join(" / ") || "No routed requests yet"}>{n(tokens)}</span>;
+}
+
+type RouteProviderHistoryRow = {
+  key: string;
+  providerID: string;
+  service: string;
+  account: string;
+  node: string;
+  host: string;
+  requests: number;
+  completed: number;
+  failed: number;
+  tokens: number;
+  lastAt: string;
+  lastModel: string;
+  lastDialect: string;
+};
+
+function RouteBackendHistory({
+  rule,
+  traces,
+  loading,
+  error,
+  onRefresh,
+}: {
+  rule: RoutingRule;
+  traces: RequestTrace[];
+  loading: boolean;
+  error: string;
+  onRefresh: () => void;
+}) {
+  const matchingTraces = useMemo(() => {
+    return traces
+      .filter((trace) => traceMatchesRoutingRule(trace, rule))
+      .sort((left, right) => traceMillis(right) - traceMillis(left));
+  }, [rule, traces]);
+  const providerRows = useMemo(() => routeProviderHistoryRows(matchingTraces), [matchingTraces]);
+
+  const providerColumns = useMemo<DashboardColumn<RouteProviderHistoryRow>[]>(() => [
+    {
+      id: "provider",
+      header: "Provider",
+      sortValue: (row) => row.providerID,
+      cell: (row) => (
+        <div className="stacked-cell">
+          <strong className="mono">{middleEllipsis(row.providerID, 22, 10)}</strong>
+          <span>{[row.service, row.account].filter(Boolean).join(" / ") || "unresolved"}</span>
+        </div>
+      ),
+    },
+    { id: "node", header: "Node", sortValue: (row) => row.node || row.host, cell: (row) => row.node || row.host || "", width: "110px" },
+    { id: "requests", header: "Req", sortValue: (row) => row.requests, cell: (row) => n(row.requests), align: "right", width: "70px" },
+    { id: "ok", header: "OK", sortValue: (row) => row.completed, cell: (row) => n(row.completed), align: "right", width: "64px" },
+    { id: "failed", header: "Fail", sortValue: (row) => row.failed, cell: (row) => n(row.failed), align: "right", width: "64px" },
+    { id: "tokens", header: "Tokens", sortValue: (row) => row.tokens, cell: (row) => n(row.tokens), align: "right", width: "92px" },
+    { id: "last", header: "Last", sortValue: (row) => new Date(row.lastAt).getTime() || 0, cell: (row) => fmtTime(row.lastAt), width: "132px" },
+  ], []);
+
+  const traceColumns = useMemo<DashboardColumn<RequestTrace>[]>(() => [
+    { id: "time", header: "Time", sortValue: (row) => traceMillis(row), cell: (row) => fmtTime(row.started_at || row.completed_at), width: "132px" },
+    {
+      id: "provider",
+      header: "Backend Provider",
+      sortValue: (row) => traceProviderID(row),
+      cell: (row) => (
+        <div className="stacked-cell">
+          <strong className="mono">{middleEllipsis(traceProviderID(row), 22, 10)}</strong>
+          <span>{traceProviderAccount(row) || "no account"}</span>
+        </div>
+      ),
+    },
+    { id: "node", header: "Node", sortValue: (row) => traceProviderNode(row), cell: (row) => traceProviderNode(row), width: "110px" },
+    { id: "model", header: "Model", sortValue: (row) => traceModel(row), cell: (row) => <span className="mono">{middleEllipsis(traceModel(row), 18, 9)}</span>, width: "150px" },
+    { id: "api", header: "API", sortValue: (row) => row.route_request?.api_dialect || "", cell: (row) => row.route_request?.api_dialect || "", width: "86px" },
+    { id: "status", header: "Status", sortValue: (row) => row.status, cell: (row) => <StatusBadge value={row.status} />, width: "118px" },
+    { id: "tokens", header: "Tokens", sortValue: (row) => traceTokens(row), cell: (row) => n(traceTokens(row)), align: "right", width: "86px" },
+    { id: "duration", header: "Dur", sortValue: (row) => row.duration_ms ?? 0, cell: (row) => formatDuration(row.duration_ms), align: "right", width: "78px" },
+    { id: "error", header: "Error", sortValue: (row) => row.error || "", cell: (row) => row.error ? <span title={row.error}>{middleEllipsis(row.error, 28, 12)}</span> : "", width: "180px" },
+  ], []);
+
+  return (
+    <div className="route-history-panel">
+      <div className="route-history-heading">
+        <div>
+          <h3>Backend Provider History</h3>
+          <p>
+            {n(matchingTraces.length)} retained traces for <span className="mono">{rule.name}</span>.
+          </p>
+        </div>
+        <button className="button secondary" type="button" onClick={() => void onRefresh()} disabled={loading}>
+          <RefreshCw aria-hidden="true" size={15} />
+          {loading ? "Loading" : "Refresh history"}
+        </button>
+      </div>
+      {error ? <div className="inline-error">{error}</div> : null}
+      <div className="route-history-grid">
+        <div className="route-history-block">
+          <div className="detail-section-heading">
+            <h3>Provider Split</h3>
+            <span>{n(providerRows.length)} backend providers</span>
+          </div>
+          <DataTable rows={providerRows} columns={providerColumns} empty="No backend provider trace for this route" getRowId={(row) => row.key} compact />
+        </div>
+        <div className="route-history-block">
+          <div className="detail-section-heading">
+            <h3>Recent Route Traces</h3>
+            <span>latest {n(Math.min(matchingTraces.length, routeHistoryLimit))}</span>
+          </div>
+          <DataTable rows={matchingTraces} columns={traceColumns} empty="No request trace for this route" getRowId={(row) => row.request_id} compact />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function routeProviderHistoryRows(traces: RequestTrace[]) {
+  const rows = new Map<string, RouteProviderHistoryRow>();
+  for (const trace of traces) {
+    const providerID = traceProviderID(trace) || "unresolved";
+    const key = providerID;
+    const current = rows.get(key) ?? {
+      key,
+      providerID,
+      service: trace.provider?.service || "",
+      account: traceProviderAccount(trace),
+      node: trace.provider?.node_id || "",
+      host: trace.provider?.host_name || "",
+      requests: 0,
+      completed: 0,
+      failed: 0,
+      tokens: 0,
+      lastAt: "",
+      lastModel: "",
+      lastDialect: "",
+    };
+    current.requests += 1;
+    if (trace.status === "completed") {
+      current.completed += 1;
+    } else {
+      current.failed += 1;
+    }
+    current.tokens += traceTokens(trace);
+    const at = trace.completed_at || trace.started_at || "";
+    if (traceMillisValue(at) >= traceMillisValue(current.lastAt)) {
+      current.lastAt = at;
+      current.lastModel = traceModel(trace);
+      current.lastDialect = trace.route_request?.api_dialect || "";
+      current.service = trace.provider?.service || current.service;
+      current.account = traceProviderAccount(trace) || current.account;
+      current.node = trace.provider?.node_id || current.node;
+      current.host = trace.provider?.host_name || current.host;
+    }
+    rows.set(key, current);
+  }
+  return Array.from(rows.values()).sort((left, right) => traceMillisValue(right.lastAt) - traceMillisValue(left.lastAt));
+}
+
+function traceMatchesRoutingRule(trace: RequestTrace, rule: RoutingRule) {
+  const directIDs = [
+    trace.decision?.routing_rule_id,
+    trace.decision?.route_id,
+    trace.route_request?.routing_rule_id,
+  ].filter(Boolean);
+  if (directIDs.includes(rule.id)) {
+    return true;
+  }
+  const requestName = (trace.route_request?.routing_rule_name || "").trim();
+  if (!requestName || requestName !== rule.name) {
+    return false;
+  }
+  if (rule.scope === "user") {
+    const owner = (trace.route_request?.routing_rule_owner || trace.route_request?.user_id || "").trim().toLowerCase();
+    return owner === (rule.owner_email || "").trim().toLowerCase();
+  }
+  return true;
+}
+
+function traceProviderID(trace: RequestTrace) {
+  return trace.provider?.provider_instance_id || trace.decision?.selected || trace.decision?.selected_provider?.identity.provider_instance_id || "";
+}
+
+function traceProviderAccount(trace: RequestTrace) {
+  return accountLabel(trace.provider?.account || trace.decision?.selected_provider?.identity.account);
+}
+
+function traceProviderNode(trace: RequestTrace) {
+  return trace.provider?.node_id || trace.decision?.selected_provider?.identity.node_id || "";
+}
+
+function traceModel(trace: RequestTrace) {
+  return trace.decision?.canonical_model || trace.route_request?.model || "";
+}
+
+function traceTokens(trace: RequestTrace) {
+  return trace.actual_usage?.tokens || trace.estimated_usage?.tokens || 0;
+}
+
+function traceMillis(trace: RequestTrace) {
+  return traceMillisValue(trace.started_at || trace.completed_at);
+}
+
+function traceMillisValue(value?: string) {
+  if (!value) {
+    return 0;
+  }
+  const millis = new Date(value).getTime();
+  return Number.isNaN(millis) ? 0 : millis;
+}
+
+function formatDuration(ms?: number) {
+  if (!ms || ms <= 0) {
+    return "";
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
 function CapacityModelFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {

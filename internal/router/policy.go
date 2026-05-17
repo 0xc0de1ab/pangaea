@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
@@ -255,8 +256,12 @@ func (p RoutingPolicy) Evaluate(request RouteRequest, registrations []provider.R
 	if len(scored) == 0 {
 		decision.Rejections = allRejections
 	}
+	now := time.Now().UTC()
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].score == scored[j].score {
+			if less, ok := compareCandidateQuotaReset(scored[i], scored[j], request.Model, now); ok {
+				return less
+			}
 			return scored[i].registration.Identity.ProviderInstanceID < scored[j].registration.Identity.ProviderInstanceID
 		}
 		return scored[i].score > scored[j].score
@@ -354,8 +359,12 @@ func (p RoutingPolicy) evaluatePinnedProvider(request RouteRequest, registration
 		decision.Reason = ErrNoProvider.Error()
 		return decision
 	}
+	now := time.Now().UTC()
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].score == scored[j].score {
+			if less, ok := compareCandidateQuotaReset(scored[i], scored[j], request.Model, now); ok {
+				return less
+			}
 			return scored[i].registration.Identity.ProviderInstanceID < scored[j].registration.Identity.ProviderInstanceID
 		}
 		return scored[i].score > scored[j].score
@@ -474,6 +483,45 @@ func evaluateModelSupport(requestedModel string, canonicalModel string, required
 		return ""
 	}
 	return fmt.Sprintf("model not reported by provider: %s", names[0])
+}
+
+func compareCandidateQuotaReset(left scoredCandidate, right scoredCandidate, requestedModel string, now time.Time) (bool, bool) {
+	leftReset, leftOK := candidateQuotaResetAt(left, requestedModel, now)
+	rightReset, rightOK := candidateQuotaResetAt(right, requestedModel, now)
+	if leftOK != rightOK {
+		return leftOK, true
+	}
+	if !leftOK {
+		return false, false
+	}
+	if leftReset.Equal(rightReset) {
+		return false, false
+	}
+	return leftReset.Before(rightReset), true
+}
+
+func candidateQuotaResetAt(candidate scoredCandidate, requestedModel string, now time.Time) (time.Time, bool) {
+	names := uniqueStrings([]string{requestedModel, candidate.canonical})
+	if len(names) == 0 {
+		return time.Time{}, false
+	}
+	var best time.Time
+	for _, model := range candidate.registration.Models {
+		if model.Quota == nil || !modelMatchesAny(model, names) {
+			continue
+		}
+		resetAt := model.Quota.ResetAt
+		if resetAt.IsZero() || !resetAt.After(now) {
+			continue
+		}
+		if best.IsZero() || resetAt.Before(best) {
+			best = resetAt
+		}
+	}
+	if best.IsZero() {
+		return time.Time{}, false
+	}
+	return best, true
 }
 
 func modelMatchesAny(model provider.Model, names []string) bool {
