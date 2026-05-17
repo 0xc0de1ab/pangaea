@@ -268,6 +268,69 @@ func TestRoutingRuleUsesFilterModelWhenRequestOmitsModel(t *testing.T) {
 	}
 }
 
+func TestRoutingRuleWithOmittedModelFallsBackWhenFirstProviderDisconnected(t *testing.T) {
+	registry := provider.NewRegistry()
+	disconnected := registration("ag-a1", "antigravity-sidecar", "donghee@example.test", 1, 0)
+	disconnected.Identity.Service = provider.ServiceAntigravity
+	disconnected.Models = []provider.Model{{
+		ID:           "claude-sonnet-4-6",
+		Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+	}}
+	available := registration("ag-a2", "antigravity-sidecar", "sam@example.test", 1, 0)
+	available.Identity.Service = provider.ServiceAntigravity
+	available.Models = []provider.Model{{
+		ID:           "claude-sonnet-4-6",
+		Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+	}}
+	if err := registry.Upsert(disconnected); err != nil {
+		t.Fatalf("register disconnected antigravity: %v", err)
+	}
+	if err := registry.Upsert(available); err != nil {
+		t.Fatalf("register available antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(availabilityInvoker{
+		available: map[string]bool{available.Identity.ProviderInstanceID: true},
+	})
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "ag-sonnet",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Claude Sonnet 4.6 (Thinking)"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	decision, _ := engine.evaluateRoutingRule(rule, RouteRequest{RoutingRuleName: rule.Name, APIDialect: compat.APIDialectOpenAI, Stream: true})
+	if !decision.Allowed || decision.Selected != available.Identity.ProviderInstanceID {
+		t.Fatalf("expected available provider selected when a1 is disconnected, got %#v", decision)
+	}
+	foundDisconnectedRejection := false
+	for _, rejection := range decision.Rejections {
+		if rejection.ProviderInstanceID == disconnected.Identity.ProviderInstanceID && strings.Contains(rejection.Reason, "data session disconnected") {
+			foundDisconnectedRejection = true
+		}
+	}
+	if !foundDisconnectedRejection {
+		t.Fatalf("expected disconnected provider rejection, got %#v", decision.Rejections)
+	}
+	if decision.CanonicalModel != "claude-sonnet-4-6" {
+		t.Fatalf("expected filter-selected canonical model, got %#v", decision)
+	}
+}
+
 func TestRoutingRuleFilterModelOrderSkipsExhaustedQuota(t *testing.T) {
 	registry := provider.NewRegistry()
 	ag := registration("ag-a2", "antigravity-sidecar", "sam@example.test", 1, 0)

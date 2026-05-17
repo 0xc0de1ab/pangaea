@@ -515,7 +515,11 @@ func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest
 		return "provider model quota exhausted"
 	}
 	if registration.Health.Status != "" && registration.Health.Status != provider.HealthReady {
-		return "provider health is " + string(registration.Health.Status)
+		reason := "provider health is " + string(registration.Health.Status)
+		if strings.TrimSpace(registration.Health.Reason) != "" {
+			reason += " (" + strings.TrimSpace(registration.Health.Reason) + ")"
+		}
+		return reason
 	}
 	if registration.Auth.Status != "" && registration.Auth.Status != provider.AuthHealthy && registration.Auth.Status != provider.AuthRefreshSoon {
 		return "provider auth is " + string(registration.Auth.Status)
