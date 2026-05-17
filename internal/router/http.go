@@ -28,6 +28,8 @@ type HTTPOptions struct {
 	AdminAuth  AdminAuthOptions
 }
 
+const routeSelectedModelPlaceholder = "__pangaea_route_selected_model__"
+
 type RouterHTTPPrincipal struct {
 	Email     string
 	Name      string
@@ -1311,10 +1313,18 @@ func handleOpenAIChatCompletions(c *gin.Context, opts HTTPOptions, buildRouteReq
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	canonicalRequest, err := compat.OpenAIChatRequestToCanonical(openaiRequest)
+	canonicalSource := openaiRequest
+	modelOmitted := strings.TrimSpace(canonicalSource.Model) == ""
+	if modelOmitted {
+		canonicalSource.Model = routeSelectedModelPlaceholder
+	}
+	canonicalRequest, err := compat.OpenAIChatRequestToCanonical(canonicalSource)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if modelOmitted {
+		canonicalRequest.Model = ""
 	}
 	requestID := publicRequestID(c)
 	routeRequest := buildRouteRequest(openaiRequest)
@@ -1351,10 +1361,18 @@ func handleOpenAIResponses(c *gin.Context, opts HTTPOptions, buildRouteRequest f
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	canonicalRequest, err := compat.OpenAIResponsesRequestToCanonical(openaiRequest)
+	canonicalSource := openaiRequest
+	modelOmitted := strings.TrimSpace(canonicalSource.Model) == ""
+	if modelOmitted {
+		canonicalSource.Model = routeSelectedModelPlaceholder
+	}
+	canonicalRequest, err := compat.OpenAIResponsesRequestToCanonical(canonicalSource)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if modelOmitted {
+		canonicalRequest.Model = ""
 	}
 	requestID := publicRequestID(c)
 	routeRequest := buildRouteRequest(openaiRequest)

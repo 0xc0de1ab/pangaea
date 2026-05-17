@@ -32,7 +32,6 @@ import (
 
 const (
 	defaultBaseURL    = "https://pangaea.example.com/route/public/antigravity-sonnet"
-	defaultModel      = "claude-sonnet-4-6"
 	defaultAPI        = "responses"
 	defaultConfigName = "ask-config.json"
 	toolCallStart     = "<tool_call>"
@@ -93,7 +92,7 @@ func init() {
 		String("config", envString("PANGAEA_ASK_CONFIG", defaultAskConfigPath()), "ask config JSON path").
 		String("base-url", envString("PANGAEA_ASK_BASE_URL", defaultBaseURL), "Pangaea route base URL").
 		String("api-key", "", "API key for Authorization bearer token").
-		String("model", envString("PANGAEA_ASK_MODEL", defaultModel), "model name to request").
+		String("model", envString("PANGAEA_ASK_MODEL", ""), "model name to request; omit to let the route choose").
 		String("api", envString("PANGAEA_ASK_API", defaultAPI), "OpenAI-compatible API shape (responses|chat)").
 		Int("max-tokens", envInt("PANGAEA_ASK_MAX_TOKENS", 0), "maximum output tokens").
 		Bool("stream", envBool("PANGAEA_ASK_STREAM", true), "use SSE streaming").
@@ -119,10 +118,6 @@ func init() {
 		}
 		if strings.TrimSpace(opts.APIKey) == "" {
 			return fmt.Errorf("API key is required; set --api-key, PANGAEA_ASK_API_KEY, OPENAI_API_KEY, or %s", opts.ConfigPath)
-		}
-		if strings.TrimSpace(opts.Model) == "" {
-			_ = cmd.Usage()
-			return fmt.Errorf("--model is required")
 		}
 		if opts.API != "responses" && opts.API != "chat" {
 			_ = cmd.Usage()
@@ -179,9 +174,9 @@ func run(ctx context.Context, opts options, prompt string) error {
 		return normalizeRunError(ctx, runToolLoop(ctx, client, opts, key, prompt))
 	}
 	payload := map[string]any{
-		"model":  opts.Model,
 		"stream": opts.Stream,
 	}
+	applyModel(payload, opts.Model)
 	if opts.API == "responses" {
 		payload["input"] = prompt
 		applyMaxTokens(payload, opts.API, opts.MaxTokens)
@@ -191,7 +186,7 @@ func run(ctx context.Context, opts options, prompt string) error {
 	}
 	spin := newStatusSpinner(opts, "Thinking")
 	spin.Start()
-	resp, err := postAPI(ctx, client, opts.BaseURL, key, opts.API, payload)
+	resp, err := postAPIWithRetry(ctx, client, opts.BaseURL, key, opts.API, payload)
 	if err != nil {
 		spin.Stop()
 		return normalizeRunError(ctx, err)
@@ -222,16 +217,16 @@ func runToolLoop(ctx context.Context, client *http.Client, opts options, key str
 	tools := newToolRunner(root, opts)
 	for i := 0; i < opts.ToolTurns; i++ {
 		payload := map[string]any{
-			"model":       opts.Model,
 			"messages":    messages,
 			"tools":       chatTools(),
 			"tool_choice": "auto",
 			"stream":      opts.Stream,
 		}
+		applyModel(payload, opts.Model)
 		applyMaxTokens(payload, "chat", opts.MaxTokens)
 		spin := newStatusSpinner(opts, "Thinking")
 		spin.Start()
-		resp, err := postAPI(ctx, client, opts.BaseURL, key, "chat", payload)
+		resp, err := postAPIWithRetry(ctx, client, opts.BaseURL, key, "chat", payload)
 		if err != nil {
 			spin.Stop()
 			return normalizeRunError(ctx, err)
@@ -338,6 +333,48 @@ func isInterruptKey(key byte) bool {
 	return key == 0x03 || key == 0x1b
 }
 
+type httpStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *httpStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+func postAPIWithRetry(ctx context.Context, client *http.Client, baseURL string, key string, api string, payload map[string]any) (*http.Response, error) {
+	delays := []time.Duration{750 * time.Millisecond, 1500 * time.Millisecond, 3 * time.Second, 5 * time.Second}
+	var lastErr error
+	for attempt := 0; attempt <= len(delays); attempt++ {
+		resp, err := postAPI(ctx, client, baseURL, key, api, payload)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt >= len(delays) || !isTransientNoProviderMatched(err) {
+			return nil, err
+		}
+		fmt.Fprintln(os.Stderr, faintStyle.Render(fmt.Sprintf("Provider route is warming up; retrying in %s...", formatElapsed(delays[attempt]))))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delays[attempt]):
+		}
+	}
+	return nil, lastErr
+}
+
+func isTransientNoProviderMatched(err error) bool {
+	var statusErr *httpStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	return statusErr.StatusCode == http.StatusConflict && strings.Contains(strings.ToLower(statusErr.Body), "no provider matched")
+}
+
 func postAPI(ctx context.Context, client *http.Client, baseURL string, key string, api string, payload map[string]any) (*http.Response, error) {
 	path := "/v1/responses"
 	if api == "chat" {
@@ -365,7 +402,7 @@ func postAPI(ctx context.Context, client *http.Client, baseURL string, key strin
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, &httpStatusError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(data))}
 	}
 	return resp, nil
 }
@@ -379,6 +416,14 @@ func applyMaxTokens(payload map[string]any, api string, maxTokens int) {
 		return
 	}
 	payload["max_tokens"] = maxTokens
+}
+
+func applyModel(payload map[string]any, model string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	payload["model"] = model
 }
 
 type toolCall struct {

@@ -1281,6 +1281,65 @@ func TestHTTPNamedRouteUsesUserRoutingRule(t *testing.T) {
 	}
 }
 
+func TestHTTPNamedRouteUsesFilterModelWhenOpenAIModelOmitted(t *testing.T) {
+	registry := provider.NewRegistry()
+	reg := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
+	reg.Models = []provider.Model{{
+		ID:           "gpt-5-codex",
+		Aliases:      []string{"GPT-5 Codex"},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+	}}
+	if err := registry.Upsert(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(fakeInvoker{})
+	if _, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:       "fast",
+		Scope:      RoutingRuleScopeUser,
+		OwnerEmail: "usr_1",
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceCodex},
+				Models:      []string{"GPT-5 Codex"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("upsert routing rule: %v", err)
+	}
+	store := security.NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKey("key_1", "pk_route_user", "team-a", "usr_1"); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine, APIKeys: store})
+
+	body := []byte(`{"input":"hello","stream":false}`)
+	req := httptest.NewRequest(http.MethodPost, "/route/usr_1/fast/v1/responses", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer pk_route_user")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected named route 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response compat.OpenAIResponsesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Model != "gpt-5-codex" {
+		t.Fatalf("expected route filter canonical model in response, got %#v", response)
+	}
+	traces := engine.RequestTraces(1)
+	if len(traces) != 1 || traces[0].RouteRequest.Model != "" || traces[0].Decision.ModelAlias != "GPT-5 Codex" || traces[0].Decision.CanonicalModel != "gpt-5-codex" {
+		t.Fatalf("trace did not record filter-selected model: %#v", traces)
+	}
+}
+
 func TestHTTPRouterAdminAuthDisablesBearerWhenGoogleOAuthEnabled(t *testing.T) {
 	engine, _ := testEngine(t)
 	store := security.NewAPIKeyStore([]byte("pepper"))

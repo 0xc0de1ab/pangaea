@@ -23,7 +23,7 @@ func TestApplyAskConfigValuesHonorsPrecedence(t *testing.T) {
 	opts := options{
 		BaseURL:            defaultBaseURL,
 		APIKey:             "",
-		Model:              defaultModel,
+		Model:              "",
 		API:                defaultAPI,
 		MaxTokens:          0,
 		Stream:             true,
@@ -71,7 +71,7 @@ func TestApplyAskConfigValuesHonorsPrecedence(t *testing.T) {
 	if opts.BaseURL != defaultBaseURL {
 		t.Fatalf("base URL should keep env/default value, got %q", opts.BaseURL)
 	}
-	if opts.Model != defaultModel {
+	if opts.Model != "" {
 		t.Fatalf("model should keep flag value, got %q", opts.Model)
 	}
 	if opts.APIKey != "config-key" {
@@ -154,6 +154,18 @@ func TestApplyMaxTokensOmitsUnsetLimit(t *testing.T) {
 	applyMaxTokens(responsesPayload, "responses", 4096)
 	if responsesPayload["max_output_tokens"] != 4096 {
 		t.Fatalf("max_output_tokens was not applied: %#v", responsesPayload)
+	}
+}
+
+func TestApplyModelOmitsUnsetModel(t *testing.T) {
+	payload := map[string]any{}
+	applyModel(payload, "")
+	if _, ok := payload["model"]; ok {
+		t.Fatalf("model should be omitted when unset: %#v", payload)
+	}
+	applyModel(payload, "  claude-sonnet-4-6  ")
+	if payload["model"] != "claude-sonnet-4-6" {
+		t.Fatalf("model should be trimmed and applied: %#v", payload)
 	}
 }
 
@@ -281,6 +293,19 @@ func TestNormalizeRunErrorMapsCanceledContext(t *testing.T) {
 	}
 	if err := normalizeRunError(context.Background(), errors.New("boom")); err == nil || errors.Is(err, errInterrupted) {
 		t.Fatalf("non-cancel error should pass through, got %v", err)
+	}
+}
+
+func TestTransientNoProviderMatchedDetection(t *testing.T) {
+	err := &httpStatusError{StatusCode: 409, Body: `{"error":"no provider matched"}`}
+	if !isTransientNoProviderMatched(err) {
+		t.Fatalf("expected no provider matched 409 to be transient")
+	}
+	if isTransientNoProviderMatched(&httpStatusError{StatusCode: 409, Body: `{"error":"routing rule not found"}`}) {
+		t.Fatalf("routing rule errors should not retry")
+	}
+	if isTransientNoProviderMatched(&httpStatusError{StatusCode: 401, Body: `{"error":"no provider matched"}`}) {
+		t.Fatalf("auth errors should not retry")
 	}
 }
 

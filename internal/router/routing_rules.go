@@ -344,10 +344,13 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 				continue
 			}
 			step.Matched = append(step.Matched, registration.Identity.ProviderInstanceID)
-			score := 100 + routingRuleModelScore(registration.Models, request.Model)
+			modelAlias, canonicalModel := routingRuleEffectiveModel(filter, request, required, registration.Models)
+			scoreModel := firstNonEmpty(canonicalModel, modelAlias, request.Model)
+			score := 100 + routingRuleModelScore(registration.Models, scoreModel)
 			scored = append(scored, scoredCandidate{
 				registration: registration,
-				canonical:    request.Model,
+				modelAlias:   modelAlias,
+				canonical:    canonicalModel,
 				score:        score,
 				weight:       1,
 				reason:       "matched filter " + firstNonEmpty(filter.Label, filter.Type),
@@ -395,7 +398,8 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 			decision.Allowed = true
 			decision.Selected = selected.Identity.ProviderInstanceID
 			decision.SelectedProvider = &selected
-			decision.CanonicalModel = request.Model
+			decision.ModelAlias = firstNonEmpty(scored[0].modelAlias, request.Model)
+			decision.CanonicalModel = firstNonEmpty(scored[0].canonical, request.Model)
 			decision.Reason = "selected by routing rule filter"
 			decision.Rejections = step.Rejected
 			steps = append(steps, step)
@@ -491,19 +495,23 @@ func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest
 	if !authInSet(registration.Auth.Status, criteria.AuthStatus) && len(criteria.AuthStatus) > 0 {
 		return "auth mismatch"
 	}
+	criteriaRequired := uniqueCapabilities(append(append([]provider.Capability(nil), required...), criteria.Capabilities...))
+	modelAlias, canonicalModel := routingRuleEffectiveModel(filter, request, required, registration.Models)
+	if len(criteria.Models) > 0 && strings.TrimSpace(request.Model) == "" && canonicalModel == "" {
+		return "model mismatch"
+	}
 	if len(criteria.Models) > 0 && !modelInSet(registration.Models, criteria.Models, request.Model) {
 		return "model mismatch"
 	}
-	criteriaRequired := uniqueCapabilities(append(append([]provider.Capability(nil), required...), criteria.Capabilities...))
 	for _, capability := range criteriaRequired {
 		if capability != "" && !hasCapability(registration.Capabilities, capability) {
 			return "missing capability " + string(capability)
 		}
 	}
-	if rejection := evaluateModelSupport(request.Model, request.Model, criteriaRequired, registration.Models); rejection != "" {
+	if rejection := evaluateModelSupport(modelAlias, canonicalModel, criteriaRequired, registration.Models); rejection != "" {
 		return rejection
 	}
-	if providerModelQuotaExhausted(registration.Models, request.Model) {
+	if providerModelQuotaExhausted(registration.Models, firstNonEmpty(canonicalModel, modelAlias, request.Model)) {
 		return "provider model quota exhausted"
 	}
 	if registration.Health.Status != "" && registration.Health.Status != provider.HealthReady {
@@ -513,6 +521,53 @@ func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest
 		return "provider auth is " + string(registration.Auth.Status)
 	}
 	return ""
+}
+
+func routingRuleEffectiveModel(filter RoutingFilter, request RouteRequest, required []provider.Capability, models []provider.Model) (string, string) {
+	requested := strings.TrimSpace(request.Model)
+	if requested != "" {
+		return requested, requested
+	}
+	criteria := filter.Criteria
+	if len(criteria.Models) == 0 {
+		return "", ""
+	}
+	criteriaRequired := uniqueCapabilities(append(append([]provider.Capability(nil), required...), criteria.Capabilities...))
+	for _, name := range criteria.Models {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		for _, model := range models {
+			if !modelMatchesAny(model, []string{name}) {
+				continue
+			}
+			if modelQuotaExhausted(model) || !routingRuleModelSupports(model, criteriaRequired) {
+				continue
+			}
+			return name, firstNonEmpty(model.ID, name)
+		}
+	}
+	return "", ""
+}
+
+func routingRuleModelSupports(model provider.Model, required []provider.Capability) bool {
+	if len(model.Capabilities) == 0 {
+		return true
+	}
+	for _, capability := range required {
+		if capability == "" || capability == provider.CapabilityStreamSSE {
+			continue
+		}
+		if !hasCapability(model.Capabilities, capability) {
+			return false
+		}
+	}
+	return true
+}
+
+func modelQuotaExhausted(model provider.Model) bool {
+	return model.Quota != nil && model.Quota.RemainingPct <= 0
 }
 
 func normalizeRoutingRule(rule RoutingRule) (RoutingRule, error) {

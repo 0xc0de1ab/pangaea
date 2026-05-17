@@ -112,6 +112,7 @@ type RouteRejection struct {
 
 type scoredCandidate struct {
 	registration provider.Registration
+	modelAlias   string
 	canonical    string
 	score        int
 	weight       int
