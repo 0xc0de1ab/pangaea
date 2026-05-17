@@ -189,7 +189,7 @@ func TestRoutingPolicyEvaluateRejectsUnsupportedReportedModel(t *testing.T) {
 	if decision.Allowed {
 		t.Fatalf("expected unsupported model to be denied: %#v", decision)
 	}
-	if len(decision.Rejections) == 0 || !strings.Contains(decision.Rejections[0].Reason, "model not reported by provider: gpt-4o") {
+	if len(decision.Rejections) == 0 || !strings.Contains(decision.Rejections[0].Reason, `model not reported by provider: requested="gpt-4o"`) || !strings.Contains(decision.Rejections[0].Reason, "available_models=") {
 		t.Fatalf("expected model rejection, got %#v", decision.Rejections)
 	}
 }

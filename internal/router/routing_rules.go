@@ -497,11 +497,14 @@ func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest
 	}
 	criteriaRequired := uniqueCapabilities(append(append([]provider.Capability(nil), required...), criteria.Capabilities...))
 	modelAlias, canonicalModel := routingRuleEffectiveModel(filter, request, required, registration.Models)
-	if len(criteria.Models) > 0 && strings.TrimSpace(request.Model) == "" && canonicalModel == "" {
-		return "model mismatch"
-	}
-	if len(criteria.Models) > 0 && !modelInSet(registration.Models, criteria.Models, request.Model) {
-		return "model mismatch"
+	if len(criteria.Models) > 0 {
+		if requested := strings.TrimSpace(request.Model); requested != "" {
+			if !requestedModelAllowedByCriteria(registration.Models, requested, criteria.Models) {
+				return fmt.Sprintf("requested model is not allowed by route filter: requested=%q allowed_models=%s provider_models=%s", requested, formatQuotedStrings(criteria.Models, 8), formatReportedModelNames(registration.Models, 12))
+			}
+		} else if canonicalModel == "" {
+			return fmt.Sprintf("no route filter model available on provider: filter_models=%s provider_models=%s", formatQuotedStrings(criteria.Models, 8), formatReportedModelNames(registration.Models, 12))
+		}
 	}
 	for _, capability := range criteriaRequired {
 		if capability != "" && !hasCapability(registration.Capabilities, capability) {
@@ -718,6 +721,22 @@ func modelInSet(models []provider.Model, criteria []string, requested string) bo
 			if stringInSet(alias, criteria) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func requestedModelAllowedByCriteria(models []provider.Model, requested string, criteria []string) bool {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return true
+	}
+	if stringInSet(requested, criteria) {
+		return true
+	}
+	for _, model := range models {
+		if modelMatchesAny(model, []string{requested}) && modelMatchesAny(model, criteria) {
+			return true
 		}
 	}
 	return false

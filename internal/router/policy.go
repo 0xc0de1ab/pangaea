@@ -478,12 +478,60 @@ func evaluateModelSupport(requestedModel string, canonicalModel string, required
 				continue
 			}
 			if !hasCapability(model.Capabilities, capability) {
-				return fmt.Sprintf("model %q missing capability: %s", model.ID, capability)
+				return fmt.Sprintf("model %q missing capability %q: required=%s model_capabilities=%s", model.ID, capability, formatCapabilities(required, 8), formatCapabilities(model.Capabilities, 8))
 			}
 		}
 		return ""
 	}
-	return fmt.Sprintf("model not reported by provider: %s", names[0])
+	return fmt.Sprintf("model not reported by provider: requested=%q canonical=%q available_models=%s", requestedModel, canonicalModel, formatReportedModelNames(models, 12))
+}
+
+func formatReportedModelNames(models []provider.Model, limit int) string {
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) != "" {
+			names = append(names, model.ID)
+		}
+		for _, alias := range model.Aliases {
+			if strings.TrimSpace(alias) != "" {
+				names = append(names, alias)
+			}
+		}
+		for _, member := range model.GroupMembers {
+			if strings.TrimSpace(member) != "" {
+				names = append(names, member)
+			}
+		}
+	}
+	return formatQuotedStrings(uniqueStrings(names), limit)
+}
+
+func formatCapabilities(capabilities []provider.Capability, limit int) string {
+	values := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if capability != "" {
+			values = append(values, string(capability))
+		}
+	}
+	return formatQuotedStrings(values, limit)
+}
+
+func formatQuotedStrings(values []string, limit int) string {
+	values = uniqueStrings(values)
+	if len(values) == 0 {
+		return "[]"
+	}
+	if limit <= 0 || limit > len(values) {
+		limit = len(values)
+	}
+	quoted := make([]string, 0, limit+1)
+	for _, value := range values[:limit] {
+		quoted = append(quoted, fmt.Sprintf("%q", value))
+	}
+	if remaining := len(values) - limit; remaining > 0 {
+		quoted = append(quoted, fmt.Sprintf("+%d more", remaining))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func compareCandidateQuotaReset(left scoredCandidate, right scoredCandidate, requestedModel string, now time.Time) (bool, bool) {

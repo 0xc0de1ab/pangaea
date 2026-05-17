@@ -268,6 +268,103 @@ func TestRoutingRuleUsesFilterModelWhenRequestOmitsModel(t *testing.T) {
 	}
 }
 
+func TestRoutingRuleDoesNotOverrideExplicitModelWithFilterModel(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a1", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{
+			ID:           "claude-opus-4-6-thinking",
+			Aliases:      []string{"Claude Opus 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		},
+		{
+			ID:           "claude-sonnet-4-6",
+			Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "ag-claude",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Claude Opus 4.6 (Thinking)", "Claude Sonnet 4.6 (Thinking)"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	decision, _ := engine.evaluateRoutingRule(rule, RouteRequest{RoutingRuleName: rule.Name, Model: "claude-sonnet-4-6", APIDialect: compat.APIDialectOpenAI})
+	if !decision.Allowed || decision.CanonicalModel != "claude-sonnet-4-6" || decision.ModelAlias != "claude-sonnet-4-6" {
+		t.Fatalf("explicit model should not be replaced by the first filter model, got %#v", decision)
+	}
+}
+
+func TestRoutingRuleRejectsExplicitModelOutsideFilterWithDetails(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a1", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{
+			ID:           "claude-opus-4-6-thinking",
+			Aliases:      []string{"Claude Opus 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		},
+		{
+			ID:           "claude-sonnet-4-6",
+			Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+		},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "ag-sonnet",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Claude Sonnet 4.6 (Thinking)"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	decision, _ := engine.evaluateRoutingRule(rule, RouteRequest{RoutingRuleName: rule.Name, Model: "claude-opus-4-6-thinking", APIDialect: compat.APIDialectOpenAI})
+	if decision.Allowed {
+		t.Fatalf("model outside filter should be rejected, got %#v", decision)
+	}
+	if len(decision.Rejections) == 0 {
+		t.Fatalf("expected detailed model rejection")
+	}
+	reason := decision.Rejections[0].Reason
+	if !strings.Contains(reason, `requested="claude-opus-4-6-thinking"`) || !strings.Contains(reason, `allowed_models=["Claude Sonnet 4.6 (Thinking)"]`) || !strings.Contains(reason, "provider_models=") {
+		t.Fatalf("expected detailed explicit model rejection, got %q", reason)
+	}
+}
+
 func TestRoutingRuleWithOmittedModelFallsBackWhenFirstProviderDisconnected(t *testing.T) {
 	registry := provider.NewRegistry()
 	disconnected := registration("ag-a1", "antigravity-sidecar", "donghee@example.test", 1, 0)
