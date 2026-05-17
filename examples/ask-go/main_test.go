@@ -569,6 +569,53 @@ func TestToolRunnerExecuteCallsPreservesOrderAndIDs(t *testing.T) {
 	}
 }
 
+func TestToolLoopDetectorStopsRepeatedBatchWithoutMutation(t *testing.T) {
+	detector := newToolLoopDetector(3)
+	calls := []toolCall{
+		{ID: "call_1", Type: "function", Function: toolFunction{Name: "read_file", Arguments: `{"path":"f.html","intent":"first"}`}},
+	}
+	if err := detector.Observe(calls, 0); err != nil {
+		t.Fatalf("first observation failed: %v", err)
+	}
+	if err := detector.Observe(calls, 0); err != nil {
+		t.Fatalf("second observation failed: %v", err)
+	}
+	if err := detector.Observe(calls, 0); err == nil {
+		t.Fatal("expected repeated identical batch to be rejected")
+	}
+}
+
+func TestToolLoopDetectorResetsAfterGenerationChange(t *testing.T) {
+	detector := newToolLoopDetector(3)
+	calls := []toolCall{
+		{ID: "call_1", Type: "function", Function: toolFunction{Name: "read_file", Arguments: `{"path":"f.html"}`}},
+	}
+	if err := detector.Observe(calls, 0); err != nil {
+		t.Fatalf("first observation failed: %v", err)
+	}
+	if err := detector.Observe(calls, 0); err != nil {
+		t.Fatalf("second observation failed: %v", err)
+	}
+	if err := detector.Observe(calls, 1); err != nil {
+		t.Fatalf("generation change should reset repeated batch tracking: %v", err)
+	}
+	if err := detector.Observe(calls, 1); err != nil {
+		t.Fatalf("second observation in new generation failed: %v", err)
+	}
+}
+
+func TestToolLoopSignatureIgnoresIntentAndNormalizesCat(t *testing.T) {
+	readSig := toolCallBatchSignature([]toolCall{
+		{ID: "call_a", Type: "function", Function: toolFunction{Name: "read_file", Arguments: `{"path":"f.html","intent":"inspect"}`}},
+	})
+	catSig := toolCallBatchSignature([]toolCall{
+		{ID: "call_b", Type: "function", Function: toolFunction{Name: "exec_command", Arguments: `{"cmd":"cat f.html","intent":"inspect via cat"}`}},
+	})
+	if readSig != catSig {
+		t.Fatalf("expected read_file and simple cat signatures to match:\nread=%q\ncat=%q", readSig, catSig)
+	}
+}
+
 func TestExecuteToolCallSearchFiles(t *testing.T) {
 	if _, err := exec.LookPath("rg"); err != nil {
 		t.Skip("rg is not installed")

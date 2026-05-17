@@ -34,6 +34,8 @@ const (
 	defaultBaseURL    = "https://pangaea.example.com/route/public/antigravity-sonnet"
 	defaultAPI        = "responses"
 	defaultConfigName = "ask-config.json"
+	defaultToolTurns  = 0
+	toolLoopRepeats   = 3
 	toolCallStart     = "<tool_call>"
 	toolCallEnd       = "</tool_call>"
 )
@@ -99,7 +101,7 @@ func init() {
 		Bool("spinner", envBool("PANGAEA_ASK_SPINNER", true), "show a waiting spinner on interactive terminals").
 		Bool("tools", envBool("PANGAEA_ASK_TOOLS", true), "enable local file tools").
 		String("tool-root", envString("PANGAEA_ASK_TOOL_ROOT", "."), "directory local file tools may access").
-		Int("tool-turns", envInt("PANGAEA_ASK_TOOL_TURNS", 6), "maximum tool-call round trips").
+		Int("tool-turns", envInt("PANGAEA_ASK_TOOL_TURNS", defaultToolTurns), "maximum tool-call round trips; 0 disables the fixed cap").
 		String("markdown-translator", envString("PANGAEA_ASK_MARKDOWN_TRANSLATOR", "plain"), "terminal markdown renderer (plain|glamour|glow|rich)").
 		String("glamour-style", envString("PANGAEA_ASK_GLAMOUR_STYLE", "dark"), "glamour/glow style name").
 		String("rich-code-theme", envString("PANGAEA_ASK_RICH_CODE_THEME", "monokai"), "Rich/Pygments code highlighting theme")
@@ -129,9 +131,9 @@ func init() {
 			_ = cmd.Usage()
 			return fmt.Errorf("--markdown-translator must be plain, glamour, glow, or rich")
 		}
-		if opts.ToolTurns < 1 {
+		if opts.ToolTurns < 0 {
 			_ = cmd.Usage()
-			return fmt.Errorf("--tool-turns must be >= 1")
+			return fmt.Errorf("--tool-turns must be >= 0")
 		}
 		return nil
 	}
@@ -215,7 +217,8 @@ func runToolLoop(ctx context.Context, client *http.Client, opts options, key str
 		{"role": "user", "content": prompt},
 	}
 	tools := newToolRunner(root, opts)
-	for i := 0; i < opts.ToolTurns; i++ {
+	loopDetector := newToolLoopDetector(toolLoopRepeats)
+	for turn := 0; opts.ToolTurns == 0 || turn < opts.ToolTurns; turn++ {
 		payload := map[string]any{
 			"messages":    messages,
 			"tools":       chatTools(),
@@ -251,6 +254,9 @@ func runToolLoop(ctx context.Context, client *http.Client, opts options, key str
 		}
 		if len(calls) == 0 {
 			return nil
+		}
+		if err := loopDetector.Observe(calls, tools.Generation()); err != nil {
+			return err
 		}
 		messages = append(messages, map[string]any{
 			"role":       "assistant",
@@ -1040,6 +1046,15 @@ func (r *toolRunner) Execute(ctx context.Context, call toolCall) string {
 	return results[0].Content
 }
 
+func (r *toolRunner) Generation() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.generation
+}
+
 func (r *toolRunner) ExecuteCalls(ctx context.Context, calls []toolCall) []toolExecution {
 	if len(calls) == 0 {
 		return nil
@@ -1079,6 +1094,100 @@ func (r *toolRunner) ExecuteCalls(ctx context.Context, calls []toolCall) []toolE
 		i = end
 	}
 	return results
+}
+
+type toolLoopDetector struct {
+	repeatLimit int
+	lastKey     string
+	count       int
+}
+
+func newToolLoopDetector(repeatLimit int) *toolLoopDetector {
+	if repeatLimit < 2 {
+		repeatLimit = 2
+	}
+	return &toolLoopDetector{repeatLimit: repeatLimit}
+}
+
+func (d *toolLoopDetector) Observe(calls []toolCall, generation int) error {
+	if d == nil || len(calls) == 0 {
+		return nil
+	}
+	signature := toolCallBatchSignature(calls)
+	key := strconv.Itoa(generation) + "\x00" + signature
+	if key == d.lastKey {
+		d.count++
+	} else {
+		d.lastKey = key
+		d.count = 1
+	}
+	if d.count < d.repeatLimit {
+		return nil
+	}
+	return fmt.Errorf(
+		"possible tool-call loop detected: identical tool batch repeated %d times without file changes (%s)",
+		d.count,
+		compactPreview(describeToolBatch(calls), 240),
+	)
+}
+
+func toolCallBatchSignature(calls []toolCall) string {
+	parts := make([]string, 0, len(calls))
+	for _, call := range calls {
+		parts = append(parts, toolCallSignature(call))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func toolCallSignature(call toolCall) string {
+	name, args, ok := normalizedToolCallForLoop(call)
+	if !ok {
+		return strings.TrimSpace(call.Function.Name) + "\x00invalid:" + call.Function.Arguments
+	}
+	return name + "\x00" + mustJSON(args)
+}
+
+func describeToolBatch(calls []toolCall) string {
+	parts := make([]string, 0, len(calls))
+	for _, call := range calls {
+		name, args, ok := normalizedToolCallForLoop(call)
+		if !ok {
+			parts = append(parts, strings.TrimSpace(call.Function.Name)+" invalid arguments")
+			continue
+		}
+		if argText := formatToolArgs(args); argText != "{}" {
+			parts = append(parts, name+" "+argText)
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func normalizedToolCallForLoop(call toolCall) (string, map[string]any, bool) {
+	name := strings.TrimSpace(call.Function.Name)
+	args := map[string]any{}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+		return name, nil, false
+	}
+	if isExecTool(name) {
+		if path, ok := simpleCatPath(args); ok {
+			name = "read_file"
+			args = map[string]any{"path": path}
+		}
+	}
+	return name, canonicalToolLoopArgs(args), true
+}
+
+func canonicalToolLoopArgs(args map[string]any) map[string]any {
+	out := make(map[string]any, len(args))
+	for key, value := range args {
+		if key == "intent" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func (p preparedToolCall) execution() toolExecution {
