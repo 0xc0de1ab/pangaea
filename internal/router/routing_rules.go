@@ -18,6 +18,8 @@ const (
 	RoutingRuleScopeUser   RoutingRuleScope = "user"
 )
 
+const routeDecisionEventModelPromoted = "model.promoted_from_route_filter"
+
 type RoutingRule struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
@@ -395,13 +397,26 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 			selected := scored[0].registration
 			step.Selected = selected.Identity.ProviderInstanceID
 			step.Reason = "selected"
+			modelAlias := firstNonEmpty(scored[0].modelAlias, request.Model)
+			canonicalModel := firstNonEmpty(scored[0].canonical, request.Model)
 			decision.Allowed = true
 			decision.Selected = selected.Identity.ProviderInstanceID
 			decision.SelectedProvider = &selected
-			decision.ModelAlias = firstNonEmpty(scored[0].modelAlias, request.Model)
-			decision.CanonicalModel = firstNonEmpty(scored[0].canonical, request.Model)
+			decision.ModelAlias = modelAlias
+			decision.CanonicalModel = canonicalModel
 			decision.Reason = "selected by routing rule filter"
 			decision.Rejections = step.Rejected
+			if strings.TrimSpace(request.Model) == "" && (modelAlias != "" || canonicalModel != "") {
+				decision.Events = append(decision.Events, RouteDecisionEvent{
+					Type:           routeDecisionEventModelPromoted,
+					Message:        "request model was omitted; routing filter criteria selected the effective model",
+					RoutingRuleID:  rule.ID,
+					FilterID:       filter.ID,
+					FilterLabel:    filter.Label,
+					ModelAlias:     modelAlias,
+					CanonicalModel: canonicalModel,
+				})
+			}
 			steps = append(steps, step)
 			return decision, steps
 		}

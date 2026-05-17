@@ -233,10 +233,32 @@ function TraceDetail({ trace }: { trace: RequestTrace }) {
         <div className="kv-list">
           <div className="kv-key">Route</div><div className="kv-value mono">{trace.decision?.route_id || ""}</div>
           <div className="kv-key">Selected</div><div className="kv-value mono">{trace.decision?.selected || trace.provider?.provider_instance_id || ""}</div>
+          <div className="kv-key">Requested model</div><div className="kv-value mono">{trace.route_request?.model || "(route-selected)"}</div>
+          <div className="kv-key">Model alias</div><div className="kv-value mono">{trace.decision?.model_alias || ""}</div>
           <div className="kv-key">Canonical model</div><div className="kv-value mono">{trace.decision?.canonical_model || ""}</div>
           <div className="kv-key">Reason</div><div className="kv-value">{trace.decision?.reason || trace.error || ""}</div>
         </div>
       </div>
+      {trace.decision?.events?.length ? (
+        <div className="detail-section">
+          <h3>Routing Events</h3>
+          <div className="trace-event-list">
+            {trace.decision.events.map((event, index) => (
+              <article className="trace-event" key={`${event.type}-${index}`}>
+                <div className="trace-event-title">
+                  <strong>{routeDecisionEventLabel(event.type)}</strong>
+                  {event.filter_label || event.filter_id ? <span>{event.filter_label || event.filter_id}</span> : null}
+                </div>
+                <p>{event.message || event.type}</p>
+                <div className="trace-event-meta">
+                  {event.model_alias ? <span className="mono">alias={event.model_alias}</span> : null}
+                  {event.canonical_model ? <span className="mono">canonical={event.canonical_model}</span> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div className="detail-section">
         <h3>Provider</h3>
         <div className="kv-list">
@@ -260,6 +282,15 @@ function TraceDetail({ trace }: { trace: RequestTrace }) {
       <HTTPExchange trace={trace} />
     </div>
   );
+}
+
+function routeDecisionEventLabel(type: string) {
+  switch (type) {
+    case "model.promoted_from_route_filter":
+      return "Route selected model";
+    default:
+      return type;
+  }
 }
 
 function HTTPExchange({ trace }: { trace: RequestTrace }) {

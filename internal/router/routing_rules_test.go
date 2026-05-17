@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -265,6 +266,78 @@ func TestRoutingRuleUsesFilterModelWhenRequestOmitsModel(t *testing.T) {
 	}
 	if decision.ModelAlias != "Claude Sonnet 4.6 (Thinking)" || decision.CanonicalModel != "claude-sonnet-4-6" {
 		t.Fatalf("expected filter model alias to resolve to provider canonical model, got alias=%q canonical=%q", decision.ModelAlias, decision.CanonicalModel)
+	}
+	if len(decision.Events) != 1 {
+		t.Fatalf("expected route-selected model event, got %#v", decision.Events)
+	}
+	event := decision.Events[0]
+	if event.Type != routeDecisionEventModelPromoted || event.RoutingRuleID != rule.ID || event.ModelAlias != "Claude Sonnet 4.6 (Thinking)" || event.CanonicalModel != "claude-sonnet-4-6" {
+		t.Fatalf("unexpected route-selected model event: %#v", event)
+	}
+}
+
+func TestRoutingRuleSelectedModelEventIsRecordedInRequestTrace(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a1", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{{
+		ID:           "claude-sonnet-4-6",
+		Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+		Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+	}}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(fakeInvoker{})
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "ag-sonnet",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Claude Sonnet 4.6 (Thinking)"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	_, _, err = engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_route_model_event_1",
+		RouteRequest: RouteRequest{
+			RoutingRuleName: rule.Name,
+			APIDialect:      compat.APIDialectOpenAI,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	trace, ok := engine.RequestTrace("req_route_model_event_1")
+	if !ok {
+		t.Fatalf("expected trace")
+	}
+	if trace.RouteRequest.Model != "" {
+		t.Fatalf("request trace should preserve omitted incoming model, got %q", trace.RouteRequest.Model)
+	}
+	if trace.Decision.CanonicalModel != "claude-sonnet-4-6" {
+		t.Fatalf("trace should record promoted canonical model, got %#v", trace.Decision)
+	}
+	if len(trace.Decision.Events) != 1 || trace.Decision.Events[0].Type != routeDecisionEventModelPromoted {
+		t.Fatalf("trace should record route-selected model event, got %#v", trace.Decision.Events)
 	}
 }
 

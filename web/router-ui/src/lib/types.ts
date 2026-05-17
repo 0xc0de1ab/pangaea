@@ -283,7 +283,18 @@ export type RouteDecision = {
     provider_type?: string;
     reason: string;
   }>;
+  events?: RouteDecisionEvent[];
   reason?: string;
+};
+
+export type RouteDecisionEvent = {
+  type: string;
+  message?: string;
+  routing_rule_id?: string;
+  filter_id?: string;
+  filter_label?: string;
+  model_alias?: string;
+  canonical_model?: string;
 };
 
 export type RouterOAuthUser = {

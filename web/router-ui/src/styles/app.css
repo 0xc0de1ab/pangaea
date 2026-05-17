@@ -1535,6 +1535,48 @@ tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+.trace-event-list {
+  display: grid;
+  gap: 8px;
+}
+
+.trace-event {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.trace-event-title,
+.trace-event-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trace-event-title strong {
+  font-size: 12px;
+}
+
+.trace-event-title span,
+.trace-event-meta span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-event p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
 .subscription-value {
   display: flex;
   align-items: center;
