@@ -1338,9 +1338,9 @@ func handleOpenAIChatCompletions(c *gin.Context, opts HTTPOptions, buildRouteReq
 		writeOpenAIChatEventStream(c, engine, execution, canonicalRequest)
 		return
 	}
-	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	response, routeExecution, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
 	if err != nil {
-		writeRouteError(c, err)
+		writeRouteExecutionError(c, err, routeExecution)
 		return
 	}
 	openaiResponse, err := compat.OpenAIChatResponseFromCanonical(response)
@@ -1386,9 +1386,9 @@ func handleOpenAIResponses(c *gin.Context, opts HTTPOptions, buildRouteRequest f
 		writeOpenAIResponsesEventStream(c, engine, execution, canonicalRequest)
 		return
 	}
-	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	response, routeExecution, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
 	if err != nil {
-		writeRouteError(c, err)
+		writeRouteExecutionError(c, err, routeExecution)
 		return
 	}
 	openaiResponse, err := compat.OpenAIResponsesResponseFromCanonical(response)
@@ -1426,9 +1426,9 @@ func handleAnthropicMessages(c *gin.Context, opts HTTPOptions, buildRouteRequest
 		writeAnthropicMessagesEventStream(c, engine, execution, canonicalRequest)
 		return
 	}
-	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	response, routeExecution, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
 	if err != nil {
-		writeRouteError(c, err)
+		writeRouteExecutionError(c, err, routeExecution)
 		return
 	}
 	anthropicResponse, err := compat.AnthropicMessagesResponseFromCanonical(response)
@@ -1911,12 +1911,12 @@ func writeOpenAIChatEventStream(c *gin.Context, engine *Engine, execution RouteE
 		model:   request.Model,
 		created: time.Now().Unix(),
 	}
-	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+	_, routeExecution, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
 		return writer.write(c, event)
 	})
 	if err != nil {
 		if !writer.wrote {
-			writeRouteError(c, err)
+			writeRouteExecutionError(c, err, routeExecution)
 			return
 		}
 		writer.writeError(c, err)
@@ -2175,12 +2175,12 @@ func writeOpenAIResponsesEventStream(c *gin.Context, engine *Engine, execution R
 		itemID:  "msg_" + execution.RequestID,
 		created: time.Now().Unix(),
 	}
-	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+	_, routeExecution, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
 		return writer.write(c, event)
 	})
 	if err != nil {
 		if !writer.wrote {
-			writeRouteError(c, err)
+			writeRouteExecutionError(c, err, routeExecution)
 			return
 		}
 		writer.writeError(c, err)
@@ -2602,12 +2602,12 @@ func writeAnthropicMessagesEventStream(c *gin.Context, engine *Engine, execution
 		id:    execution.RequestID,
 		model: request.Model,
 	}
-	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+	_, routeExecution, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
 		return writer.write(c, event)
 	})
 	if err != nil {
 		if !writer.wrote {
-			writeRouteError(c, err)
+			writeRouteExecutionError(c, err, routeExecution)
 			return
 		}
 		writer.writeError(c, err)
@@ -2760,12 +2760,12 @@ type geminiGenerateContentEventStreamWriter struct {
 
 func writeGeminiGenerateContentEventStream(c *gin.Context, engine *Engine, execution RouteExecutionRequest, request compat.Request) {
 	writer := &geminiGenerateContentEventStreamWriter{model: request.Model}
-	_, _, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
+	_, routeExecution, err := engine.InvokeStream(c.Request.Context(), execution, request, func(event compat.Event) error {
 		return writer.write(c, event)
 	})
 	if err != nil {
 		if !writer.wrote {
-			writeRouteError(c, err)
+			writeRouteExecutionError(c, err, routeExecution)
 			return
 		}
 		writer.writeError(c, err)
@@ -2905,6 +2905,14 @@ func writeRouteError(c *gin.Context, err error) {
 	c.JSON(routeErrorStatus(err), routeErrorPayload(err))
 }
 
+func writeRouteExecutionError(c *gin.Context, err error, execution RouteExecution) {
+	var upstream *provider.UpstreamError
+	if errors.As(err, &upstream) && upstream != nil && upstream.RetryAfter != "" {
+		c.Header("retry-after", upstream.RetryAfter)
+	}
+	c.JSON(routeErrorStatus(err), routeErrorPayloadWithExecution(err, execution))
+}
+
 func routeErrorStatus(err error) int {
 	var upstream *provider.UpstreamError
 	switch {
@@ -2937,6 +2945,49 @@ func routeErrorPayload(err error) gin.H {
 		}
 	}
 	return payload
+}
+
+func routeErrorPayloadWithExecution(err error, execution RouteExecution) gin.H {
+	payload := routeErrorPayload(err)
+	decision := execution.Decision
+	if decision.Reason != "" && decision.Reason != err.Error() {
+		payload["reason"] = decision.Reason
+	}
+	if decision.RouteID != "" {
+		payload["route_id"] = decision.RouteID
+	}
+	if decision.RoutingRuleID != "" {
+		payload["routing_rule_id"] = decision.RoutingRuleID
+	}
+	if decision.ModelAlias != "" {
+		payload["model_alias"] = decision.ModelAlias
+	}
+	if decision.CanonicalModel != "" {
+		payload["canonical_model"] = decision.CanonicalModel
+	}
+	if len(decision.Rejections) > 0 {
+		payload["rejection_count"] = len(decision.Rejections)
+		payload["rejections"] = routeErrorRejections(decision.Rejections, 16)
+	}
+	return payload
+}
+
+func routeErrorRejections(rejections []RouteRejection, limit int) []gin.H {
+	if limit <= 0 || limit > len(rejections) {
+		limit = len(rejections)
+	}
+	out := make([]gin.H, 0, limit)
+	for _, rejection := range rejections[:limit] {
+		item := gin.H{"reason": rejection.Reason}
+		if rejection.ProviderInstanceID != "" {
+			item["provider_instance_id"] = rejection.ProviderInstanceID
+		}
+		if rejection.ProviderType != "" {
+			item["provider_type"] = rejection.ProviderType
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func writeSSEEvent(c *gin.Context, event string, payload any) {
@@ -2999,9 +3050,9 @@ func handleGeminiGenerateContent(c *gin.Context, opts HTTPOptions, buildRouteReq
 		writeGeminiGenerateContentEventStream(c, engine, execution, canonicalRequest)
 		return
 	}
-	response, _, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
+	response, routeExecution, err := engine.Invoke(c.Request.Context(), execution, canonicalRequest)
 	if err != nil {
-		writeRouteError(c, err)
+		writeRouteExecutionError(c, err, routeExecution)
 		return
 	}
 	geminiResponse, err := compat.GeminiGenerateContentResponseFromCanonical(response)

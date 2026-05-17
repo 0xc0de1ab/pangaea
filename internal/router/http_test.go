@@ -1281,6 +1281,72 @@ func TestHTTPNamedRouteUsesUserRoutingRule(t *testing.T) {
 	}
 }
 
+func TestHTTPNamedRouteReportsExplicitModelRejectionDetails(t *testing.T) {
+	registry := provider.NewRegistry()
+	reg := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
+	reg.Models = []provider.Model{
+		{ID: "gpt-5-codex", Aliases: []string{"GPT-5 Codex"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+		{ID: "gpt-4o", Capabilities: []provider.Capability{provider.CapabilityOpenAIChat}},
+	}
+	if err := registry.Upsert(reg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(fakeInvoker{})
+	if _, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:       "fast",
+		Scope:      RoutingRuleScopeUser,
+		OwnerEmail: "usr_1",
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceCodex},
+				Models:      []string{"GPT-5 Codex"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("upsert routing rule: %v", err)
+	}
+	store := security.NewAPIKeyStore([]byte("pepper"))
+	if _, err := store.AddRawKey("key_1", "pk_route_user", "team-a", "usr_1"); err != nil {
+		t.Fatalf("add key: %v", err)
+	}
+	handler := NewHTTPHandler(HTTPOptions{Engine: engine, APIKeys: store})
+
+	body := []byte(`{"model":"gpt-4o","input":"hello","stream":false}`)
+	req := httptest.NewRequest(http.MethodPost, "/route/usr_1/fast/v1/responses", bytes.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer pk_route_user")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected conflict, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload["error"] != "no provider matched" || payload["rejection_count"] == nil {
+		t.Fatalf("expected route rejection details, got %#v", payload)
+	}
+	raw, ok := payload["rejections"].([]any)
+	if !ok || len(raw) == 0 {
+		t.Fatalf("expected rejection list, got %#v", payload)
+	}
+	first, ok := raw[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected rejection entry: %#v", raw[0])
+	}
+	reason, _ := first["reason"].(string)
+	if !strings.Contains(reason, `requested="gpt-4o"`) || !strings.Contains(reason, `allowed_models=["GPT-5 Codex"]`) || !strings.Contains(reason, "provider_models=") {
+		t.Fatalf("expected detailed model rejection, got %q", reason)
+	}
+}
+
 func TestHTTPNamedRouteUsesFilterModelWhenOpenAIModelOmitted(t *testing.T) {
 	registry := provider.NewRegistry()
 	reg := registration("codex-primary-a1", "codex-cli", "primary@example.test", 10, 0)
