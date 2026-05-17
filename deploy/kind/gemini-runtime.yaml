@@ -17,6 +17,9 @@ spec:
         app.kubernetes.io/name: pangaea-gemini-runtime
         app.kubernetes.io/component: provider-runtime
     spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: bootstrap-gemini
           image: alpine:3.22
@@ -32,7 +35,7 @@ spec:
               else
                 printf '%s\n' '{"selectedAuthType":"oauth-personal","security":{"auth":{"selectedType":"oauth-personal"}}}' > /var/lib/pangaea/home/gemini/.gemini/settings.json
               fi
-              chown -R 10001:10001 /var/lib/pangaea
+              chown -R 1000:1000 /var/lib/pangaea
               chmod 0700 /var/lib/pangaea/home/gemini /var/lib/pangaea/home/gemini/.gemini /var/lib/pangaea/tmp
               chmod 0600 /var/lib/pangaea/home/gemini/.gemini/oauth_creds.json
               chmod 0600 /var/lib/pangaea/home/gemini/.gemini/settings.json
@@ -48,6 +51,14 @@ spec:
         - name: shim
           image: pangaea/provider-gemini:kind
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           env:
             - name: HOME
               value: /var/lib/pangaea/home/gemini

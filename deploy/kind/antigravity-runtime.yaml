@@ -17,6 +17,9 @@ spec:
         app.kubernetes.io/name: pangaea-antigravity-runtime
         app.kubernetes.io/component: provider-runtime
     spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: bootstrap-antigravity
           image: alpine:3.22
@@ -31,7 +34,7 @@ spec:
                 cp /auth-src/state.vscdb "${state_dir}/state.vscdb"
                 chmod 0600 "${state_dir}/state.vscdb"
               fi
-              chown -R 10001:10001 /var/lib/antigravity/state
+              chown -R 1000:1000 /var/lib/antigravity/state
               chmod 0700 /var/lib/antigravity/state "${state_dir}"
           securityContext:
             runAsUser: 0
@@ -45,6 +48,14 @@ spec:
         - name: runtime
           image: pangaea/antigravity-runtime:kind
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - sh
             - -c
@@ -71,7 +82,7 @@ spec:
                   name: pangaea-antigravity-runtime-secrets
                   key: gemini-key
             - name: ANTIGRAVITY_GEMINI_DIR
-              value: /root/.antigravity-server
+              value: /var/lib/antigravity/home/.antigravity-server
             - name: ANTIGRAVITY_APP_DATA_DIR
               value: data
             - name: ANTIGRAVITY_STREAM_CAPTURE_PATH
@@ -83,7 +94,7 @@ spec:
             - name: antigravity-state
               mountPath: /var/lib/antigravity/state
             - name: antigravity-state
-              mountPath: /root/.antigravity-server/data
+              mountPath: /var/lib/antigravity/home/.antigravity-server/data
           readinessProbe:
             httpGet:
               path: /v1/health
@@ -99,6 +110,14 @@ spec:
         - name: shim
           image: pangaea/provider-antigravity-sidecar:kind
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           env:
             - name: PANGAEA_SHIM_MODE
               value: sidecar-agent

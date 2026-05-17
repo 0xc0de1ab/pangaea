@@ -17,6 +17,9 @@ spec:
         app.kubernetes.io/name: pangaea-codex-runtime
         app.kubernetes.io/component: provider-runtime
     spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: bootstrap-codex
           image: alpine:3.22
@@ -27,7 +30,7 @@ spec:
               set -eu
               mkdir -p /var/lib/pangaea/auth/codex /var/lib/pangaea/home/codex /var/lib/pangaea/tmp
               cp /auth-src/auth.json /var/lib/pangaea/auth/codex/auth.json
-              chown -R 10001:10001 /var/lib/pangaea
+              chown -R 1000:1000 /var/lib/pangaea
               chmod 0700 /var/lib/pangaea/auth/codex /var/lib/pangaea/home/codex /var/lib/pangaea/tmp
               chmod 0600 /var/lib/pangaea/auth/codex/auth.json
           securityContext:
@@ -42,6 +45,14 @@ spec:
         - name: runtime
           image: pangaea/provider-codex:kind
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - /sbin/tini
             - --
@@ -84,6 +95,14 @@ spec:
         - name: shim
           image: pangaea/provider-codex:kind
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - /sbin/tini
             - --
