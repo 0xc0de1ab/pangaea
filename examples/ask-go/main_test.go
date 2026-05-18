@@ -523,6 +523,32 @@ func TestExecuteToolCallExecCommand(t *testing.T) {
 	}
 }
 
+func TestExecuteToolCallExecCommandRejectsHeredocFileWrite(t *testing.T) {
+	root := t.TempDir()
+	call := toolCall{
+		ID:   "call_1",
+		Type: "function",
+		Function: toolFunction{
+			Name:      "exec_command",
+			Arguments: `{"cmd":"cat << 'EOF' > patch.js\nconsole.log('x')\nEOF\nnode patch.js","intent":"write helper script"}`,
+		},
+	}
+	raw := executeToolCall(call, root)
+	var result map[string]any
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := result["ok"].(bool); ok {
+		t.Fatalf("heredoc file write should be rejected: %#v", result)
+	}
+	if errText, _ := result["error"].(string); !strings.Contains(errText, "use apply_patch") {
+		t.Fatalf("error should direct model to apply_patch/write_file: %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, "patch.js")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("patch.js should not be created, stat err=%v", err)
+	}
+}
+
 func TestToolRunnerCachesDuplicateReadOnlyCalls(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "b.html")
@@ -819,6 +845,30 @@ func TestPrintToolCallStatusLeadsWithIntentAndDetails(t *testing.T) {
 	}
 	if !strings.Contains(stripped, "\n  └ args:") {
 		t.Fatalf("tool args line missing:\n%s", stripped)
+	}
+}
+
+func TestPrintToolCallStatusShowsFailedCommandOutputAndCompactArgs(t *testing.T) {
+	out := captureStderr(t, func() {
+		printToolCallStatus("exec_command", map[string]any{
+			"intent": "node patch.js 실행",
+			"cmd":    "cat << 'EOF' > patch.js\nconst oldStr = `${objKey}`;\nEOF\nnode patch.js",
+		}, map[string]any{
+			"ok":          false,
+			"exit_code":   1,
+			"duration_ms": 304,
+			"stderr":      "ReferenceError: objKey is not defined\n    at patch.js:2:10",
+		})
+	})
+	stripped := ansi.Strip(out)
+	if !strings.Contains(stripped, "\n  ├ stderr: ReferenceError: objKey is not defined") {
+		t.Fatalf("stderr preview missing:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, `"cmd_bytes"`) || !strings.Contains(stripped, `"cmd_preview"`) {
+		t.Fatalf("command args should be compacted:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "\nconst oldStr") {
+		t.Fatalf("full heredoc command should not be printed in args:\n%s", stripped)
 	}
 }
 

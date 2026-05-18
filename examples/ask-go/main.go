@@ -1841,6 +1841,13 @@ func toolExecCommand(ctx context.Context, root string, args map[string]any) map[
 	if strings.TrimSpace(command) == "" {
 		return map[string]any{"ok": false, "error": "exec_command.cmd is required"}
 	}
+	if looksLikeShellFileWrite(command) {
+		return map[string]any{
+			"ok":    false,
+			"error": "exec_command is for running commands, not writing patch/helper files; use apply_patch for edits or write_file for new files",
+			"cmd":   command,
+		}
+	}
 	workdir := firstStringArg(args, "workdir", "cwd")
 	if workdir == "" {
 		workdir = "."
@@ -1882,6 +1889,17 @@ func toolExecCommand(ctx context.Context, root string, args map[string]any) map[
 		"stderr":      stderrText,
 		"truncated":   stdoutTruncated || stderrTruncated,
 	}
+}
+
+func looksLikeShellFileWrite(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	lower := strings.ToLower(command)
+	return strings.Contains(lower, "<<") &&
+		(strings.Contains(lower, ">") || strings.Contains(lower, "tee ")) &&
+		(strings.Contains(lower, "cat ") || strings.Contains(lower, "node ") || strings.Contains(lower, "python") || strings.Contains(lower, "perl "))
 }
 
 func toolApplyPatch(ctx context.Context, root string, args map[string]any) map[string]any {
@@ -2455,10 +2473,24 @@ func printToolCallBatchStatus(execs []toolExecution) {
 		fmt.Fprintf(os.Stderr, "  %s %s %s\n", faintStyle.Render(detailPrefix+"├"), toolDetail(group.Name, group.Args, group.Result), outcome)
 		if resultText != "" {
 			resultBranch := "└ result:"
-			if argText != "{}" {
+			if argText != "{}" || toolOutputPreview(group.Result, "stderr") != "" || toolOutputPreview(group.Result, "stdout") != "" {
 				resultBranch = "├ result:"
 			}
 			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+resultBranch), resultText)
+		}
+		if stderrText := toolOutputPreview(group.Result, "stderr"); stderrText != "" {
+			branchText := "└ stderr:"
+			if argText != "{}" || toolOutputPreview(group.Result, "stdout") != "" {
+				branchText = "├ stderr:"
+			}
+			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+branchText), dim(stderrText))
+		}
+		if stdoutText := toolOutputPreview(group.Result, "stdout"); stdoutText != "" {
+			branchText := "└ stdout:"
+			if argText != "{}" {
+				branchText = "├ stdout:"
+			}
+			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+branchText), dim(stdoutText))
 		}
 		if argText != "{}" {
 			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+"└ args:"), argText)
@@ -2511,10 +2543,24 @@ func printToolCallStatus(name string, args map[string]any, result map[string]any
 	argText := formatToolArgs(args)
 	if resultText := toolResultSummary(result); resultText != "" {
 		resultBranch := "└ result:"
-		if argText != "{}" {
+		if argText != "{}" || toolOutputPreview(result, "stderr") != "" || toolOutputPreview(result, "stdout") != "" {
 			resultBranch = "├ result:"
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(resultBranch), resultText)
+	}
+	if stderrText := toolOutputPreview(result, "stderr"); stderrText != "" {
+		branchText := "└ stderr:"
+		if argText != "{}" || toolOutputPreview(result, "stdout") != "" {
+			branchText = "├ stderr:"
+		}
+		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(branchText), dim(stderrText))
+	}
+	if stdoutText := toolOutputPreview(result, "stdout"); stdoutText != "" {
+		branchText := "└ stdout:"
+		if argText != "{}" {
+			branchText = "├ stdout:"
+		}
+		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(branchText), dim(stdoutText))
 	}
 	if argText != "{}" {
 		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render("└ args:"), argText)
@@ -2592,7 +2638,7 @@ func toolSummary(name string, args map[string]any, result map[string]any) string
 		}
 		return fmt.Sprintf("%s in %s", shellQuote(pattern), dim(path))
 	case "exec_command", "shell", "run_shell":
-		return shellQuote(firstStringArg(args, "cmd", "command"))
+		return shellQuote(compactPreview(firstStringArg(args, "cmd", "command"), 96))
 	case "apply_patch":
 		if files := stringListValue(result["files"]); len(files) > 0 {
 			return dim(compactList(files, 2))
@@ -2690,6 +2736,18 @@ func toolResultSummary(result map[string]any) string {
 	return dim(strings.Join(parts, " "))
 }
 
+func toolOutputPreview(result map[string]any, key string) string {
+	if ok, _ := result["ok"].(bool); ok {
+		return ""
+	}
+	text, _ := result[key].(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return compactPreview(text, 180)
+}
+
 func formatDuration(duration time.Duration) string {
 	if duration < time.Second {
 		return fmt.Sprintf("%dms", duration.Milliseconds())
@@ -2717,7 +2775,7 @@ func formatToolArgs(args map[string]any) string {
 		if key == "intent" {
 			continue
 		}
-		if key == "content" || key == "patch" {
+		if key == "content" || key == "patch" || key == "cmd" || key == "command" {
 			content, _ := value.(string)
 			display[key+"_bytes"] = len([]byte(content))
 			if preview := compactPreview(content, 96); preview != "" {
@@ -3583,7 +3641,8 @@ func envInt(name string, fallback int) int {
 func toolSystemPrompt(root string) string {
 	return "You can use local tools when they are necessary to complete the user's request.\n" +
 		"If the user asks you to create, edit, inspect, or list files, call the appropriate tool instead of only explaining the steps.\n" +
-		"If you need to run commands, use exec_command with a short intent. If you need to edit existing files, prefer apply_patch when possible.\n" +
+		"If you need to run commands, use exec_command with a short intent. Do not use exec_command with cat/heredoc/tee/script snippets to write files.\n" +
+		"If you need to edit existing files, use apply_patch. If you need to create a new file, use write_file.\n" +
 		"apply_patch accepts Codex patch syntax only: *** Begin Patch, then Add File/Update File/Delete File hunks, then *** End Patch. Do not use Begin Replace/End Replace blocks.\n" +
 		"For large existing files, do not rewrite the whole file with write_file; use focused apply_patch hunks instead.\n" +
 		"Do not repeat identical read/list/search tool calls unless a previous tool changed the file tree. Use read_file instead of exec_command for commands like cat <file>.\n" +
