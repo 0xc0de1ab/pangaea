@@ -259,6 +259,41 @@ func TestTextToolCallFilterExtractsValidToolCall(t *testing.T) {
 	}
 }
 
+func TestTextToolCallFilterInfersPatchToolCall(t *testing.T) {
+	filter := &toolCallTextFilter{}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"--- f.html",
+		"+++ f.html",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	}, "\n")
+	visible := filter.Feed(`before <tool_call>` + mustJSON(map[string]any{
+		"intent": "f.html 파일에 텍스처 폴백 로직을 추가합니다.",
+		"patch":  patch,
+	}) + `</tool_call> after`)
+	tail, err := filter.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible += tail
+	if visible != "before  after" {
+		t.Fatalf("inferred text tool call should be removed from visible text, got %q", visible)
+	}
+	if len(filter.ToolCalls) != 1 {
+		t.Fatalf("expected inferred tool call, got %#v", filter.ToolCalls)
+	}
+	if filter.ToolCalls[0].Function.Name != "apply_patch" {
+		t.Fatalf("inferred tool name = %q", filter.ToolCalls[0].Function.Name)
+	}
+	if !strings.Contains(filter.ToolCalls[0].Function.Arguments, "텍스처 폴백") ||
+		!strings.Contains(filter.ToolCalls[0].Function.Arguments, "--- f.html") {
+		t.Fatalf("inferred tool arguments were not preserved: %#v", filter.ToolCalls[0])
+	}
+}
+
 func TestTextToolCallFilterSummarizesIncompleteToolCallText(t *testing.T) {
 	filter := &toolCallTextFilter{}
 	raw := `<tool_call>{"name":"write_file","arguments":{"path":"f.html","intent":"update texture loading","content":"partial`
@@ -815,6 +850,46 @@ func TestExecuteToolCallApplyPatchUsesBuiltinCodexPatch(t *testing.T) {
 	files, _ := result["files"].([]any)
 	if len(files) != 1 || files[0] != "f.html" {
 		t.Fatalf("patched files = %#v", result["files"])
+	}
+}
+
+func TestExecuteToolCallApplyPatchAcceptsWrappedUnifiedDiff(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "f.html")
+	if err := os.WriteFile(target, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"--- f.html",
+		"+++ f.html",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	}, "\n")
+	call := toolCall{
+		ID:   "call_patch",
+		Type: "function",
+		Function: toolFunction{
+			Name:      "apply_patch",
+			Arguments: mustJSON(map[string]any{"patch": patch, "intent": "update fixture"}),
+		},
+	}
+	raw := executeToolCall(call, root)
+	var result map[string]any
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := result["ok"].(bool); !ok {
+		t.Fatalf("wrapped unified diff failed: %#v", result)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "new\n" {
+		t.Fatalf("patched content = %q", content)
 	}
 }
 

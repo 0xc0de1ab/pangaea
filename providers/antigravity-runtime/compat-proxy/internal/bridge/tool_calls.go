@@ -67,10 +67,19 @@ func toolCallFromMap(raw map[string]any) (models.ToolCall, bool) {
 		raw = merged
 	}
 	name := firstStringValue(raw, "name", "tool_name", "toolName", "tool", "function_name", "functionName")
+	inferred := false
 	if name == "" {
-		return models.ToolCall{}, false
+		var ok bool
+		name, raw, ok = inferToolCallFromMap(raw)
+		if !ok {
+			return models.ToolCall{}, false
+		}
+		inferred = true
 	}
 	args := firstAnyValue(raw, "arguments", "parameters", "input", "args")
+	if inferred && args == nil {
+		args = raw
+	}
 	arguments := "{}"
 	switch v := args.(type) {
 	case nil:
@@ -92,6 +101,26 @@ func toolCallFromMap(raw map[string]any) (models.ToolCall, bool) {
 			Arguments: arguments,
 		},
 	}, true
+}
+
+func inferToolCallFromMap(raw map[string]any) (string, map[string]any, bool) {
+	if patch := firstStringValue(raw, "patch"); patch != "" {
+		return "apply_patch", raw, true
+	}
+	if path := firstStringValue(raw, "path"); path != "" {
+		if _, ok := raw["content"]; ok {
+			return "write_file", raw, true
+		}
+		if _, ok := raw["cmd"]; !ok {
+			if _, ok := raw["command"]; !ok {
+				return "read_file", raw, true
+			}
+		}
+	}
+	if cmd := firstStringValue(raw, "cmd", "command"); cmd != "" {
+		return "exec_command", raw, true
+	}
+	return "", raw, false
 }
 
 func firstStringValue(raw map[string]any, keys ...string) string {

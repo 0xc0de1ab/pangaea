@@ -1072,6 +1072,12 @@ func textToolCallToOpenAI(payload string, index int) (toolCall, error) {
 		args = fn["arguments"]
 	}
 	if strings.TrimSpace(name) == "" {
+		if inferredName, inferredArgs, ok := inferTextToolCall(raw); ok {
+			name = inferredName
+			args = inferredArgs
+		}
+	}
+	if strings.TrimSpace(name) == "" {
 		return toolCall{}, fmt.Errorf("tool call has no function name")
 	}
 	rawArgs, err := marshalArguments(args)
@@ -1086,6 +1092,24 @@ func textToolCallToOpenAI(payload string, index int) (toolCall, error) {
 			Arguments: rawArgs,
 		},
 	}, nil
+}
+
+func inferTextToolCall(raw map[string]any) (string, any, bool) {
+	if patch, _ := raw["patch"].(string); strings.TrimSpace(patch) != "" {
+		return "apply_patch", raw, true
+	}
+	if path, _ := raw["path"].(string); strings.TrimSpace(path) != "" {
+		if _, ok := raw["content"].(string); ok {
+			return "write_file", raw, true
+		}
+		if _, ok := raw["cmd"].(string); !ok {
+			return "read_file", raw, true
+		}
+	}
+	if cmd, _ := raw["cmd"].(string); strings.TrimSpace(cmd) != "" {
+		return "exec_command", raw, true
+	}
+	return "", nil, false
 }
 
 func parseJSONObjectLenient(raw string, out *map[string]any) error {
@@ -1911,6 +1935,9 @@ func toolApplyPatch(ctx context.Context, root string, args map[string]any) map[s
 	if !strings.HasPrefix(trimmed, "*** Begin Patch") {
 		return toolGitApplyPatch(ctx, root, args, patch)
 	}
+	if unified, ok := unwrapBeginPatchUnifiedDiff(trimmed); ok {
+		return toolGitApplyPatch(ctx, root, args, unified)
+	}
 	start := time.Now()
 	changed, err := applyCodexPatch(root, patch)
 	return map[string]any{
@@ -1920,6 +1947,29 @@ func toolApplyPatch(ctx context.Context, root string, args map[string]any) map[s
 		"files":       changed,
 		"patch_lines": len(strings.Split(strings.TrimRight(patch, "\n"), "\n")),
 	}
+}
+
+func unwrapBeginPatchUnifiedDiff(patch string) (string, bool) {
+	lines := splitPatchLines(patch)
+	if len(lines) < 4 || strings.TrimSpace(lines[0]) != "*** Begin Patch" {
+		return "", false
+	}
+	end := len(lines)
+	if strings.TrimSpace(lines[end-1]) == "*** End Patch" {
+		end--
+	}
+	if end <= 1 {
+		return "", false
+	}
+	body := strings.Join(lines[1:end], "\n")
+	trimmed := strings.TrimSpace(body)
+	if strings.HasPrefix(trimmed, "--- ") && strings.Contains(trimmed, "\n+++ ") {
+		return trimmed + "\n", true
+	}
+	if strings.Contains(trimmed, "diff --git ") {
+		return trimmed + "\n", true
+	}
+	return "", false
 }
 
 func toolGitApplyPatch(ctx context.Context, root string, args map[string]any, patch string) map[string]any {

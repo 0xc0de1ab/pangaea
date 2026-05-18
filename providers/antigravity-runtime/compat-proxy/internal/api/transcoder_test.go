@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/antigravity-compat-proxy/internal/models"
@@ -115,6 +116,27 @@ func TestParseToolCallResultDetectsIncompleteTaggedCall(t *testing.T) {
 	}
 	if len(result.Calls) != 0 {
 		t.Fatalf("incomplete tool call should not return calls: %#v", result.Calls)
+	}
+}
+
+func TestParseToolCallResultInfersPatchTaggedCall(t *testing.T) {
+	response := `<tool_call>{"intent":"f.html 파일에 텍스처 폴백 로직을 추가합니다.","patch":"*** Begin Patch\n--- f.html\n+++ f.html\n@@ -1 +1 @@\n-old\n+new\n*** End Patch\n"}</tool_call>`
+	result := ParseToolCallResult(response)
+	if result.Malformed {
+		t.Fatalf("expected inferred patch call, got malformed: %#v", result)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", result.Calls)
+	}
+	call := result.Calls[0]
+	if call.Function.Name != "apply_patch" {
+		t.Fatalf("unexpected tool name: %#v", call)
+	}
+	if call.Function.Arguments == "" || call.Function.Arguments == "{}" {
+		t.Fatalf("patch arguments were not preserved: %#v", call)
+	}
+	if !strings.Contains(call.Function.Arguments, "텍스처 폴백") || !strings.Contains(call.Function.Arguments, "--- f.html") {
+		t.Fatalf("unexpected patch arguments: %s", call.Function.Arguments)
 	}
 }
 
