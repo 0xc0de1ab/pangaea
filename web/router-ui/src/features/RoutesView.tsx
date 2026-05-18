@@ -46,6 +46,7 @@ const emptyRule: DraftRule = {
 };
 const capacityPageSizeOptions = [10, 25, 50, 100];
 const routeHistoryLimit = 512;
+const routeHistoryPageSize = 20;
 const protocolOptions: CriteriaOption[] = [
   { value: "openai", label: "OpenAI", description: "OpenAI-compatible chat/completions, models, and usage routes" },
   { value: "anthropic", label: "Anthropic", description: "Anthropic-compatible messages, models, and usage routes" },
@@ -329,12 +330,29 @@ function RouteBackendHistory({
   error: string;
   onRefresh: () => void;
 }) {
+  const [providerPageIndex, setProviderPageIndex] = useState(0);
+  const [tracePageIndex, setTracePageIndex] = useState(0);
   const matchingTraces = useMemo(() => {
     return traces
       .filter((trace) => traceMatchesRoutingRule(trace, rule))
       .sort((left, right) => traceMillis(right) - traceMillis(left));
   }, [rule, traces]);
   const providerRows = useMemo(() => routeProviderHistoryRows(matchingTraces), [matchingTraces]);
+  const providerPageCount = Math.max(1, Math.ceil(providerRows.length / routeHistoryPageSize));
+  const tracePageCount = Math.max(1, Math.ceil(matchingTraces.length / routeHistoryPageSize));
+
+  useEffect(() => {
+    setProviderPageIndex(0);
+    setTracePageIndex(0);
+  }, [rule.id]);
+
+  useEffect(() => {
+    setProviderPageIndex((value) => Math.min(value, providerPageCount - 1));
+  }, [providerPageCount]);
+
+  useEffect(() => {
+    setTracePageIndex((value) => Math.min(value, tracePageCount - 1));
+  }, [tracePageCount]);
 
   const providerColumns = useMemo<DashboardColumn<RouteProviderHistoryRow>[]>(() => [
     {
@@ -399,15 +417,80 @@ function RouteBackendHistory({
             <h3>Provider Split</h3>
             <span>{n(providerRows.length)} backend providers</span>
           </div>
-          <DataTable rows={providerRows} columns={providerColumns} empty="No backend provider trace for this route" getRowId={(row) => row.key} compact />
+          <DataTable
+            rows={providerRows}
+            columns={providerColumns}
+            empty="No backend provider trace for this route"
+            getRowId={(row) => row.key}
+            compact
+            pagination={{ pageIndex: providerPageIndex, pageSize: routeHistoryPageSize }}
+          />
+          <RouteHistoryPagination
+            label="Provider split"
+            pageIndex={providerPageIndex}
+            pageCount={providerPageCount}
+            pageSize={routeHistoryPageSize}
+            total={providerRows.length}
+            onPageChange={setProviderPageIndex}
+          />
         </div>
         <div className="route-history-block">
           <div className="detail-section-heading">
             <h3>Recent Route Traces</h3>
             <span>latest {n(Math.min(matchingTraces.length, routeHistoryLimit))}</span>
           </div>
-          <DataTable rows={matchingTraces} columns={traceColumns} empty="No request trace for this route" getRowId={(row) => row.request_id} compact />
+          <DataTable
+            rows={matchingTraces}
+            columns={traceColumns}
+            empty="No request trace for this route"
+            getRowId={(row) => row.request_id}
+            compact
+            pagination={{ pageIndex: tracePageIndex, pageSize: routeHistoryPageSize }}
+          />
+          <RouteHistoryPagination
+            label="Recent route traces"
+            pageIndex={tracePageIndex}
+            pageCount={tracePageCount}
+            pageSize={routeHistoryPageSize}
+            total={matchingTraces.length}
+            onPageChange={setTracePageIndex}
+          />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function RouteHistoryPagination({
+  label,
+  pageIndex,
+  pageCount,
+  pageSize,
+  total,
+  onPageChange,
+}: {
+  label: string;
+  pageIndex: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (value: number) => void;
+}) {
+  const start = total === 0 ? 0 : pageIndex * pageSize + 1;
+  const end = Math.min(total, (pageIndex + 1) * pageSize);
+  return (
+    <div className="table-pagination route-history-pagination">
+      <span>
+        {label}: {n(start)}-{n(end)} of {n(total)}
+      </span>
+      <div className="pagination-actions">
+        <span>Page {n(pageIndex + 1)} / {n(pageCount)}</span>
+        <button className="icon-button small" type="button" aria-label={`Previous ${label} page`} disabled={pageIndex === 0} onClick={() => onPageChange(Math.max(0, pageIndex - 1))}>
+          <ChevronLeft aria-hidden="true" size={15} />
+        </button>
+        <button className="icon-button small" type="button" aria-label={`Next ${label} page`} disabled={pageIndex >= pageCount - 1} onClick={() => onPageChange(Math.min(pageCount - 1, pageIndex + 1))}>
+          <ChevronRight aria-hidden="true" size={15} />
+        </button>
       </div>
     </div>
   );

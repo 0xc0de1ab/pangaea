@@ -244,6 +244,9 @@ func TestContainerSpecFromProviderSpecIncludesIdentityAuthAndSecurity(t *testing
 	if spec.WorkingDir != "/var/lib/pangaea/provider" {
 		t.Fatalf("working dir = %q", spec.WorkingDir)
 	}
+	if spec.RestartPolicy != "unless-stopped" {
+		t.Fatalf("restart policy = %q", spec.RestartPolicy)
+	}
 	if spec.Env["PANGAEA_AUTH_PATH"] != "/var/lib/pangaea/auth/codex/auth.json" {
 		t.Fatalf("missing auth env: %#v", spec.Env)
 	}

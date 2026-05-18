@@ -521,6 +521,38 @@ func replayCloudStreamResponse(t *testing.T, index int, body string) (int, int) 
 	return contentChunks, usageChunks
 }
 
+func TestReplayCloudStreamResponseEmitsFunctionCallChunk(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub := &cloudStreamSubscription{
+		ctx:    ctx,
+		cancel: cancel,
+		ch:     make(chan *interfaces.StreamChunk, 4),
+	}
+	payload := `data: {"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup_go_version","args":{"host":"kind-antigravity"}}}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":1,"totalTokenCount":11}}}` + "\n\n"
+	var data bytes.Buffer
+	scanner := bufio.NewScanner(strings.NewReader(payload))
+	for scanner.Scan() {
+		processSSELine(append(scanner.Bytes(), '\n'), &data, sub)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	processSSELine([]byte("\n"), &data, sub)
+	sub.close()
+
+	var chunks []*interfaces.StreamChunk
+	for chunk := range sub.ch {
+		chunks = append(chunks, chunk)
+	}
+	if len(chunks) != 1 || len(chunks[0].ToolCalls) != 1 {
+		t.Fatalf("expected one tool-call chunk, got %#v", chunks)
+	}
+	if chunks[0].ToolCalls[0].Function.Name != "lookup_go_version" || chunks[0].Usage == nil {
+		t.Fatalf("unexpected chunk: %#v", chunks[0])
+	}
+}
+
 func mustReadFile(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

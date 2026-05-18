@@ -82,6 +82,9 @@ func (d *DockerRuntime) Create(ctx context.Context, spec ContainerSpec) (Contain
 	if strings.TrimSpace(spec.NetworkMode) != "" {
 		args = append(args, "--network", strings.TrimSpace(spec.NetworkMode))
 	}
+	if strings.TrimSpace(spec.RestartPolicy) != "" {
+		args = append(args, "--restart", strings.TrimSpace(spec.RestartPolicy))
+	}
 	if spec.WorkingDir != "" {
 		args = append(args, "--workdir", spec.WorkingDir)
 	}

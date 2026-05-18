@@ -84,6 +84,32 @@ func TestLedgerReleaseReturnsReservation(t *testing.T) {
 	}
 }
 
+func TestLedgerCanReserveReleasedRequestIDWithNewScope(t *testing.T) {
+	ledger := NewLedger()
+	firstScope := testScope()
+	secondScope := firstScope
+	secondScope.Model = "gemini-3-flash-agent"
+	if err := ledger.SetLimit(firstScope, Limit{MaxTokens: 10, MaxRequests: 1}); err != nil {
+		t.Fatalf("set first limit: %v", err)
+	}
+	if err := ledger.SetLimit(secondScope, Limit{MaxTokens: 10, MaxRequests: 1}); err != nil {
+		t.Fatalf("set second limit: %v", err)
+	}
+	if _, err := ledger.Reserve(ReservationRequest{RequestID: "req_1", Scope: firstScope, Estimate: Usage{Tokens: 10, Requests: 1}}); err != nil {
+		t.Fatalf("reserve first scope: %v", err)
+	}
+	if _, err := ledger.Release("req_1"); err != nil {
+		t.Fatalf("release first scope: %v", err)
+	}
+	reservation, err := ledger.Reserve(ReservationRequest{RequestID: "req_1", Scope: secondScope, Estimate: Usage{Tokens: 10, Requests: 1}})
+	if err != nil {
+		t.Fatalf("reserve released request ID with second scope: %v", err)
+	}
+	if reservation.Scope != secondScope || reservation.Status != ReservationReserved {
+		t.Fatalf("expected new reserved scope, got %#v", reservation)
+	}
+}
+
 func TestLedgerCommitIsIdempotent(t *testing.T) {
 	ledger := NewLedger()
 	scope := testScope()

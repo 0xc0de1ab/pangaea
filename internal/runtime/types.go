@@ -60,6 +60,7 @@ type ContainerSpec struct {
 	Env                map[string]string `json:"env,omitempty"`
 	Labels             map[string]string `json:"labels,omitempty"`
 	NetworkMode        string            `json:"network_mode,omitempty"`
+	RestartPolicy      string            `json:"restart_policy,omitempty"`
 	WorkingDir         string            `json:"working_dir,omitempty"`
 	AuthCopy           *CopySpec         `json:"auth_copy,omitempty"`
 	Mounts             []MountSpec       `json:"mounts,omitempty"`

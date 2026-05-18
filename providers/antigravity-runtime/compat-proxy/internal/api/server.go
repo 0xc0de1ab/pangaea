@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,8 @@ type Server struct {
 	keys    APIKeys
 	version string
 }
+
+var streamFirstChunkGrace = 2 * time.Second
 
 const antigravityDefaultModelAlias = "antigravity-default"
 
@@ -52,27 +55,6 @@ func (s *Server) setupRoutes() {
 	v1beta.POST("/models/:model", s.handleGeminiGenerateContent)
 }
 
-func appendToolUseInstructions(prompt string, tools []models.ToolDefinition) string {
-	if len(tools) == 0 {
-		return prompt
-	}
-	toolBytes, _ := json.Marshal(tools)
-	instructions := strings.TrimSpace(fmt.Sprintf(`[System]
-The caller provided tool definitions for this request.
-Available tools JSON:
-%s
-
-If you decide to call a tool, return only one or more tool calls in this exact form:
-<tool_call>{"name":"tool_name","arguments":{"key":"value"}}</tool_call>
-Do not wrap tool calls in Markdown fences and do not add explanatory text around them.
-If no tool is needed, answer normally.
-`, string(toolBytes)))
-	if strings.TrimSpace(prompt) == "" {
-		return instructions + "\n"
-	}
-	return prompt + "\n\n" + instructions + "\n"
-}
-
 func (s *Server) handleChatCompletions(c *gin.Context) {
 	var req models.ChatCompletionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -82,7 +64,6 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 
 	prompt, media := TranscodeMessages(req.Messages)
 	tools := TranscodeOpenAITools(req.Tools)
-	prompt = appendToolUseInstructions(prompt, tools)
 
 	if req.Stream {
 		s.handleStreamingChat(c, req.Model, prompt, tools, media)
@@ -100,7 +81,6 @@ func (s *Server) handleAnthropicMessages(c *gin.Context) {
 
 	prompt, media := TranscodeAnthropicMessages(req)
 	tools := TranscodeAnthropicTools(req.Tools)
-	prompt = appendToolUseInstructions(prompt, tools)
 
 	if req.Stream {
 		s.handleStreamingAnthropic(c, req.Model, prompt, tools, media)
@@ -154,7 +134,15 @@ func (s *Server) handleUnaryChat(c *gin.Context, model string, prompt string, to
 
 	var toolCalls []models.ToolCall
 	if len(tools) > 0 {
-		toolCalls = ParseToolCalls(resp.Content)
+		toolCalls = resp.ToolCalls
+		if len(toolCalls) == 0 {
+			parsed := ParseToolCallResult(resp.Content)
+			if parsed.Malformed {
+				s.writeProviderError(c, malformedToolCallError(parsed.Reason), "openai")
+				return
+			}
+			toolCalls = parsed.Calls
+		}
 	}
 	content := resp.Content
 	if len(toolCalls) > 0 {
@@ -194,14 +182,16 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 		return
 	}
 
-	first, ok := <-chunks
-	if !ok {
-		s.writeProviderError(c, &interfaces.ProviderError{StatusCode: http.StatusBadGateway, Code: "empty_stream", Message: "upstream stream ended without a response"}, "openai")
-		return
-	}
-	if first.Error != nil {
-		s.writeProviderError(c, first.Error, "openai")
-		return
+	first, ok, early := readFirstStreamChunk(c.Request.Context(), chunks)
+	if !early {
+		if !ok {
+			s.writeProviderError(c, &interfaces.ProviderError{StatusCode: http.StatusBadGateway, Code: "empty_stream", Message: "upstream stream ended without a response"}, "openai")
+			return
+		}
+		if first.Error != nil {
+			s.writeProviderError(c, first.Error, "openai")
+			return
+		}
 	}
 
 	c.Header("Content-Type", "text/event-stream")
@@ -211,6 +201,7 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 	created := time.Now().Unix()
 	var lastUsage *models.UsageReport
 	var buffered strings.Builder
+	var bufferedToolCalls []models.ToolCall
 	writeChunk := func(content string, finishReason *string, usage *models.UsageReport) {
 		streamResp := models.ChatCompletionStreamResponse{
 			ID:      id,
@@ -230,6 +221,10 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 		}
 		bytes, _ := json.Marshal(streamResp)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", string(bytes))
+		c.Writer.Flush()
+	}
+	writeKeepalive := func() {
+		fmt.Fprint(c.Writer, ": stream opened\n\n")
 		c.Writer.Flush()
 	}
 	writeToolCalls := func(toolCalls []models.ToolCall, finishReason string, usage *models.UsageReport) {
@@ -279,6 +274,10 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 		if chunk.Usage != nil {
 			lastUsage = chunk.Usage
 		}
+		if len(chunk.ToolCalls) > 0 {
+			bufferedToolCalls = append(bufferedToolCalls, chunk.ToolCalls...)
+			return true
+		}
 		if chunk.Content == "" {
 			return true
 		}
@@ -290,7 +289,8 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 		return true
 	}
 
-	if !handleChunk(first) {
+	writeKeepalive()
+	if !early && !handleChunk(first) {
 		return
 	}
 	for chunk := range chunks {
@@ -299,10 +299,24 @@ func (s *Server) handleStreamingChat(c *gin.Context, model string, prompt string
 		}
 	}
 	if len(tools) > 0 {
-		content := buffered.String()
-		if toolCalls := ParseToolCalls(content); len(toolCalls) > 0 {
+		if len(bufferedToolCalls) > 0 {
 			stop := "tool_calls"
-			writeToolCalls(toolCalls, stop, lastUsage)
+			writeToolCalls(bufferedToolCalls, stop, lastUsage)
+			fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+			c.Writer.Flush()
+			return
+		}
+		content := buffered.String()
+		parsed := ParseToolCallResult(content)
+		if parsed.Malformed {
+			s.writeOpenAIStreamError(c, malformedToolCallError(parsed.Reason))
+			fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+			c.Writer.Flush()
+			return
+		}
+		if len(parsed.Calls) > 0 {
+			stop := "tool_calls"
+			writeToolCalls(parsed.Calls, stop, lastUsage)
 			fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
 			c.Writer.Flush()
 			return
@@ -324,7 +338,18 @@ func (s *Server) handleUnaryAnthropic(c *gin.Context, model string, prompt strin
 		return
 	}
 
-	toolCalls := ParseToolCalls(resp.Content)
+	var toolCalls []models.ToolCall
+	if len(tools) > 0 {
+		toolCalls = resp.ToolCalls
+		if len(toolCalls) == 0 {
+			parsed := ParseToolCallResult(resp.Content)
+			if parsed.Malformed {
+				s.writeProviderError(c, malformedToolCallError(parsed.Reason), "anthropic")
+				return
+			}
+			toolCalls = parsed.Calls
+		}
+	}
 	var content []interface{}
 
 	if len(toolCalls) > 0 {
@@ -363,29 +388,71 @@ func (s *Server) handleStreamingAnthropic(c *gin.Context, model string, prompt s
 		return
 	}
 
-	first, ok := <-chunks
-	if !ok {
-		s.writeProviderError(c, &interfaces.ProviderError{StatusCode: http.StatusBadGateway, Code: "empty_stream", Message: "upstream stream ended without a response"}, "anthropic")
-		return
-	}
-	if first.Error != nil {
-		s.writeProviderError(c, first.Error, "anthropic")
-		return
+	first, ok, early := readFirstStreamChunk(c.Request.Context(), chunks)
+	if !early {
+		if !ok {
+			s.writeProviderError(c, &interfaces.ProviderError{StatusCode: http.StatusBadGateway, Code: "empty_stream", Message: "upstream stream ended without a response"}, "anthropic")
+			return
+		}
+		if first.Error != nil {
+			s.writeProviderError(c, first.Error, "anthropic")
+			return
+		}
 	}
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	fmt.Fprintf(c.Writer, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"model\":%q}}\n\n", model)
-	if !s.writeAnthropicStreamChunk(c, first) {
+	c.Writer.Flush()
+	var buffered strings.Builder
+	var bufferedToolCalls []models.ToolCall
+	handleChunk := func(chunk *interfaces.StreamChunk) bool {
+		if chunk == nil {
+			return true
+		}
+		if chunk.Error != nil {
+			s.writeAnthropicStreamError(c, chunk.Error)
+			return false
+		}
+		if len(chunk.ToolCalls) > 0 {
+			bufferedToolCalls = append(bufferedToolCalls, chunk.ToolCalls...)
+			return true
+		}
+		if len(tools) > 0 {
+			buffered.WriteString(chunk.Content)
+			return true
+		}
+		return s.writeAnthropicStreamChunk(c, chunk)
+	}
+	if !early && !handleChunk(first) {
 		return
 	}
 	for chunk := range chunks {
-		if chunk.Error != nil {
-			s.writeAnthropicStreamError(c, chunk.Error)
+		if !handleChunk(chunk) {
 			return
 		}
-		if !s.writeAnthropicStreamChunk(c, chunk) {
+	}
+	if len(tools) > 0 {
+		if len(bufferedToolCalls) > 0 {
+			s.writeAnthropicToolUseBlocks(c, bufferedToolCalls)
+			fmt.Fprintf(c.Writer, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			c.Writer.Flush()
+			return
+		}
+		content := buffered.String()
+		parsed := ParseToolCallResult(content)
+		if parsed.Malformed {
+			s.writeAnthropicStreamError(c, malformedToolCallError(parsed.Reason))
+			return
+		}
+		if len(parsed.Calls) > 0 {
+			s.writeAnthropicToolUseBlocks(c, parsed.Calls)
+			fmt.Fprintf(c.Writer, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			c.Writer.Flush()
+			return
+		}
+		if content != "" && !s.writeAnthropicStreamChunk(c, &interfaces.StreamChunk{Content: content}) {
 			return
 		}
 	}
@@ -400,20 +467,24 @@ func (s *Server) handleStreamingGemini(c *gin.Context, model string, prompt stri
 		return
 	}
 
-	first, ok := <-chunks
-	if !ok {
-		s.writeProviderError(c, &interfaces.ProviderError{StatusCode: http.StatusBadGateway, Code: "empty_stream", Message: "upstream stream ended without a response"}, "gemini")
-		return
-	}
-	if first.Error != nil {
-		s.writeProviderError(c, first.Error, "gemini")
-		return
+	first, ok, early := readFirstStreamChunk(c.Request.Context(), chunks)
+	if !early {
+		if !ok {
+			s.writeProviderError(c, &interfaces.ProviderError{StatusCode: http.StatusBadGateway, Code: "empty_stream", Message: "upstream stream ended without a response"}, "gemini")
+			return
+		}
+		if first.Error != nil {
+			s.writeProviderError(c, first.Error, "gemini")
+			return
+		}
 	}
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
-	if !s.writeGeminiStreamChunk(c, first) {
+	fmt.Fprint(c.Writer, ": stream opened\n\n")
+	c.Writer.Flush()
+	if !early && !s.writeGeminiStreamChunk(c, first) {
 		return
 	}
 	for chunk := range chunks {
@@ -440,6 +511,23 @@ func (s *Server) handleStreamingGemini(c *gin.Context, model string, prompt stri
 	c.Writer.Flush()
 }
 
+func readFirstStreamChunk(ctx context.Context, chunks <-chan *interfaces.StreamChunk) (*interfaces.StreamChunk, bool, bool) {
+	if streamFirstChunkGrace <= 0 {
+		chunk, ok := <-chunks
+		return chunk, ok, false
+	}
+	timer := time.NewTimer(streamFirstChunkGrace)
+	defer timer.Stop()
+	select {
+	case chunk, ok := <-chunks:
+		return chunk, ok, false
+	case <-timer.C:
+		return nil, true, true
+	case <-ctx.Done():
+		return &interfaces.StreamChunk{Error: ctx.Err()}, true, false
+	}
+}
+
 func (s *Server) writeAnthropicStreamChunk(c *gin.Context, chunk *interfaces.StreamChunk) bool {
 	if chunk == nil || chunk.Content == "" {
 		return true
@@ -455,6 +543,40 @@ func (s *Server) writeAnthropicStreamChunk(c *gin.Context, chunk *interfaces.Str
 	fmt.Fprintf(c.Writer, "event: content_block_delta\ndata: %s\n\n", string(payload))
 	c.Writer.Flush()
 	return true
+}
+
+func (s *Server) writeAnthropicToolUseBlocks(c *gin.Context, toolCalls []models.ToolCall) {
+	for i, tc := range toolCalls {
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			args = map[string]interface{}{"arguments": tc.Function.Arguments}
+		}
+		block := models.AnthropicContentBlock{
+			Type:  "tool_use",
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: args,
+		}
+		payload, _ := json.Marshal(gin.H{
+			"type":          "content_block_start",
+			"index":         i,
+			"content_block": block,
+		})
+		fmt.Fprintf(c.Writer, "event: content_block_start\ndata: %s\n\n", string(payload))
+		payload, _ = json.Marshal(gin.H{
+			"type":  "content_block_stop",
+			"index": i,
+		})
+		fmt.Fprintf(c.Writer, "event: content_block_stop\ndata: %s\n\n", string(payload))
+	}
+	payload, _ := json.Marshal(gin.H{
+		"type": "message_delta",
+		"delta": gin.H{
+			"stop_reason": "tool_use",
+		},
+	})
+	fmt.Fprintf(c.Writer, "event: message_delta\ndata: %s\n\n", string(payload))
+	c.Writer.Flush()
 }
 
 func (s *Server) writeGeminiStreamChunk(c *gin.Context, chunk *interfaces.StreamChunk) bool {
@@ -475,6 +597,17 @@ func (s *Server) writeGeminiStreamChunk(c *gin.Context, chunk *interfaces.Stream
 	fmt.Fprintf(c.Writer, "data: %s\n\n", string(bytes))
 	c.Writer.Flush()
 	return true
+}
+
+func malformedToolCallError(reason string) *interfaces.ProviderError {
+	if strings.TrimSpace(reason) == "" {
+		reason = "upstream emitted a malformed tool call"
+	}
+	return &interfaces.ProviderError{
+		StatusCode: http.StatusBadGateway,
+		Code:       "malformed_tool_call",
+		Message:    reason + "; tool protocol text was not returned as assistant content",
+	}
 }
 
 func (s *Server) writeProviderError(c *gin.Context, err error, protocol string) {

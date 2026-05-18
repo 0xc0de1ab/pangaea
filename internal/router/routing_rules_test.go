@@ -59,6 +59,67 @@ func TestRoutingRuleNameIsNotSlugged(t *testing.T) {
 	}
 }
 
+func TestRoutingRuleAnyFilterPromotesProviderDefaultModel(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a2", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{
+			ID:           "antigravity-default",
+			Aliases:      []string{"Antigravity Default"},
+			Kind:         "alias",
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+		},
+		{
+			ID:           "claude-sonnet-4-6",
+			Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+		},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "any-openai",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	decision, _ := engine.evaluateRoutingRule(rule, RouteRequest{RoutingRuleName: rule.Name, APIDialect: compat.APIDialectOpenAI, Stream: true})
+	if !decision.Allowed || decision.CanonicalModel != "antigravity-default" || decision.ModelAlias != "Antigravity Default" {
+		t.Fatalf("expected default model promotion, got %#v", decision)
+	}
+	execution, err := engine.ReserveRoute(RouteExecutionRequest{
+		RequestID: "req-any-default",
+		RouteRequest: RouteRequest{
+			RoutingRuleName: rule.Name,
+			APIDialect:      compat.APIDialectOpenAI,
+			Stream:          true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "tenant", UserID: "user", APIKeyID: "key"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	})
+	if err != nil {
+		t.Fatalf("reserve route should use promoted default model: %v", err)
+	}
+	if execution.Reservation.Scope.Model != "antigravity-default" {
+		t.Fatalf("reservation used wrong model: %#v", execution.Reservation.Scope)
+	}
+}
+
 func TestRoutingRuleStatsFromRequestTraces(t *testing.T) {
 	engine, err := NewEngine(validPolicy(), provider.NewRegistry(), quota.NewLedger())
 	if err != nil {
@@ -224,6 +285,94 @@ func TestRoutingRuleTieBreakPrefersSoonestQuotaResetBeforeHistory(t *testing.T) 
 	decision, _ := engine.evaluateRoutingRule(rule, request)
 	if decision.Selected != sooner.Identity.ProviderInstanceID {
 		t.Fatalf("expected soonest quota reset to outrank less-used history, got %#v", decision.Selected)
+	}
+}
+
+func TestRoutingRuleAntigravityClaudePrefersSoonestQuotaResetProvider(t *testing.T) {
+	registry := provider.NewRegistry()
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	now := time.Now().UTC()
+	later := registration("antigravity-donghee.kam-gmail.com-a1", "antigravity-sidecar", "donghee.kam@gmail.com", 1, 0)
+	later.Identity.Service = provider.ServiceAntigravity
+	later.Models = []provider.Model{
+		{
+			ID:           "claude-sonnet-4-6",
+			Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+			Quota:        &provider.ModelQuota{RemainingPct: 100, ResetAt: now.Add(10 * time.Hour)},
+		},
+		{
+			ID:           "claude-opus-4-6-thinking",
+			Aliases:      []string{"Claude Opus 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+			Quota:        &provider.ModelQuota{RemainingPct: 100, ResetAt: now.Add(10 * time.Hour)},
+		},
+	}
+	a2 := registration("antigravity-samtest4u-gmail.com", "antigravity-sidecar", "samtest4u@gmail.com", 1, 0)
+	a2.Identity.Service = provider.ServiceAntigravity
+	a2.Identity.HostName = "oci-a2"
+	a2.Models = []provider.Model{
+		{
+			ID:           "claude-sonnet-4-6",
+			Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+			Quota:        &provider.ModelQuota{RemainingPct: 100, ResetAt: now.Add(4 * time.Hour)},
+		},
+		{
+			ID:           "claude-opus-4-6-thinking",
+			Aliases:      []string{"Claude Opus 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE},
+			Quota:        &provider.ModelQuota{RemainingPct: 100, ResetAt: now.Add(4 * time.Hour)},
+		},
+	}
+	if err := registry.Upsert(later); err != nil {
+		t.Fatalf("register later antigravity: %v", err)
+	}
+	if err := registry.Upsert(a2); err != nil {
+		t.Fatalf("register a2 antigravity: %v", err)
+	}
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "antigravity-sonnet-gemini",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			ID:   "antigravity-sonnet",
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Claude Sonnet 4.6 (Thinking)", "claude-sonnet-4-6", "Claude Opus 4.6 (Thinking)"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+	request := RouteRequest{RoutingRuleName: rule.Name, APIDialect: compat.APIDialectOpenAI, Stream: true}
+	for i := 0; i < 5; i++ {
+		at := now.Add(time.Duration(i) * time.Minute)
+		engine.recordRequestTrace(RequestTrace{
+			RequestID:    "req_a2_" + strconv.Itoa(i),
+			RouteRequest: request,
+			Decision: RouteDecision{
+				RoutingRuleID: rule.ID,
+				Selected:      a2.Identity.ProviderInstanceID,
+			},
+			Provider:    &a2.Identity,
+			Status:      "completed",
+			StartedAt:   at,
+			CompletedAt: at.Add(time.Second),
+		})
+	}
+
+	decision, _ := engine.evaluateRoutingRule(rule, request)
+	if decision.Selected != a2.Identity.ProviderInstanceID {
+		t.Fatalf("expected a2 antigravity with soonest Claude reset to be selected, got %#v", decision)
+	}
+	if len(decision.FallbackChain) < 2 || decision.FallbackChain[0] != a2.Identity.ProviderInstanceID {
+		t.Fatalf("expected a2 antigravity first in fallback chain, got %#v", decision.FallbackChain)
 	}
 }
 
@@ -548,5 +697,59 @@ func TestRoutingRuleFilterModelOrderSkipsExhaustedQuota(t *testing.T) {
 	}
 	if decision.ModelAlias != "Claude Sonnet 4.6 (Thinking)" || decision.CanonicalModel != "claude-sonnet-4-6" {
 		t.Fatalf("expected exhausted first filter model skipped, got alias=%q canonical=%q", decision.ModelAlias, decision.CanonicalModel)
+	}
+}
+
+func TestRoutingRuleReportsQuotaExhaustedWhenAllFilterModelsAreSpent(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a1", "antigravity-sidecar", "donghee@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{
+			ID:           "claude-opus-4-6-thinking",
+			Aliases:      []string{"Claude Opus 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+			Quota:        &provider.ModelQuota{RemainingPct: 0, ResetAt: time.Now().UTC().Add(48 * time.Hour)},
+		},
+		{
+			ID:           "claude-sonnet-4-6",
+			Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+			Quota:        &provider.ModelQuota{RemainingPct: 0, ResetAt: time.Now().UTC().Add(48 * time.Hour)},
+		},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "ag-claude",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Claude Sonnet 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	decision, _ := engine.evaluateRoutingRule(rule, RouteRequest{RoutingRuleName: rule.Name, APIDialect: compat.APIDialectOpenAI})
+	if decision.Allowed {
+		t.Fatalf("expected exhausted route rejected, got %#v", decision)
+	}
+	if len(decision.Rejections) != 1 {
+		t.Fatalf("expected one rejection, got %#v", decision.Rejections)
+	}
+	reason := decision.Rejections[0].Reason
+	if !strings.Contains(reason, "route filter model quota exhausted") || strings.Contains(reason, "no route filter model available") {
+		t.Fatalf("expected quota exhausted rejection, got %q", reason)
 	}
 }

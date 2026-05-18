@@ -103,3 +103,28 @@ func TestParseToolCallsFromToolCallsArray(t *testing.T) {
 		t.Fatalf("unexpected tool call: %#v", call)
 	}
 }
+
+func TestParseToolCallResultDetectsIncompleteTaggedCall(t *testing.T) {
+	response := `<tool_call>{"name":"write_file","arguments":{"path":"a.yaml"}`
+	result := ParseToolCallResult(response)
+	if !result.Malformed {
+		t.Fatalf("expected malformed result, got %#v", result)
+	}
+	if result.Reason != "upstream emitted an incomplete tool call" {
+		t.Fatalf("unexpected reason: %q", result.Reason)
+	}
+	if len(result.Calls) != 0 {
+		t.Fatalf("incomplete tool call should not return calls: %#v", result.Calls)
+	}
+}
+
+func TestParseToolCallResultDetectsInvalidTaggedCall(t *testing.T) {
+	response := `<tool_call>{"arguments":{"path":"a.yaml"}}</tool_call>`
+	result := ParseToolCallResult(response)
+	if !result.Malformed {
+		t.Fatalf("expected malformed result, got %#v", result)
+	}
+	if len(result.Calls) != 0 {
+		t.Fatalf("invalid tool call should not return calls: %#v", result.Calls)
+	}
+}

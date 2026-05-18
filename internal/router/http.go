@@ -2220,6 +2220,7 @@ func (w *openAIResponsesEventStreamWriter) write(c *gin.Context, event compat.Ev
 	w.applyEventMeta(event)
 	switch event.Type {
 	case compat.EventMessageStart:
+		w.ensure(c)
 		return nil
 	case compat.EventContentDelta:
 		w.writeContentDelta(c, event.ContentDelta.Text)

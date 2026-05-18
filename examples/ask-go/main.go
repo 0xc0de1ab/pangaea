@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/0xc0de1ab/pangaea/internal/compat"
+	"github.com/0xc0de1ab/pangaea/internal/geminidirect"
 	bubblesSpinner "github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -57,26 +60,31 @@ var (
 	spinnerShimmerHot   = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
 	spinnerShimmerTrail = lipgloss.NewStyle().Foreground(lipgloss.Color("123"))
 	toolVerbStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	toolIntentStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
 	toolOKStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	toolErrorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	toolCommandStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 )
 
 type options struct {
-	ConfigPath         string `flag:"config" usage:"ask config JSON path"`
-	BaseURL            string `flag:"base-url" usage:"Pangaea route base URL"`
-	APIKey             string `flag:"api-key" usage:"API key for Authorization bearer token"`
-	Model              string `flag:"model" usage:"model name to request"`
-	API                string `flag:"api" usage:"OpenAI-compatible API shape (responses|chat)"`
-	MaxTokens          int    `flag:"max-tokens" usage:"maximum output tokens"`
-	Stream             bool   `flag:"stream" usage:"use SSE streaming"`
-	Spinner            bool   `flag:"spinner" usage:"show a waiting spinner on interactive terminals"`
-	Tools              bool   `flag:"tools" usage:"enable local file tools"`
-	ToolRoot           string `flag:"tool-root" usage:"directory local file tools may access"`
-	ToolTurns          int    `flag:"tool-turns" usage:"maximum tool-call round trips"`
-	MarkdownTranslator string `flag:"markdown-translator" usage:"terminal markdown renderer (plain|glamour|glow|rich)"`
-	GlamourStyle       string `flag:"glamour-style" usage:"glamour/glow style name"`
-	RichCodeTheme      string `flag:"rich-code-theme" usage:"Rich/Pygments code highlighting theme"`
+	ConfigPath         string   `flag:"config" usage:"ask config JSON path"`
+	BaseURL            string   `flag:"base-url" usage:"Pangaea route base URL"`
+	APIKey             string   `flag:"api-key" usage:"API key for Authorization bearer token"`
+	Model              string   `flag:"model" usage:"model name to request"`
+	API                string   `flag:"api" usage:"OpenAI-compatible API shape (responses|chat)"`
+	System             string   `flag:"system" usage:"additional system prompt"`
+	ImagePaths         []string `flag:"image" usage:"image file to attach; repeatable"`
+	MaxTokens          int      `flag:"max-tokens" usage:"maximum output tokens"`
+	Stream             bool     `flag:"stream" usage:"use SSE streaming"`
+	Spinner            bool     `flag:"spinner" usage:"show a waiting spinner on interactive terminals"`
+	Tools              bool     `flag:"tools" usage:"enable local file tools"`
+	ToolRoot           string   `flag:"tool-root" usage:"directory local file tools may access"`
+	ToolTurns          int      `flag:"tool-turns" usage:"maximum tool-call round trips"`
+	MCPServers         []string `flag:"mcp-server" usage:"MCP stdio server executable; repeatable"`
+	MCPServersJSON     string   `flag:"mcp-servers-json" usage:"MCP stdio server JSON config"`
+	MarkdownTranslator string   `flag:"markdown-translator" usage:"terminal markdown renderer (plain|glamour|glow|rich)"`
+	GlamourStyle       string   `flag:"glamour-style" usage:"glamour/glow style name"`
+	RichCodeTheme      string   `flag:"rich-code-theme" usage:"Rich/Pygments code highlighting theme"`
 }
 
 var rootCmd = &cobra.Command{
@@ -96,12 +104,16 @@ func init() {
 		String("api-key", "", "API key for Authorization bearer token").
 		String("model", envString("PANGAEA_ASK_MODEL", ""), "model name to request; omit to let the route choose").
 		String("api", envString("PANGAEA_ASK_API", defaultAPI), "OpenAI-compatible API shape (responses|chat)").
+		String("system", envString("PANGAEA_ASK_SYSTEM", ""), "additional system prompt").
+		StringSlice("image", nil, "image file to attach; repeatable").
 		Int("max-tokens", envInt("PANGAEA_ASK_MAX_TOKENS", 0), "maximum output tokens").
 		Bool("stream", envBool("PANGAEA_ASK_STREAM", true), "use SSE streaming").
 		Bool("spinner", envBool("PANGAEA_ASK_SPINNER", true), "show a waiting spinner on interactive terminals").
 		Bool("tools", envBool("PANGAEA_ASK_TOOLS", true), "enable local file tools").
 		String("tool-root", envString("PANGAEA_ASK_TOOL_ROOT", "."), "directory local file tools may access").
 		Int("tool-turns", envInt("PANGAEA_ASK_TOOL_TURNS", defaultToolTurns), "maximum tool-call round trips; 0 disables the fixed cap").
+		StringSlice("mcp-server", nil, "MCP stdio server executable; repeatable").
+		String("mcp-servers-json", envString("PANGAEA_ASK_MCP_SERVERS_JSON", ""), "MCP stdio server JSON config").
 		String("markdown-translator", envString("PANGAEA_ASK_MARKDOWN_TRANSLATOR", "plain"), "terminal markdown renderer (plain|glamour|glow|rich)").
 		String("glamour-style", envString("PANGAEA_ASK_GLAMOUR_STYLE", "dark"), "glamour/glow style name").
 		String("rich-code-theme", envString("PANGAEA_ASK_RICH_CODE_THEME", "monokai"), "Rich/Pygments code highlighting theme")
@@ -171,7 +183,7 @@ func run(ctx context.Context, opts options, prompt string) error {
 	if key == "" {
 		return fmt.Errorf("API key is required")
 	}
-	client := &http.Client{Timeout: 5 * time.Minute}
+	client := newAskHTTPClient()
 	if opts.Tools {
 		return normalizeRunError(ctx, runToolLoop(ctx, client, opts, key, prompt))
 	}
@@ -181,9 +193,16 @@ func run(ctx context.Context, opts options, prompt string) error {
 	applyModel(payload, opts.Model)
 	if opts.API == "responses" {
 		payload["input"] = prompt
+		if strings.TrimSpace(opts.System) != "" {
+			payload["instructions"] = strings.TrimSpace(opts.System)
+		}
 		applyMaxTokens(payload, opts.API, opts.MaxTokens)
 	} else {
-		payload["messages"] = []map[string]any{{"role": "user", "content": prompt}}
+		messages, err := buildChatMessages(opts, prompt, "")
+		if err != nil {
+			return err
+		}
+		payload["messages"] = messages
 		applyMaxTokens(payload, opts.API, opts.MaxTokens)
 	}
 	spin := newStatusSpinner(opts, "Thinking")
@@ -207,21 +226,48 @@ func run(ctx context.Context, opts options, prompt string) error {
 	return nil
 }
 
+func newAskHTTPClient() *http.Client {
+	// Agentic tool loops can legitimately spend longer than a fixed HTTP
+	// client timeout waiting for the next model turn. Cancellation is handled
+	// by the request context, so Ctrl+C/Esc still interrupts the request.
+	return &http.Client{}
+}
+
 func runToolLoop(ctx context.Context, client *http.Client, opts options, key string, prompt string) error {
 	root, err := filepath.Abs(opts.ToolRoot)
 	if err != nil {
 		return err
 	}
 	messages := []map[string]any{
-		{"role": "system", "content": toolSystemPrompt(root)},
-		{"role": "user", "content": prompt},
+		{"role": "system", "content": combinedSystemPrompt(opts.System, toolSystemPrompt(root))},
+	}
+	userContent, err := buildUserContent(prompt, opts.ImagePaths)
+	if err != nil {
+		return err
+	}
+	messages = append(messages, map[string]any{"role": "user", "content": userContent})
+	mcpDispatcher, err := newMCPDispatcher(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if mcpDispatcher != nil {
+		defer mcpDispatcher.Close()
+	}
+	toolDefs := chatTools()
+	if mcpDispatcher != nil {
+		mcpDefs, err := mcpDispatcher.ToolDefinitions(ctx)
+		if err != nil {
+			return err
+		}
+		toolDefs = append(toolDefs, mcpChatTools(mcpDefs)...)
 	}
 	tools := newToolRunner(root, opts)
+	tools.mcp = mcpDispatcher
 	loopDetector := newToolLoopDetector(toolLoopRepeats)
 	for turn := 0; opts.ToolTurns == 0 || turn < opts.ToolTurns; turn++ {
 		payload := map[string]any{
 			"messages":    messages,
-			"tools":       chatTools(),
+			"tools":       toolDefs,
 			"tool_choice": "auto",
 			"stream":      opts.Stream,
 		}
@@ -430,6 +476,73 @@ func applyModel(payload map[string]any, model string) {
 		return
 	}
 	payload["model"] = model
+}
+
+func buildChatMessages(opts options, prompt string, fallbackSystem string) ([]map[string]any, error) {
+	messages := make([]map[string]any, 0, 2)
+	system := combinedSystemPrompt(opts.System, fallbackSystem)
+	if system != "" {
+		messages = append(messages, map[string]any{"role": "system", "content": system})
+	}
+	content, err := buildUserContent(prompt, opts.ImagePaths)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, map[string]any{"role": "user", "content": content})
+	return messages, nil
+}
+
+func combinedSystemPrompt(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
+func buildUserContent(prompt string, imagePaths []string) (any, error) {
+	paths := cleanImagePaths(imagePaths)
+	if len(paths) == 0 {
+		return prompt, nil
+	}
+	parts := []map[string]any{{"type": "text", "text": prompt}}
+	for _, path := range paths {
+		url, err := imageFileDataURL(path)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": url},
+		})
+	}
+	return parts, nil
+}
+
+func cleanImagePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func imageFileDataURL(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read image %s: %w", path, err)
+	}
+	mime := http.DetectContentType(data)
+	if !strings.HasPrefix(mime, "image/") {
+		return "", fmt.Errorf("%s is not a supported image file (detected %s)", path, mime)
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 type toolCall struct {
@@ -750,11 +863,71 @@ func (f *toolCallTextFilter) Finish() (string, error) {
 		f.Buffer = ""
 		f.ToolCallBuffer = ""
 		f.InToolCall = false
-		return "", fmt.Errorf("stream ended with incomplete text tool call")
+		return incompleteTextToolCallNotice(payload), nil
 	}
 	visible := f.Buffer
 	f.Buffer = ""
 	return visible, nil
+}
+
+func incompleteTextToolCallNotice(payload string) string {
+	name := partialJSONStringField(payload, "name")
+	path := partialJSONStringField(payload, "path")
+	intent := partialJSONStringField(payload, "intent")
+	summary := "tool call"
+	if name != "" {
+		summary = strings.TrimSpace(toolVerb(name) + " " + path)
+		if summary == "" {
+			summary = name
+		}
+	}
+	if intent != "" {
+		return fmt.Sprintf("\n\n> 도구 호출이 중간에 끊겨 적용되지 않았습니다: %s (%s)\n\n", summary, intent)
+	}
+	return fmt.Sprintf("\n\n> 도구 호출이 중간에 끊겨 적용되지 않았습니다: %s\n\n", summary)
+}
+
+func partialJSONStringField(payload string, field string) string {
+	needle := `"` + field + `"`
+	for offset := 0; offset < len(payload); {
+		index := strings.Index(payload[offset:], needle)
+		if index == -1 {
+			return ""
+		}
+		index += offset + len(needle)
+		for index < len(payload) && (payload[index] == ' ' || payload[index] == '\t' || payload[index] == '\n' || payload[index] == '\r') {
+			index++
+		}
+		if index >= len(payload) || payload[index] != ':' {
+			offset = index
+			continue
+		}
+		index++
+		for index < len(payload) && (payload[index] == ' ' || payload[index] == '\t' || payload[index] == '\n' || payload[index] == '\r') {
+			index++
+		}
+		if index >= len(payload) || payload[index] != '"' {
+			offset = index
+			continue
+		}
+		escaped := false
+		for end := index + 1; end < len(payload); end++ {
+			switch {
+			case escaped:
+				escaped = false
+			case payload[end] == '\\':
+				escaped = true
+			case payload[end] == '"':
+				value, err := strconv.Unquote(payload[index : end+1])
+				if err != nil {
+					return ""
+				}
+				return value
+			}
+		}
+		return ""
+	}
+	return ""
 }
 
 func (f *toolCallTextFilter) consumeBracketToolResultHeader() bool {
@@ -998,6 +1171,7 @@ func executeToolCallContext(ctx context.Context, call toolCall, root string, opt
 type toolRunner struct {
 	root       string
 	opts       options
+	mcp        *geminidirect.MCPStdioDispatcher
 	generation int
 	cache      map[string]string
 	mu         sync.Mutex
@@ -1288,7 +1462,7 @@ func (r *toolRunner) executePreparedBatch(ctx context.Context, batch []preparedT
 			progress.MarkRunning(index)
 			call := prepared.Call
 			call.Function.Name = prepared.Name
-			result := executeToolCallDirectResult(ctx, call, r.root, r.opts, prepared.Args)
+			result := r.executeToolCallDirectResult(ctx, call, prepared.Args)
 			content := mustJSON(result)
 			exec := toolExecution{Call: prepared.Call, Name: prepared.Name, Args: prepared.Args, Content: content, Result: result}
 			results[index] = exec
@@ -1313,6 +1487,48 @@ func (r *toolRunner) executePreparedBatch(ctx context.Context, batch []preparedT
 		progress.MarkCached(i, results[i].Result)
 	}
 	return results
+}
+
+func (r *toolRunner) executeToolCallDirectResult(ctx context.Context, call toolCall, args map[string]any) map[string]any {
+	if isBuiltinTool(call.Function.Name) || r.mcp == nil {
+		return executeToolCallDirectResult(ctx, call, r.root, r.opts, args)
+	}
+	rawArgs := call.Function.Arguments
+	if args != nil {
+		if data, err := json.Marshal(args); err == nil {
+			rawArgs = string(data)
+		}
+	}
+	msg, err := r.mcp.DispatchTool(ctx, compat.ToolCall{
+		ID:        call.ID,
+		Type:      compat.ToolCallFunction,
+		Name:      call.Function.Name,
+		Arguments: rawArgs,
+	})
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error(), "source": "mcp"}
+	}
+	text := compatMessageText(msg)
+	result := map[string]any{"ok": true, "output": text, "source": "mcp"}
+	if strings.TrimSpace(text) != "" {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(text), &parsed); err == nil {
+			for key, value := range parsed {
+				result[key] = value
+			}
+		}
+	}
+	return result
+}
+
+func compatMessageText(msg compat.Message) string {
+	parts := make([]string, 0, len(msg.Content))
+	for _, part := range msg.Content {
+		if part.Text != "" {
+			parts = append(parts, part.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (r *toolRunner) invalidateCache() {
@@ -1435,6 +1651,15 @@ func toolIsReadOnly(name string) bool {
 
 func toolMayMutate(name string) bool {
 	return name == "write_file" || name == "apply_patch" || isExecTool(name)
+}
+
+func isBuiltinTool(name string) bool {
+	switch name {
+	case "write_file", "read_file", "list_files", "search_files", "grep_search", "rg", "apply_patch":
+		return true
+	default:
+		return isExecTool(name)
+	}
 }
 
 func executeToolCallDirect(ctx context.Context, call toolCall, root string, opts options, args map[string]any) string {
@@ -1664,37 +1889,24 @@ func toolApplyPatch(ctx context.Context, root string, args map[string]any) map[s
 	if strings.TrimSpace(patch) == "" {
 		return map[string]any{"ok": false, "error": "apply_patch.patch is required"}
 	}
-	applyPatchPath, err := exec.LookPath("apply_patch")
-	if err != nil {
+	trimmed := strings.TrimSpace(patch)
+	if !strings.HasPrefix(trimmed, "*** Begin Patch") {
 		return toolGitApplyPatch(ctx, root, args, patch)
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(intArg(args, "timeout_ms", 120_000))*time.Millisecond)
-	defer cancel()
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, applyPatchPath)
-	cmd.Dir = root
-	cmd.Stdin = strings.NewReader(patch)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	stdoutText, stdoutTruncated := truncateText(stdout.String(), 128*1024)
-	stderrText, stderrTruncated := truncateText(stderr.String(), 128*1024)
+	changed, err := applyCodexPatch(root, patch)
 	return map[string]any{
 		"ok":          err == nil,
-		"exit_code":   commandExitCode(err),
+		"error":       errorString(err),
 		"duration_ms": time.Since(start).Milliseconds(),
-		"stdout":      stdoutText,
-		"stderr":      stderrText,
+		"files":       changed,
 		"patch_lines": len(strings.Split(strings.TrimRight(patch, "\n"), "\n")),
-		"truncated":   stdoutTruncated || stderrTruncated,
 	}
 }
 
 func toolGitApplyPatch(ctx context.Context, root string, args map[string]any, patch string) map[string]any {
 	if !strings.Contains(patch, "diff --git") && !strings.HasPrefix(strings.TrimSpace(patch), "--- ") {
-		return map[string]any{"ok": false, "error": "apply_patch command is not available"}
+		return map[string]any{"ok": false, "error": "invalid apply_patch format: use Codex *** Begin Patch syntax or a unified diff"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(intArg(args, "timeout_ms", 120_000))*time.Millisecond)
 	defer cancel()
@@ -1719,6 +1931,249 @@ func toolGitApplyPatch(ctx context.Context, root string, args map[string]any, pa
 		"fallback":    "git apply",
 		"truncated":   stdoutTruncated || stderrTruncated,
 	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func applyCodexPatch(root string, patch string) ([]string, error) {
+	lines := splitPatchLines(patch)
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "*** Begin Patch" {
+		return nil, fmt.Errorf("invalid apply_patch format: patch must start with a standalone *** Begin Patch line")
+	}
+	changed := []string{}
+	i := 1
+	for i < len(lines) {
+		line := lines[i]
+		if strings.TrimSpace(line) == "*** End Patch" {
+			return uniqueStrings(changed), nil
+		}
+		switch {
+		case strings.HasPrefix(line, "*** Add File: "):
+			path := strings.TrimSpace(strings.TrimPrefix(line, "*** Add File: "))
+			next, err := applyCodexAddFile(root, path, lines, i+1)
+			if err != nil {
+				return uniqueStrings(changed), err
+			}
+			changed = append(changed, path)
+			i = next
+		case strings.HasPrefix(line, "*** Delete File: "):
+			path := strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: "))
+			target, err := resolveToolPath(root, path)
+			if err != nil {
+				return uniqueStrings(changed), err
+			}
+			if err := os.Remove(target); err != nil {
+				return uniqueStrings(changed), err
+			}
+			changed = append(changed, path)
+			i++
+		case strings.HasPrefix(line, "*** Update File: "):
+			path := strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
+			next, err := applyCodexUpdateFile(root, path, lines, i+1)
+			if err != nil {
+				return uniqueStrings(changed), err
+			}
+			changed = append(changed, path)
+			i = next
+		case strings.TrimSpace(line) == "":
+			i++
+		default:
+			return uniqueStrings(changed), fmt.Errorf("invalid apply_patch operation line %q", line)
+		}
+	}
+	return uniqueStrings(changed), fmt.Errorf("invalid apply_patch format: missing *** End Patch")
+}
+
+func applyCodexAddFile(root string, path string, lines []string, start int) (int, error) {
+	if strings.TrimSpace(path) == "" {
+		return start, fmt.Errorf("add file path is required")
+	}
+	target, err := resolveToolPath(root, path)
+	if err != nil {
+		return start, err
+	}
+	if _, err := os.Stat(target); err == nil {
+		return start, fmt.Errorf("add file target already exists: %s", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return start, err
+	}
+	content := []string{}
+	i := start
+	for i < len(lines) && !strings.HasPrefix(lines[i], "*** ") {
+		if !strings.HasPrefix(lines[i], "+") {
+			return i, fmt.Errorf("add file lines must start with + near %s", path)
+		}
+		content = append(content, strings.TrimPrefix(lines[i], "+"))
+		i++
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return i, err
+	}
+	if err := os.WriteFile(target, []byte(strings.Join(content, "\n")+"\n"), 0o644); err != nil {
+		return i, err
+	}
+	return i, nil
+}
+
+func applyCodexUpdateFile(root string, path string, lines []string, start int) (int, error) {
+	if strings.TrimSpace(path) == "" {
+		return start, fmt.Errorf("update file path is required")
+	}
+	target, err := resolveToolPath(root, path)
+	if err != nil {
+		return start, err
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return start, err
+	}
+	fileLines, trailingNewline := splitContentLines(string(data))
+	i := start
+	hunks := []codexPatchHunk{}
+	current := codexPatchHunk{}
+	flush := func() {
+		if len(current.Old) > 0 || len(current.New) > 0 {
+			hunks = append(hunks, current)
+			current = codexPatchHunk{}
+		}
+	}
+	for i < len(lines) {
+		line := lines[i]
+		if line == "@@" || strings.HasPrefix(line, "@@ ") {
+			flush()
+			i++
+			continue
+		}
+		if line == "*** End of File" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(line, "*** ") {
+			break
+		}
+		if line == "" {
+			return i, fmt.Errorf("invalid empty patch line in update for %s", path)
+		}
+		prefix := line[0]
+		text := line[1:]
+		switch prefix {
+		case ' ':
+			current.Old = append(current.Old, text)
+			current.New = append(current.New, text)
+		case '-':
+			current.Old = append(current.Old, text)
+		case '+':
+			current.New = append(current.New, text)
+		default:
+			return i, fmt.Errorf("invalid patch line prefix %q in update for %s", prefix, path)
+		}
+		i++
+	}
+	flush()
+	cursor := 0
+	for _, hunk := range hunks {
+		index := findLineBlock(fileLines, hunk.Old, cursor)
+		if index < 0 && cursor > 0 {
+			index = findLineBlock(fileLines, hunk.Old, 0)
+		}
+		if index < 0 {
+			return i, fmt.Errorf("patch hunk did not match %s: %s", path, compactPreview(strings.Join(hunk.Old, "\n"), 120))
+		}
+		replaced := make([]string, 0, len(fileLines)-len(hunk.Old)+len(hunk.New))
+		replaced = append(replaced, fileLines[:index]...)
+		replaced = append(replaced, hunk.New...)
+		replaced = append(replaced, fileLines[index+len(hunk.Old):]...)
+		fileLines = replaced
+		cursor = index + len(hunk.New)
+	}
+	if err := os.WriteFile(target, []byte(joinContentLines(fileLines, trailingNewline)), 0o644); err != nil {
+		return i, err
+	}
+	return i, nil
+}
+
+type codexPatchHunk struct {
+	Old []string
+	New []string
+}
+
+func splitPatchLines(text string) []string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.TrimRight(normalized, "\n")
+	if normalized == "" {
+		return nil
+	}
+	return strings.Split(normalized, "\n")
+}
+
+func splitContentLines(text string) ([]string, bool) {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	trailing := strings.HasSuffix(normalized, "\n")
+	normalized = strings.TrimSuffix(normalized, "\n")
+	if normalized == "" {
+		return []string{}, trailing
+	}
+	return strings.Split(normalized, "\n"), trailing
+}
+
+func joinContentLines(lines []string, trailing bool) string {
+	if len(lines) == 0 {
+		if trailing {
+			return "\n"
+		}
+		return ""
+	}
+	out := strings.Join(lines, "\n")
+	if trailing {
+		out += "\n"
+	}
+	return out
+}
+
+func findLineBlock(lines []string, block []string, start int) int {
+	if len(block) == 0 {
+		if start < 0 {
+			return 0
+		}
+		if start > len(lines) {
+			return len(lines)
+		}
+		return start
+	}
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i+len(block) <= len(lines); i++ {
+		matched := true
+		for j := range block {
+			if lines[i+j] != block[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return i
+		}
+	}
+	return -1
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func resolveToolPath(root string, requested string) (string, error) {
@@ -1990,11 +2445,24 @@ func printToolCallBatchStatus(execs []toolExecution) {
 		if !ok {
 			outcome = toolErrorStyle.Render("failed")
 		}
-		fmt.Fprintf(os.Stderr, "  %s %s%s %s %s\n", faintStyle.Render(branch), toolVerbStyle.Render(toolVerb(group.Name)), count, toolSummary(group.Name, group.Args, group.Result), outcome)
-		if intent := toolCallIntent(group.Name, group.Args); intent != "" {
-			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+" intent:"), intent)
+		intent := toolCallIntent(group.Name, group.Args)
+		if intent == "" {
+			intent = ansi.Strip(strings.TrimSpace(toolVerb(group.Name) + " " + toolSummary(group.Name, group.Args, group.Result)))
 		}
-		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+" result:"), toolResultSummary(group.Result))
+		fmt.Fprintf(os.Stderr, "  %s %s%s\n", faintStyle.Render(branch), toolIntentStyle.Render(intent), dim(count))
+		argText := formatToolArgs(group.Args)
+		resultText := toolResultSummary(group.Result)
+		fmt.Fprintf(os.Stderr, "  %s %s %s\n", faintStyle.Render(detailPrefix+"├"), toolDetail(group.Name, group.Args, group.Result), outcome)
+		if resultText != "" {
+			resultBranch := "└ result:"
+			if argText != "{}" {
+				resultBranch = "├ result:"
+			}
+			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+resultBranch), resultText)
+		}
+		if argText != "{}" {
+			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+"└ args:"), argText)
+		}
 	}
 }
 
@@ -2034,14 +2502,31 @@ func printToolCallStatus(name string, args map[string]any, result map[string]any
 	if ok {
 		status = toolOKStyle.Render("done")
 	}
-	fmt.Fprintf(os.Stderr, "%s %s %s\n", faintStyle.Render("•"), toolVerbStyle.Render(toolVerb(name)), toolSummary(name, args, result))
-	if intent := toolCallIntent(name, args); intent != "" {
-		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render("└ intent:"), intent)
+	intent := toolCallIntent(name, args)
+	if intent == "" {
+		intent = ansi.Strip(strings.TrimSpace(toolVerb(name) + " " + toolSummary(name, args, result)))
 	}
-	fmt.Fprintf(os.Stderr, "  %s %s %s\n", faintStyle.Render("└"), status, toolResultSummary(result))
-	if argText := formatToolArgs(args); argText != "{}" {
+	fmt.Fprintf(os.Stderr, "%s %s\n", faintStyle.Render("•"), toolIntentStyle.Render(intent))
+	fmt.Fprintf(os.Stderr, "  %s %s %s\n", faintStyle.Render("├"), toolDetail(name, args, result), status)
+	argText := formatToolArgs(args)
+	if resultText := toolResultSummary(result); resultText != "" {
+		resultBranch := "└ result:"
+		if argText != "{}" {
+			resultBranch = "├ result:"
+		}
+		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(resultBranch), resultText)
+	}
+	if argText != "{}" {
 		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render("└ args:"), argText)
 	}
+}
+
+func toolDetail(name string, args map[string]any, result map[string]any) string {
+	summary := toolSummary(name, args, result)
+	if strings.TrimSpace(ansi.Strip(summary)) == "" {
+		return toolVerbStyle.Render(toolVerb(name))
+	}
+	return toolVerbStyle.Render(toolVerb(name)) + " " + summary
 }
 
 func toolCallIntent(name string, args map[string]any) string {
@@ -2109,6 +2594,12 @@ func toolSummary(name string, args map[string]any, result map[string]any) string
 	case "exec_command", "shell", "run_shell":
 		return shellQuote(firstStringArg(args, "cmd", "command"))
 	case "apply_patch":
+		if files := stringListValue(result["files"]); len(files) > 0 {
+			return dim(compactList(files, 2))
+		}
+		if files := codexPatchPaths(firstStringArg(args, "patch", "input")); len(files) > 0 {
+			return dim(compactList(files, 2))
+		}
 		if n, ok := numberToInt(result["patch_lines"]); ok && n > 0 {
 			return dim(fmt.Sprintf("%d lines", n))
 		}
@@ -2116,6 +2607,49 @@ func toolSummary(name string, args map[string]any, result map[string]any) string
 	default:
 		return dim(name)
 	}
+}
+
+func codexPatchPaths(patch string) []string {
+	paths := []string{}
+	for _, line := range splitPatchLines(patch) {
+		switch {
+		case strings.HasPrefix(line, "*** Add File: "):
+			paths = append(paths, strings.TrimSpace(strings.TrimPrefix(line, "*** Add File: ")))
+		case strings.HasPrefix(line, "*** Delete File: "):
+			paths = append(paths, strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: ")))
+		case strings.HasPrefix(line, "*** Update File: "):
+			paths = append(paths, strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: ")))
+		}
+	}
+	return uniqueStrings(paths)
+}
+
+func stringListValue(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+				out = append(out, strings.TrimSpace(text))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func compactList(values []string, limit int) string {
+	values = uniqueStrings(values)
+	if len(values) == 0 {
+		return ""
+	}
+	if limit < 1 || len(values) <= limit {
+		return strings.Join(values, ", ")
+	}
+	return strings.Join(values[:limit], ", ") + fmt.Sprintf(" +%d more", len(values)-limit)
 }
 
 func toolSpinnerLabel(name string, args map[string]any) string {
@@ -2852,19 +3386,23 @@ func formatBytes(value int) string {
 }
 
 type askConfig struct {
-	BaseURL            string `json:"base_url"`
-	APIKey             string `json:"api_key"`
-	Model              string `json:"model"`
-	API                string `json:"api"`
-	MaxTokens          int    `json:"max_tokens"`
-	Stream             *bool  `json:"stream"`
-	Spinner            *bool  `json:"spinner"`
-	Tools              *bool  `json:"tools"`
-	ToolRoot           string `json:"tool_root"`
-	ToolTurns          int    `json:"tool_turns"`
-	MarkdownTranslator string `json:"markdown_translator"`
-	GlamourStyle       string `json:"glamour_style"`
-	RichCodeTheme      string `json:"rich_code_theme"`
+	BaseURL            string   `json:"base_url"`
+	APIKey             string   `json:"api_key"`
+	Model              string   `json:"model"`
+	API                string   `json:"api"`
+	System             string   `json:"system"`
+	Images             []string `json:"images"`
+	MaxTokens          int      `json:"max_tokens"`
+	Stream             *bool    `json:"stream"`
+	Spinner            *bool    `json:"spinner"`
+	Tools              *bool    `json:"tools"`
+	ToolRoot           string   `json:"tool_root"`
+	ToolTurns          int      `json:"tool_turns"`
+	MCPServers         []string `json:"mcp_servers"`
+	MCPServersJSON     string   `json:"mcp_servers_json"`
+	MarkdownTranslator string   `json:"markdown_translator"`
+	GlamourStyle       string   `json:"glamour_style"`
+	RichCodeTheme      string   `json:"rich_code_theme"`
 }
 
 func applyAskConfig(cmd *cobra.Command, opts *options) error {
@@ -2910,6 +3448,12 @@ func applyAskConfigValues(opts *options, cfg askConfig, changed func(string) boo
 	if cfg.API != "" && !changed("api") && !envSet("PANGAEA_ASK_API") {
 		opts.API = cfg.API
 	}
+	if cfg.System != "" && !changed("system") && !envSet("PANGAEA_ASK_SYSTEM") {
+		opts.System = cfg.System
+	}
+	if len(cfg.Images) > 0 && !changed("image") {
+		opts.ImagePaths = append([]string(nil), cfg.Images...)
+	}
 	if cfg.MaxTokens > 0 && !changed("max-tokens") && !envSet("PANGAEA_ASK_MAX_TOKENS") {
 		opts.MaxTokens = cfg.MaxTokens
 	}
@@ -2927,6 +3471,12 @@ func applyAskConfigValues(opts *options, cfg askConfig, changed func(string) boo
 	}
 	if cfg.ToolTurns > 0 && !changed("tool-turns") && !envSet("PANGAEA_ASK_TOOL_TURNS") {
 		opts.ToolTurns = cfg.ToolTurns
+	}
+	if len(cfg.MCPServers) > 0 && !changed("mcp-server") {
+		opts.MCPServers = append([]string(nil), cfg.MCPServers...)
+	}
+	if cfg.MCPServersJSON != "" && !changed("mcp-servers-json") && !envSet("PANGAEA_ASK_MCP_SERVERS_JSON") {
+		opts.MCPServersJSON = cfg.MCPServersJSON
 	}
 	if cfg.MarkdownTranslator != "" && !changed("markdown-translator") && !envSet("PANGAEA_ASK_MARKDOWN_TRANSLATOR") {
 		opts.MarkdownTranslator = cfg.MarkdownTranslator
@@ -3034,6 +3584,8 @@ func toolSystemPrompt(root string) string {
 	return "You can use local tools when they are necessary to complete the user's request.\n" +
 		"If the user asks you to create, edit, inspect, or list files, call the appropriate tool instead of only explaining the steps.\n" +
 		"If you need to run commands, use exec_command with a short intent. If you need to edit existing files, prefer apply_patch when possible.\n" +
+		"apply_patch accepts Codex patch syntax only: *** Begin Patch, then Add File/Update File/Delete File hunks, then *** End Patch. Do not use Begin Replace/End Replace blocks.\n" +
+		"For large existing files, do not rewrite the whole file with write_file; use focused apply_patch hunks instead.\n" +
 		"Do not repeat identical read/list/search tool calls unless a previous tool changed the file tree. Use read_file instead of exec_command for commands like cat <file>.\n" +
 		"Only write files that are directly requested by the user. Keep paths relative unless the user explicitly asks otherwise.\n" +
 		"When you call a tool, include a short Korean or English `intent` argument that explains why this tool call is needed.\n" +
@@ -3133,7 +3685,7 @@ func chatTools() []map[string]any {
 			"type": "function",
 			"function": map[string]any{
 				"name":        "apply_patch",
-				"description": "Apply a Codex apply_patch patch under the configured tool root.",
+				"description": "Apply a Codex apply_patch patch under the configured tool root. Use only Add File, Update File, or Delete File hunks; do not use Begin Replace/End Replace.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -3147,4 +3699,60 @@ func chatTools() []map[string]any {
 			},
 		},
 	}
+}
+
+func newMCPDispatcher(ctx context.Context, opts options) (*geminidirect.MCPStdioDispatcher, error) {
+	raw := strings.TrimSpace(opts.MCPServersJSON)
+	if raw != "" {
+		return geminidirect.NewMCPStdioDispatcherFromJSON(raw)
+	}
+	servers := cleanImagePaths(opts.MCPServers)
+	if len(servers) == 0 {
+		return nil, nil
+	}
+	configs := make([]geminidirect.MCPStdioServerConfig, 0, len(servers))
+	for _, server := range servers {
+		configs = append(configs, geminidirect.MCPStdioServerConfig{
+			Name:    strings.TrimSuffix(filepath.Base(server), filepath.Ext(server)),
+			Command: server,
+		})
+	}
+	dispatcher, err := geminidirect.NewMCPStdioDispatcher(configs)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := dispatcher.ToolDefinitions(ctx); err != nil {
+		_ = dispatcher.Close()
+		return nil, err
+	}
+	return dispatcher, nil
+}
+
+func mcpChatTools(defs []compat.ToolDefinition) []map[string]any {
+	out := make([]map[string]any, 0, len(defs))
+	for _, def := range defs {
+		params := def.Parameters
+		if params == nil {
+			params = map[string]any{"type": "object"}
+		}
+		out = append(out, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        def.Name,
+				"description": firstNonEmptyString(def.Description, "MCP tool from "+def.Source),
+				"parameters":  params,
+			},
+		})
+	}
+	return out
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

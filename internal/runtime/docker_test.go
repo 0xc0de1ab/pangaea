@@ -104,6 +104,27 @@ func TestDockerRuntimeCreateStartCopyExecAndRemove(t *testing.T) {
 	}
 }
 
+func TestDockerRuntimeCreateAddsRestartPolicy(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string]ExecResult{
+		"create --name pangaea-codex-primary --label pangaea.provider_type=codex-primary --label pangaea.provider_instance_id=codex-primary-a1 --restart unless-stopped --security-opt no-new-privileges --cap-drop ALL --read-only --tmpfs /var/lib/pangaea:uid=1000,gid=1000,mode=0700 --tmpfs /run/pangaea:uid=1000,gid=1000,mode=0700 --tmpfs /tmp:uid=1000,gid=1000,mode=1777 --tmpfs /work:uid=1000,gid=1000,mode=0700 --user 1000:1000 pangaea/provider-codex:test": {ExitCode: 0, Stdout: []byte("container-1\n")},
+	}}
+	rt := &DockerRuntime{Binary: "docker", Runner: runner}
+	spec := ContainerSpec{
+		ProviderType:       "codex-primary",
+		ProviderInstanceID: "codex-primary-a1",
+		Name:               "pangaea-codex-primary",
+		Image:              "pangaea/provider-codex:test",
+		RestartPolicy:      "unless-stopped",
+		Security:           DefaultSecurityProfile(),
+	}
+	if _, err := rt.Create(context.Background(), spec); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := joinedCommands(runner.commands); !strings.Contains(got, "--restart unless-stopped") {
+		t.Fatalf("missing restart policy in:\n%s", got)
+	}
+}
+
 func TestDockerRuntimeCreateAddsBindMounts(t *testing.T) {
 	hostDir := filepath.Join(t.TempDir(), "provider-state")
 	runner := &recordingRunner{outputs: map[string]ExecResult{

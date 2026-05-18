@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Clipboard, Download, History, KeyRound, RefreshCw, Server } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clipboard, Download, History, KeyRound, RefreshCw, Server } from "lucide-react";
 import type { DashboardViewProps } from "../app/dashboard";
 import { DataTable, type DashboardColumn } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
@@ -9,6 +9,8 @@ import { StatusBadge } from "../components/StatusBadge";
 import { api } from "../lib/api";
 import { age, copyText, fmtTime, hasText, middleEllipsis, n } from "../lib/format";
 import type { AuthEvent, AuthRecord, AuthReplica } from "../lib/types";
+
+const authHistoryPageSize = 10;
 
 export function AuthView({ data, queries, search, token, refresh }: DashboardViewProps) {
   const [selected, setSelected] = useState<AuthRecord | null>(null);
@@ -141,7 +143,7 @@ function AuthDetail({ record, token }: { record: AuthRecord; token?: string }) {
 
       <div className="detail-section">
         <h3>History</h3>
-        {events.isError ? <div className="inline-error">Failed to load auth history</div> : <AuthTimeline events={events.data ?? []} />}
+        {events.isError ? <div className="inline-error">Failed to load auth history</div> : <AuthTimeline key={record.id} events={events.data ?? []} />}
       </div>
     </div>
   );
@@ -180,32 +182,64 @@ function AuthReplicaTable({ replicas }: { replicas: AuthReplica[] }) {
 }
 
 function AuthTimeline({ events }: { events: AuthEvent[] }) {
+  const [pageIndex, setPageIndex] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(events.length / authHistoryPageSize));
+  const pageStart = pageIndex * authHistoryPageSize;
+  const pageEnd = Math.min(events.length, pageStart + authHistoryPageSize);
+  const pageEvents = events.slice(pageStart, pageEnd);
+
+  useEffect(() => {
+    setPageIndex(0);
+  }, [events.length]);
+
+  useEffect(() => {
+    if (pageIndex >= pageCount) {
+      setPageIndex(pageCount - 1);
+    }
+  }, [pageCount, pageIndex]);
+
   if (!events.length) {
     return <div className="chat-empty">No auth events</div>;
   }
   return (
-    <div className="auth-timeline">
-      {events.map((event) => (
-        <article className="auth-event" key={event.id}>
-          <div className="auth-event-icon">
-            {event.type.includes("push") ? <Server aria-hidden="true" size={15} /> : <History aria-hidden="true" size={15} />}
-          </div>
-          <div>
-            <div className="auth-event-head">
-              <strong>{event.type}</strong>
-              <span>{fmtTime(event.at)}</span>
+    <>
+      <div className="auth-timeline">
+        {pageEvents.map((event) => (
+          <article className="auth-event" key={event.id}>
+            <div className="auth-event-icon">
+              {event.type.includes("push") ? <Server aria-hidden="true" size={15} /> : <History aria-hidden="true" size={15} />}
             </div>
-            <p>{event.message || authEventMessage(event)}</p>
-            {event.details && Object.keys(event.details).length ? <AuthEventDetails details={event.details} /> : null}
-            <div className="auth-event-meta">
-              <span>{event.host_name || ""}</span>
-              <span className="mono">{event.provider_instance_id || ""}</span>
-              {event.status ? <StatusBadge value={event.status} /> : null}
+            <div>
+              <div className="auth-event-head">
+                <strong>{event.type}</strong>
+                <span>{fmtTime(event.at)}</span>
+              </div>
+              <p>{event.message || authEventMessage(event)}</p>
+              {event.details && Object.keys(event.details).length ? <AuthEventDetails details={event.details} /> : null}
+              <div className="auth-event-meta">
+                <span>{event.host_name || ""}</span>
+                <span className="mono">{event.provider_instance_id || ""}</span>
+                {event.status ? <StatusBadge value={event.status} /> : null}
+              </div>
             </div>
+          </article>
+        ))}
+      </div>
+      {pageCount > 1 ? (
+        <div className="table-pagination auth-history-pagination">
+          <span>{n(pageStart + 1)}-{n(pageEnd)} of {n(events.length)}</span>
+          <div className="pagination-actions">
+            <button className="icon-button small" type="button" title="Previous history page" disabled={pageIndex <= 0} onClick={() => setPageIndex((value) => Math.max(0, value - 1))}>
+              <ChevronLeft aria-hidden="true" size={15} />
+            </button>
+            <span>Page {n(pageIndex + 1)} / {n(pageCount)}</span>
+            <button className="icon-button small" type="button" title="Next history page" disabled={pageIndex >= pageCount - 1} onClick={() => setPageIndex((value) => Math.min(pageCount - 1, value + 1))}>
+              <ChevronRight aria-hidden="true" size={15} />
+            </button>
           </div>
-        </article>
-      ))}
-    </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 

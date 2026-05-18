@@ -188,32 +188,62 @@ func TranscodeGeminiMessages(req models.GeminiRequest) (string, []models.Media) 
 	return strings.Join(parts, "\n"), media
 }
 
+type ToolCallParseResult struct {
+	Calls     []models.ToolCall
+	Malformed bool
+	Reason    string
+}
+
 // ParseToolCalls extracts tool calls from the raw response text.
 func ParseToolCalls(responseText string) []models.ToolCall {
+	return ParseToolCallResult(responseText).Calls
+}
+
+func ParseToolCallResult(responseText string) ToolCallParseResult {
 	var toolCalls []models.ToolCall
 	firstObsIdx := strings.Index(strings.ToLower(responseText), "<observation>")
 	parseText := responseText
 	if firstObsIdx != -1 {
 		parseText = responseText[:firstObsIdx]
 	}
-	re := regexp.MustCompile(`(?i)<tool_call>\s*(\{[\s\S]*?\})\s*</tool_call>`)
+	lower := strings.ToLower(parseText)
+	re := regexp.MustCompile(`(?is)<tool_call>\s*([\s\S]*?)\s*</tool_call>`)
 	matches := re.FindAllStringSubmatch(parseText, -1)
+	hasInvalidTaggedCall := false
 	for i, match := range matches {
 		if len(match) > 1 {
-			if tc, ok := parseToolCallObject(match[1], i); ok {
+			payload := strings.TrimSpace(match[1])
+			if tc, ok := parseToolCallObject(payload, i); ok {
 				toolCalls = append(toolCalls, tc)
+			} else if calls := parseToolCallPayload(payload); len(calls) > 0 {
+				toolCalls = append(toolCalls, calls...)
+			} else {
+				hasInvalidTaggedCall = true
 			}
 		}
 	}
+	openTagCount := strings.Count(lower, "<tool_call")
+	closeTagCount := strings.Count(lower, "</tool_call>")
+	hasIncompleteTaggedCall := openTagCount != closeTagCount
+	if hasInvalidTaggedCall || hasIncompleteTaggedCall || (len(toolCalls) == 0 && (openTagCount > 0 || closeTagCount > 0)) {
+		reason := "upstream emitted a malformed tool call"
+		if hasIncompleteTaggedCall {
+			reason = "upstream emitted an incomplete tool call"
+		} else if hasInvalidTaggedCall {
+			reason = "upstream emitted a tool call that could not be parsed"
+		}
+		return ToolCallParseResult{Malformed: true, Reason: reason}
+	}
 	if len(toolCalls) > 0 {
-		return toolCalls
+		reindexToolCalls(toolCalls)
+		return ToolCallParseResult{Calls: toolCalls}
 	}
 	for _, payload := range candidateToolJSONPayloads(parseText) {
 		if calls := parseToolCallPayload(payload); len(calls) > 0 {
-			return calls
+			return ToolCallParseResult{Calls: calls}
 		}
 	}
-	return toolCalls
+	return ToolCallParseResult{}
 }
 
 func candidateToolJSONPayloads(text string) []string {

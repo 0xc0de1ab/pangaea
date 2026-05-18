@@ -17,7 +17,8 @@ import (
 
 var ErrRouterNotReady = errors.New("router not ready")
 
-const staleRateLimitDegradedAfter = 30 * time.Second
+const staleTransientDegradedAfter = 30 * time.Second
+const maxRoutingRuleModelFallbackAttempts = 16
 
 const authEventUsageQuotaWindowReset = "usage.quota.window.reset"
 
@@ -97,6 +98,12 @@ type ModelInfo struct {
 	MaxOutputTokens  int                   `json:"max_output_tokens,omitempty"`
 }
 
+type routingRuleModelFallbackCause struct {
+	EventType       string
+	Message         string
+	RejectionPrefix string
+}
+
 func NewEngine(policy RoutingPolicy, registry *provider.Registry, ledger *quota.Ledger) (*Engine, error) {
 	if err := policy.Validate(); err != nil {
 		return nil, err
@@ -142,12 +149,16 @@ func (e *Engine) SetInvoker(invoker Invoker) {
 }
 
 func (e *Engine) DryRun(request RouteRequest) RouteDecision {
+	return e.dryRunWithSkippedModels(request, nil)
+}
+
+func (e *Engine) dryRunWithSkippedModels(request RouteRequest, skippedModels []string) RouteDecision {
 	if e == nil || e.registry == nil {
 		return RouteDecision{Reason: ErrRouterNotReady.Error()}
 	}
 	if strings.TrimSpace(request.RoutingRuleID) != "" || strings.TrimSpace(request.RoutingRuleName) != "" {
 		if rule, ok := e.resolveRoutingRuleForRequest(request); ok {
-			decision, _ := e.evaluateRoutingRule(rule, request)
+			decision, _ := e.evaluateRoutingRuleWithSkippedModels(rule, request, skippedModels)
 			return decision
 		}
 		return RouteDecision{
@@ -235,14 +246,14 @@ func (e *Engine) Providers() []provider.Registration {
 	if e == nil || e.registry == nil {
 		return nil
 	}
-	return recoverStaleRateLimitDegradations(e.registry.List(), time.Now().UTC())
+	return recoverStaleTransientDegradations(e.registry.List(), time.Now().UTC())
 }
 
 func (e *Engine) routingRegistrations() []provider.Registration {
 	availability := e.availability
 	load, _ := e.invoker.(ProviderLoad)
 	now := time.Now().UTC()
-	registrations := recoverStaleRateLimitDegradations(e.registry.List(), now)
+	registrations := recoverStaleTransientDegradations(e.registry.List(), now)
 	if availability == nil && load == nil {
 		return registrations
 	}
@@ -268,28 +279,42 @@ func (e *Engine) routingRegistrations() []provider.Registration {
 	return out
 }
 
-func recoverStaleRateLimitDegradations(registrations []provider.Registration, now time.Time) []provider.Registration {
+func recoverStaleTransientDegradations(registrations []provider.Registration, now time.Time) []provider.Registration {
 	out := make([]provider.Registration, len(registrations))
 	for i, registration := range registrations {
-		out[i] = recoverStaleRateLimitDegradation(registration, now)
+		out[i] = recoverStaleTransientDegradation(registration, now)
 	}
 	return out
 }
 
-func recoverStaleRateLimitDegradation(registration provider.Registration, now time.Time) provider.Registration {
+func recoverStaleTransientDegradation(registration provider.Registration, now time.Time) provider.Registration {
 	if registration.Health.Status != provider.HealthDegraded {
 		return registration
 	}
-	if !strings.Contains(strings.ToLower(strings.TrimSpace(registration.Health.Reason)), "upstream rate limited") {
+	if !isTransientDegradedHealthReason(registration.Health.Reason) {
 		return registration
 	}
-	if registration.Health.CheckedAt.IsZero() || now.Sub(registration.Health.CheckedAt) < staleRateLimitDegradedAfter {
+	if registration.Health.CheckedAt.IsZero() || now.Sub(registration.Health.CheckedAt) < staleTransientDegradedAfter {
 		return registration
 	}
 	registration.Health.Status = provider.HealthReady
 	registration.Health.Reason = ""
 	registration.Health.CheckedAt = now
 	return registration
+}
+
+func isTransientDegradedHealthReason(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case strings.Contains(reason, "upstream rate limited"):
+		return true
+	case strings.Contains(reason, "upstream request failed"):
+		return true
+	case strings.Contains(reason, "provider invoke failed"):
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Engine) UpsertProvider(registration provider.Registration) error {
@@ -648,10 +673,14 @@ func formatOptionalAuthEventTime(value time.Time) string {
 }
 
 func (e *Engine) ReserveRoute(request RouteExecutionRequest) (RouteExecution, error) {
+	return e.reserveRouteWithSkippedModels(request, nil)
+}
+
+func (e *Engine) reserveRouteWithSkippedModels(request RouteExecutionRequest, skippedModels []string) (RouteExecution, error) {
 	if e == nil || e.registry == nil || e.ledger == nil {
 		return RouteExecution{}, ErrRouterNotReady
 	}
-	decision := e.DryRun(request.RouteRequest)
+	decision := e.dryRunWithSkippedModels(request.RouteRequest, skippedModels)
 	if !decision.Allowed {
 		err := ErrNoProvider
 		if decision.Reason == ErrNoRoute.Error() {
@@ -725,74 +754,117 @@ func (e *Engine) Invoke(ctx context.Context, execution RouteExecutionRequest, re
 		return compat.Response{}, RouteExecution{}, err
 	}
 	startedAt := time.Now().UTC()
-	routeExecution, err := e.ReserveRoute(execution)
-	if err != nil {
-		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", err, startedAt, time.Now().UTC()))
-		return compat.Response{}, routeExecution, err
-	}
-	if routeExecution.Decision.SelectedProvider == nil {
-		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
-			routeExecution.Reservation = released
+	skippedModels := make([]string, 0)
+	accumulatedRejections := make([]RouteRejection, 0)
+	var previousFallback *RouteDecisionEvent
+	for attempt := 0; attempt < maxRoutingRuleModelFallbackAttempts; attempt++ {
+		routeExecution, err := e.reserveRouteWithSkippedModels(execution, skippedModels)
+		if previousFallback != nil {
+			previousFallback.ModelAlias = routeExecution.Decision.ModelAlias
+			previousFallback.CanonicalModel = routeExecution.Decision.CanonicalModel
+			if previousFallback.RoutingRuleID == "" {
+				previousFallback.RoutingRuleID = routeExecution.Decision.RoutingRuleID
+			}
+			routeExecution.Decision.Events = append(routeExecution.Decision.Events, *previousFallback)
+			previousFallback = nil
 		}
-		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", ErrNoProvider, startedAt, time.Now().UTC()))
-		return compat.Response{}, routeExecution, ErrNoProvider
-	}
-	if routeExecution.Decision.CanonicalModel != "" {
-		request.Model = routeExecution.Decision.CanonicalModel
-	}
-	if request.ID == "" {
-		request.ID = execution.RequestID
-	}
-	candidates := e.executionCandidates(routeExecution.Decision)
-	var response compat.Response
-	var invokeErr error
-	var invokeRejections []RouteRejection
-	finalExecution := routeExecution
-	for _, candidate := range candidates {
-		candidateExecution := routeExecution
-		candidateExecution.Decision.Selected = candidate.Identity.ProviderInstanceID
-		candidateExecution.Decision.SelectedProvider = &candidate
-		candidateExecution.Decision.Reason = "selected provider"
-		response, invokeErr = e.invoker.Invoke(ctx, candidate, request)
-		if invokeErr == nil {
-			finalExecution = candidateExecution
-			break
+		attemptDecisionRejections := append([]RouteRejection(nil), routeExecution.Decision.Rejections...)
+		if len(accumulatedRejections) > 0 {
+			routeExecution.Decision.Rejections = append(accumulatedRejections, routeExecution.Decision.Rejections...)
 		}
-		e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
-		invokeRejections = append(invokeRejections, RouteRejection{
-			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
-			ProviderType:       candidate.Identity.ProviderType,
-			Reason:             "invoke failed: " + invokeErr.Error(),
-		})
-		if ctx.Err() != nil {
-			break
+		if err != nil {
+			e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", err, startedAt, time.Now().UTC()))
+			return compat.Response{}, routeExecution, err
 		}
-	}
-	if invokeErr != nil {
-		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
-			finalExecution.Reservation = released
+		if routeExecution.Decision.SelectedProvider == nil {
+			if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+				routeExecution.Reservation = released
+			}
+			e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", ErrNoProvider, startedAt, time.Now().UTC()))
+			return compat.Response{}, routeExecution, ErrNoProvider
 		}
-		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
-		e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", invokeErr, startedAt, time.Now().UTC()))
-		return compat.Response{}, finalExecution, invokeErr
+		attemptRequest := request
+		if routeExecution.Decision.CanonicalModel != "" {
+			attemptRequest.Model = routeExecution.Decision.CanonicalModel
+		}
+		if attemptRequest.ID == "" {
+			attemptRequest.ID = execution.RequestID
+		}
+		candidates := e.executionCandidates(routeExecution.Decision)
+		var response compat.Response
+		var invokeErr error
+		var invokeRejections []RouteRejection
+		finalExecution := routeExecution
+		for _, candidate := range candidates {
+			candidateExecution := routeExecution
+			candidateExecution.Decision.Selected = candidate.Identity.ProviderInstanceID
+			candidateExecution.Decision.SelectedProvider = &candidate
+			candidateExecution.Decision.Reason = "selected provider"
+			response, invokeErr = e.invoker.Invoke(ctx, candidate, attemptRequest)
+			if invokeErr == nil {
+				finalExecution = candidateExecution
+				break
+			}
+			e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
+			invokeRejections = append(invokeRejections, RouteRejection{
+				ProviderInstanceID: candidate.Identity.ProviderInstanceID,
+				ProviderType:       candidate.Identity.ProviderType,
+				Reason:             "invoke failed: " + invokeErr.Error(),
+			})
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		if invokeErr != nil {
+			if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+				finalExecution.Reservation = released
+			}
+			if cause, ok := e.routingRuleModelFallbackCause(execution.RouteRequest, finalExecution.Decision, skippedModels, invokeErr, false); ok {
+				failedAlias, failedCanonical := finalExecution.Decision.ModelAlias, finalExecution.Decision.CanonicalModel
+				attemptRejections := append([]RouteRejection(nil), attemptDecisionRejections...)
+				attemptRejections = append(attemptRejections, invokeRejections...)
+				finalExecution.Decision.Rejections = append(accumulatedRejections, attemptRejections...)
+				accumulatedRejections = append(accumulatedRejections, attemptRejections...)
+				accumulatedRejections = append(accumulatedRejections, RouteRejection{
+					ProviderInstanceID: finalExecution.Decision.Selected,
+					Reason:             fmt.Sprintf("%s for %q; trying next route model", cause.RejectionPrefix, firstNonEmpty(failedCanonical, failedAlias)),
+				})
+				skippedModels = appendRouteDecisionModelSkips(skippedModels, finalExecution.Decision)
+				previousFallback = &RouteDecisionEvent{
+					Type:                   cause.EventType,
+					Message:                cause.Message,
+					RoutingRuleID:          finalExecution.Decision.RoutingRuleID,
+					PreviousModelAlias:     failedAlias,
+					PreviousCanonicalModel: failedCanonical,
+				}
+				continue
+			}
+			finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+			e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", invokeErr, startedAt, time.Now().UTC()))
+			return compat.Response{}, finalExecution, invokeErr
+		}
+		if len(invokeRejections) > 0 {
+			finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+			finalExecution.Decision.Reason = "fallback selected after provider invoke failure"
+		}
+		actualUsage := quota.Usage{
+			Tokens:   response.Usage.TotalTokens,
+			Requests: 1,
+		}
+		committed, err := e.Commit(execution.RequestID, actualUsage)
+		if err != nil {
+			e.recordRequestTrace(newRequestTrace(execution, finalExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
+			return compat.Response{}, finalExecution, err
+		}
+		traceExecution := finalExecution
+		traceExecution.Reservation = committed
+		e.recordRequestTrace(newRequestTrace(execution, traceExecution, actualUsage, "completed", nil, startedAt, time.Now().UTC()))
+		return response, finalExecution, nil
 	}
-	if len(invokeRejections) > 0 {
-		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
-		finalExecution.Decision.Reason = "fallback selected after provider invoke failure"
-	}
-	actualUsage := quota.Usage{
-		Tokens:   response.Usage.TotalTokens,
-		Requests: 1,
-	}
-	committed, err := e.Commit(execution.RequestID, actualUsage)
-	if err != nil {
-		e.recordRequestTrace(newRequestTrace(execution, finalExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
-		return compat.Response{}, finalExecution, err
-	}
-	traceExecution := finalExecution
-	traceExecution.Reservation = committed
-	e.recordRequestTrace(newRequestTrace(execution, traceExecution, actualUsage, "completed", nil, startedAt, time.Now().UTC()))
-	return response, finalExecution, nil
+	err := fmt.Errorf("%w: routing rule model fallback limit reached", ErrNoProvider)
+	finalExecution := RouteExecution{Decision: RouteDecision{Reason: err.Error(), Rejections: accumulatedRejections}}
+	e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", err, startedAt, time.Now().UTC()))
+	return compat.Response{}, finalExecution, err
 }
 
 func (e *Engine) InvokeStream(ctx context.Context, execution RouteExecutionRequest, request compat.Request, emit func(compat.Event) error) (compat.Response, RouteExecution, error) {
@@ -828,80 +900,126 @@ func (e *Engine) InvokeStream(ctx context.Context, execution RouteExecutionReque
 		return response, routeExecution, nil
 	}
 	startedAt := time.Now().UTC()
-	routeExecution, err := e.ReserveRoute(execution)
-	if err != nil {
-		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", err, startedAt, time.Now().UTC()))
-		return compat.Response{}, routeExecution, err
-	}
-	if routeExecution.Decision.SelectedProvider == nil {
-		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
-			routeExecution.Reservation = released
+	skippedModels := make([]string, 0)
+	accumulatedRejections := make([]RouteRejection, 0)
+	var previousFallback *RouteDecisionEvent
+	for attempt := 0; attempt < maxRoutingRuleModelFallbackAttempts; attempt++ {
+		routeExecution, err := e.reserveRouteWithSkippedModels(execution, skippedModels)
+		if previousFallback != nil {
+			previousFallback.ModelAlias = routeExecution.Decision.ModelAlias
+			previousFallback.CanonicalModel = routeExecution.Decision.CanonicalModel
+			if previousFallback.RoutingRuleID == "" {
+				previousFallback.RoutingRuleID = routeExecution.Decision.RoutingRuleID
+			}
+			routeExecution.Decision.Events = append(routeExecution.Decision.Events, *previousFallback)
+			previousFallback = nil
 		}
-		e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", ErrNoProvider, startedAt, time.Now().UTC()))
-		return compat.Response{}, routeExecution, ErrNoProvider
-	}
-	if routeExecution.Decision.CanonicalModel != "" {
-		request.Model = routeExecution.Decision.CanonicalModel
-	}
-	if request.ID == "" {
-		request.ID = execution.RequestID
-	}
-	request.Stream = true
-	candidates := e.executionCandidates(routeExecution.Decision)
-	var response compat.Response
-	var invokeErr error
-	var invokeRejections []RouteRejection
-	finalExecution := routeExecution
-	emitted := false
-	wrappedEmit := func(event compat.Event) error {
-		emitted = true
-		return emit(event)
-	}
-	for _, candidate := range candidates {
-		candidateExecution := routeExecution
-		candidateExecution.Decision.Selected = candidate.Identity.ProviderInstanceID
-		candidateExecution.Decision.SelectedProvider = &candidate
-		candidateExecution.Decision.Reason = "selected provider"
-		response, invokeErr = streamInvoker.InvokeStream(ctx, candidate, request, wrappedEmit)
-		if invokeErr == nil {
-			finalExecution = candidateExecution
-			break
+		attemptDecisionRejections := append([]RouteRejection(nil), routeExecution.Decision.Rejections...)
+		if len(accumulatedRejections) > 0 {
+			routeExecution.Decision.Rejections = append(accumulatedRejections, routeExecution.Decision.Rejections...)
 		}
-		e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
-		invokeRejections = append(invokeRejections, RouteRejection{
-			ProviderInstanceID: candidate.Identity.ProviderInstanceID,
-			ProviderType:       candidate.Identity.ProviderType,
-			Reason:             "invoke failed: " + invokeErr.Error(),
-		})
-		if ctx.Err() != nil || emitted {
-			break
+		if err != nil {
+			e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", err, startedAt, time.Now().UTC()))
+			return compat.Response{}, routeExecution, err
 		}
-	}
-	if invokeErr != nil {
-		if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
-			finalExecution.Reservation = released
+		if routeExecution.Decision.SelectedProvider == nil {
+			if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+				routeExecution.Reservation = released
+			}
+			e.recordRequestTrace(newRequestTrace(execution, routeExecution, quota.Usage{}, "rejected", ErrNoProvider, startedAt, time.Now().UTC()))
+			return compat.Response{}, routeExecution, ErrNoProvider
 		}
-		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
-		e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", invokeErr, startedAt, time.Now().UTC()))
-		return compat.Response{}, finalExecution, invokeErr
+		attemptRequest := request
+		if routeExecution.Decision.CanonicalModel != "" {
+			attemptRequest.Model = routeExecution.Decision.CanonicalModel
+		}
+		if attemptRequest.ID == "" {
+			attemptRequest.ID = execution.RequestID
+		}
+		attemptRequest.Stream = true
+		candidates := e.executionCandidates(routeExecution.Decision)
+		var response compat.Response
+		var invokeErr error
+		var invokeRejections []RouteRejection
+		finalExecution := routeExecution
+		emitted := false
+		wrappedEmit := func(event compat.Event) error {
+			if event.Type == compat.EventError && !emitted {
+				return nil
+			}
+			emitted = true
+			return emit(event)
+		}
+		for _, candidate := range candidates {
+			candidateExecution := routeExecution
+			candidateExecution.Decision.Selected = candidate.Identity.ProviderInstanceID
+			candidateExecution.Decision.SelectedProvider = &candidate
+			candidateExecution.Decision.Reason = "selected provider"
+			response, invokeErr = streamInvoker.InvokeStream(ctx, candidate, attemptRequest, wrappedEmit)
+			if invokeErr == nil {
+				finalExecution = candidateExecution
+				break
+			}
+			e.markProviderUnavailableFromInvokeError(candidate.Identity.ProviderInstanceID, invokeErr)
+			invokeRejections = append(invokeRejections, RouteRejection{
+				ProviderInstanceID: candidate.Identity.ProviderInstanceID,
+				ProviderType:       candidate.Identity.ProviderType,
+				Reason:             "invoke failed: " + invokeErr.Error(),
+			})
+			if ctx.Err() != nil || emitted {
+				break
+			}
+		}
+		if invokeErr != nil {
+			if released, releaseErr := e.Release(execution.RequestID); releaseErr == nil {
+				finalExecution.Reservation = released
+			}
+			if cause, ok := e.routingRuleModelFallbackCause(execution.RouteRequest, finalExecution.Decision, skippedModels, invokeErr, emitted); ok {
+				failedAlias, failedCanonical := finalExecution.Decision.ModelAlias, finalExecution.Decision.CanonicalModel
+				attemptRejections := append([]RouteRejection(nil), attemptDecisionRejections...)
+				attemptRejections = append(attemptRejections, invokeRejections...)
+				finalExecution.Decision.Rejections = append(accumulatedRejections, attemptRejections...)
+				accumulatedRejections = append(accumulatedRejections, attemptRejections...)
+				accumulatedRejections = append(accumulatedRejections, RouteRejection{
+					ProviderInstanceID: finalExecution.Decision.Selected,
+					Reason:             fmt.Sprintf("%s for %q; trying next route model", cause.RejectionPrefix, firstNonEmpty(failedCanonical, failedAlias)),
+				})
+				skippedModels = appendRouteDecisionModelSkips(skippedModels, finalExecution.Decision)
+				previousFallback = &RouteDecisionEvent{
+					Type:                   cause.EventType,
+					Message:                cause.Message,
+					RoutingRuleID:          finalExecution.Decision.RoutingRuleID,
+					PreviousModelAlias:     failedAlias,
+					PreviousCanonicalModel: failedCanonical,
+				}
+				continue
+			}
+			finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+			e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", invokeErr, startedAt, time.Now().UTC()))
+			return compat.Response{}, finalExecution, invokeErr
+		}
+		if len(invokeRejections) > 0 {
+			finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
+			finalExecution.Decision.Reason = "fallback selected after provider invoke failure"
+		}
+		actualUsage := quota.Usage{
+			Tokens:   response.Usage.TotalTokens,
+			Requests: 1,
+		}
+		committed, err := e.Commit(execution.RequestID, actualUsage)
+		if err != nil {
+			e.recordRequestTrace(newRequestTrace(execution, finalExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
+			return compat.Response{}, finalExecution, err
+		}
+		traceExecution := finalExecution
+		traceExecution.Reservation = committed
+		e.recordRequestTrace(newRequestTrace(execution, traceExecution, actualUsage, "completed", nil, startedAt, time.Now().UTC()))
+		return response, finalExecution, nil
 	}
-	if len(invokeRejections) > 0 {
-		finalExecution.Decision.Rejections = append(finalExecution.Decision.Rejections, invokeRejections...)
-		finalExecution.Decision.Reason = "fallback selected after provider invoke failure"
-	}
-	actualUsage := quota.Usage{
-		Tokens:   response.Usage.TotalTokens,
-		Requests: 1,
-	}
-	committed, err := e.Commit(execution.RequestID, actualUsage)
-	if err != nil {
-		e.recordRequestTrace(newRequestTrace(execution, finalExecution, actualUsage, "failed", err, startedAt, time.Now().UTC()))
-		return compat.Response{}, finalExecution, err
-	}
-	traceExecution := finalExecution
-	traceExecution.Reservation = committed
-	e.recordRequestTrace(newRequestTrace(execution, traceExecution, actualUsage, "completed", nil, startedAt, time.Now().UTC()))
-	return response, finalExecution, nil
+	err := fmt.Errorf("%w: routing rule model fallback limit reached", ErrNoProvider)
+	finalExecution := RouteExecution{Decision: RouteDecision{Reason: err.Error(), Rejections: accumulatedRejections}}
+	e.recordRequestTrace(newRequestTrace(execution, finalExecution, quota.Usage{}, "provider_error", err, startedAt, time.Now().UTC()))
+	return compat.Response{}, finalExecution, err
 }
 
 func (e *Engine) executionCandidates(decision RouteDecision) []provider.Registration {
@@ -948,6 +1066,9 @@ func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID strin
 	if !errors.As(err, &upstream) {
 		return
 	}
+	if isEmptyStreamUpstreamError(upstream) {
+		return
+	}
 	now := time.Now().UTC()
 	switch upstream.StatusCode {
 	case 401, 403:
@@ -972,10 +1093,87 @@ func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID strin
 }
 
 func isModelScopedCapacityError(upstream *provider.UpstreamError) bool {
-	if upstream == nil || upstream.StatusCode != 429 {
+	if upstream == nil {
 		return false
 	}
 	combined := strings.ToLower(strings.TrimSpace(upstream.Code + " " + upstream.Message + " " + upstream.Body))
+	if upstream.StatusCode != 0 && upstream.StatusCode != 429 {
+		return false
+	}
 	return strings.Contains(combined, "no capacity available for model") ||
-		strings.Contains(combined, "capacity on this model")
+		strings.Contains(combined, "capacity on this model") ||
+		(strings.Contains(combined, "resource_exhausted") && strings.Contains(combined, "capacity"))
+}
+
+func isModelScopedCapacityInvokeError(err error) bool {
+	var upstream *provider.UpstreamError
+	return errors.As(err, &upstream) && isModelScopedCapacityError(upstream)
+}
+
+func isEmptyStreamInvokeError(err error) bool {
+	var upstream *provider.UpstreamError
+	return errors.As(err, &upstream) && isEmptyStreamUpstreamError(upstream)
+}
+
+func isEmptyStreamUpstreamError(upstream *provider.UpstreamError) bool {
+	if upstream == nil {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(upstream.Code))
+	return code == "empty_stream_timeout" || code == "empty_stream"
+}
+
+func routingRuleModelFallbackCauseForError(err error) (routingRuleModelFallbackCause, bool) {
+	switch {
+	case isModelScopedCapacityInvokeError(err):
+		return routingRuleModelFallbackCause{
+			EventType:       routeDecisionEventModelFallback,
+			Message:         "upstream reported model capacity exhausted; routing rule selected the next effective model",
+			RejectionPrefix: "model capacity exhausted",
+		}, true
+	case isEmptyStreamInvokeError(err):
+		return routingRuleModelFallbackCause{
+			EventType:       routeDecisionEventModelEmptyStreamFallback,
+			Message:         "upstream stream did not produce assistant content; routing rule selected the next effective model",
+			RejectionPrefix: "model produced no assistant content",
+		}, true
+	default:
+		return routingRuleModelFallbackCause{}, false
+	}
+}
+
+func (e *Engine) routingRuleModelFallbackCause(request RouteRequest, decision RouteDecision, skippedModels []string, err error, streamEmitted bool) (routingRuleModelFallbackCause, bool) {
+	if streamEmitted {
+		return routingRuleModelFallbackCause{}, false
+	}
+	cause, ok := routingRuleModelFallbackCauseForError(err)
+	if !ok {
+		return routingRuleModelFallbackCause{}, false
+	}
+	if strings.TrimSpace(request.Model) != "" {
+		return routingRuleModelFallbackCause{}, false
+	}
+	if strings.TrimSpace(request.RoutingRuleID) == "" && strings.TrimSpace(request.RoutingRuleName) == "" && strings.TrimSpace(decision.RoutingRuleID) == "" {
+		return routingRuleModelFallbackCause{}, false
+	}
+	for _, model := range routeDecisionModelSkipNames(decision) {
+		if !stringInSet(model, skippedModels) {
+			return cause, true
+		}
+	}
+	return routingRuleModelFallbackCause{}, false
+}
+
+func appendRouteDecisionModelSkips(skippedModels []string, decision RouteDecision) []string {
+	for _, model := range routeDecisionModelSkipNames(decision) {
+		if stringInSet(model, skippedModels) {
+			continue
+		}
+		skippedModels = append(skippedModels, model)
+	}
+	return skippedModels
+}
+
+func routeDecisionModelSkipNames(decision RouteDecision) []string {
+	return uniqueStrings([]string{decision.CanonicalModel, decision.ModelAlias})
 }

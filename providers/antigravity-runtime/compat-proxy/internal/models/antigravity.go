@@ -135,6 +135,7 @@ type UserTier struct {
 // AntigravityResponse represents the response from the ls_core GetModelResponse endpoint.
 type AntigravityResponse struct {
 	Response      string         `json:"response"`
+	ToolCalls     []ToolCall     `json:"tool_calls,omitempty"`
 	UsageMetadata *UsageMetadata `json:"usage_metadata,omitempty"`
 }
 

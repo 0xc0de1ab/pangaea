@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,12 +41,16 @@ func TestApplyAskConfigValuesHonorsPrecedence(t *testing.T) {
 		APIKey:             "config-key",
 		Model:              "config-model",
 		API:                "chat",
+		System:             "config system",
+		Images:             []string{"sample.png"},
 		MaxTokens:          4096,
 		Stream:             &stream,
 		Spinner:            &spinner,
 		Tools:              &tools,
 		ToolRoot:           "workspace",
 		ToolTurns:          3,
+		MCPServers:         []string{"/tmp/mcp-fixture"},
+		MCPServersJSON:     `{"mcpServers":{}}`,
 		MarkdownTranslator: "glow",
 		GlamourStyle:       "notty",
 		RichCodeTheme:      "dracula",
@@ -80,8 +85,14 @@ func TestApplyAskConfigValuesHonorsPrecedence(t *testing.T) {
 	if opts.API != "chat" || opts.MaxTokens != 4096 || opts.Stream || opts.Spinner || opts.Tools {
 		t.Fatalf("config values were not applied: %+v", opts)
 	}
+	if opts.System != "config system" || len(opts.ImagePaths) != 1 || opts.ImagePaths[0] != "sample.png" {
+		t.Fatalf("system/images config values were not applied: %+v", opts)
+	}
 	if opts.ToolRoot != "workspace" || opts.ToolTurns != 3 || opts.MarkdownTranslator != "glow" || opts.GlamourStyle != "notty" {
 		t.Fatalf("tool/render config values were not applied: %+v", opts)
+	}
+	if len(opts.MCPServers) != 1 || opts.MCPServers[0] != "/tmp/mcp-fixture" || opts.MCPServersJSON == "" {
+		t.Fatalf("mcp config values were not applied: %+v", opts)
 	}
 	if opts.RichCodeTheme != "dracula" {
 		t.Fatalf("rich code theme was not applied: %+v", opts)
@@ -96,6 +107,10 @@ func TestLoadAskConfig(t *testing.T) {
 		"api_key": "config-key",
 		"model": "config-model",
 		"api": "responses",
+		"system": "answer briefly",
+		"images": ["sample.png"],
+		"mcp_servers": ["/tmp/mcp-fixture"],
+		"mcp_servers_json": "{\"mcpServers\":{}}",
 		"max_tokens": 2048
 	}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -111,6 +126,12 @@ func TestLoadAskConfig(t *testing.T) {
 	if cfg.BaseURL != "https://config.example/route/user/rule" || cfg.APIKey != "config-key" || cfg.Model != "config-model" || cfg.MaxTokens != 2048 {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
+	if cfg.System != "answer briefly" || len(cfg.Images) != 1 || cfg.Images[0] != "sample.png" {
+		t.Fatalf("system/images config not loaded: %+v", cfg)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0] != "/tmp/mcp-fixture" || cfg.MCPServersJSON == "" {
+		t.Fatalf("mcp config not loaded: %+v", cfg)
+	}
 }
 
 func TestMissingDefaultAskConfigIsIgnored(t *testing.T) {
@@ -120,6 +141,40 @@ func TestMissingDefaultAskConfigIsIgnored(t *testing.T) {
 	}
 	if loaded {
 		t.Fatalf("missing optional config should not load: %+v", cfg)
+	}
+}
+
+func TestBuildChatMessagesWithSystemAndImage(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "sample.png")
+	pngBytes := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+		0x42, 0x60, 0x82,
+	}
+	if err := os.WriteFile(imagePath, pngBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := buildChatMessages(options{System: "prefix", ImagePaths: []string{imagePath}}, "describe", "tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0]["role"] != "system" || messages[0]["content"] != "prefix\n\ntools" {
+		t.Fatalf("unexpected messages: %#v", messages)
+	}
+	parts, ok := messages[1]["content"].([]map[string]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("expected multimodal content parts, got %#v", messages[1]["content"])
+	}
+	image, _ := parts[1]["image_url"].(map[string]any)
+	if url, _ := image["url"].(string); !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("image url not encoded as PNG data URL: %q", url)
 	}
 }
 
@@ -204,14 +259,24 @@ func TestTextToolCallFilterExtractsValidToolCall(t *testing.T) {
 	}
 }
 
-func TestTextToolCallFilterReportsIncompleteToolCall(t *testing.T) {
+func TestTextToolCallFilterSummarizesIncompleteToolCallText(t *testing.T) {
 	filter := &toolCallTextFilter{}
-	visible := filter.Feed(`before <tool_call>{"name":"write_file","arguments":{"path":"f.html","content":"partial`)
+	raw := `<tool_call>{"name":"write_file","arguments":{"path":"f.html","intent":"update texture loading","content":"partial`
+	visible := filter.Feed(`before ` + raw)
 	if visible != "before " {
 		t.Fatalf("visible prefix = %q", visible)
 	}
-	if tail, err := filter.Finish(); err == nil || tail != "" || !strings.Contains(err.Error(), "incomplete text tool call") {
-		t.Fatalf("expected incomplete tool call error, tail=%q err=%v", tail, err)
+	tail, err := filter.Finish()
+	if err != nil {
+		t.Fatalf("incomplete text tool call should be preserved, not fatal: %v", err)
+	}
+	if !strings.Contains(tail, "도구 호출이 중간에 끊겨 적용되지 않았습니다") ||
+		!strings.Contains(tail, "Write f.html") ||
+		!strings.Contains(tail, "update texture loading") {
+		t.Fatalf("incomplete text tool call notice = %q", tail)
+	}
+	if len(filter.ToolCalls) != 0 {
+		t.Fatalf("incomplete text tool call should not produce calls: %#v", filter.ToolCalls)
 	}
 }
 
@@ -250,6 +315,36 @@ func TestReadChatStreamWithToolsReportsLengthFinish(t *testing.T) {
 	_, _, err := readChatStreamWithTools(strings.NewReader(stream), options{MarkdownTranslator: "plain"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "length") {
 		t.Fatalf("expected length finish error, got %v", err)
+	}
+}
+
+func TestReadChatStreamWithToolsSummarizesIncompleteTextToolCall(t *testing.T) {
+	chunk, err := json.Marshal(map[string]any{
+		"choices": []map[string]any{{
+			"delta": map[string]any{
+				"content": `before <tool_call>{"name":"write_file","arguments":{"path":"f.html","intent":"update texture loading","content":"partial`,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := strings.Join([]string{
+		`data: ` + string(chunk),
+		`data: [DONE]`,
+		``,
+	}, "\n\n")
+	content, calls, err := readChatStreamWithTools(strings.NewReader(stream), options{MarkdownTranslator: "plain"}, nil)
+	if err != nil {
+		t.Fatalf("incomplete text tool call should not fail stream: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("incomplete text tool call should not produce calls: %#v", calls)
+	}
+	if !strings.Contains(content, "before ") ||
+		!strings.Contains(content, "도구 호출이 중간에 끊겨 적용되지 않았습니다") ||
+		!strings.Contains(content, "Write f.html") {
+		t.Fatalf("unexpected stream content: %q", content)
 	}
 }
 
@@ -306,6 +401,13 @@ func TestTransientNoProviderMatchedDetection(t *testing.T) {
 	}
 	if isTransientNoProviderMatched(&httpStatusError{StatusCode: 401, Body: `{"error":"no provider matched"}`}) {
 		t.Fatalf("auth errors should not retry")
+	}
+}
+
+func TestAskHTTPClientHasNoFixedTimeout(t *testing.T) {
+	client := newAskHTTPClient()
+	if client.Timeout != 0 {
+		t.Fatalf("ask client should rely on request context cancellation, got timeout %s", client.Timeout)
 	}
 }
 
@@ -644,4 +746,101 @@ func TestExecuteToolCallSearchFiles(t *testing.T) {
 	if !strings.Contains(string(encoded), "sample.txt") {
 		t.Fatalf("matches did not include sample.txt: %s", encoded)
 	}
+}
+
+func TestExecuteToolCallApplyPatchUsesBuiltinCodexPatch(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "f.html")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: f.html",
+		"@@",
+		" alpha",
+		"-beta",
+		"+gamma",
+		"*** End Patch",
+	}, "\n")
+	call := toolCall{
+		ID:   "call_patch",
+		Type: "function",
+		Function: toolFunction{
+			Name:      "apply_patch",
+			Arguments: mustJSON(map[string]any{"patch": patch, "intent": "update fixture"}),
+		},
+	}
+	raw := executeToolCall(call, root)
+	var result map[string]any
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := result["ok"].(bool); !ok {
+		t.Fatalf("apply_patch failed: %#v", result)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "alpha\ngamma\n" {
+		t.Fatalf("patched content = %q", content)
+	}
+	files, _ := result["files"].([]any)
+	if len(files) != 1 || files[0] != "f.html" {
+		t.Fatalf("patched files = %#v", result["files"])
+	}
+}
+
+func TestPrintToolCallStatusLeadsWithIntentAndDetails(t *testing.T) {
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: f.html",
+		"@@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	}, "\n")
+	out := captureStderr(t, func() {
+		printToolCallStatus("apply_patch", map[string]any{
+			"intent": "MTL 텍스처 경로 치환 정규표현식을 개선합니다.",
+			"patch":  patch,
+		}, map[string]any{"ok": false, "error": "patch hunk did not match f.html"})
+	})
+	stripped := ansi.Strip(out)
+	if !strings.HasPrefix(stripped, "• MTL 텍스처 경로 치환 정규표현식을 개선합니다.") {
+		t.Fatalf("intent should lead tool rendering:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "• Patch patch") {
+		t.Fatalf("tool rendering should not lead with duplicate patch title:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "\n  ├ Patch f.html failed") {
+		t.Fatalf("tool detail line missing:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "\n  └ args:") {
+		t.Fatalf("tool args line missing:\n%s", stripped)
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	fn()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = old
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

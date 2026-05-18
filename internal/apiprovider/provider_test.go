@@ -74,6 +74,23 @@ func TestProviderInvokeOpenAICompatibleUpstream(t *testing.T) {
 	}
 }
 
+func TestProviderDefaultHTTPClientHasNoTotalTimeout(t *testing.T) {
+	client, err := New(Options{
+		Registration: testRegistration(),
+		BaseURL:      "http://127.0.0.1:1",
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	if client.client == nil {
+		t.Fatalf("default HTTP client is nil")
+	}
+	if client.client.Timeout != 0 {
+		t.Fatalf("default HTTP client timeout = %s, want no total timeout for streaming reads", client.client.Timeout)
+	}
+}
+
 func TestProviderSuccessfulInvokeKeepsStaleExpiryAsRefreshSoon(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
@@ -875,6 +892,204 @@ func TestProviderInvokeStreamOpenAICompatibleUpstreamSSEToolCalls(t *testing.T) 
 	}
 }
 
+func TestProviderInvokeStreamOpenAIEmptySSEFallsBackToBuffered(t *testing.T) {
+	var sawStream bool
+	var sawBuffered bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var request compat.OpenAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.Stream {
+			sawBuffered = true
+			_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+				ID:     "chatcmpl-buffered",
+				Object: "chat.completion",
+				Model:  "gpt-upstream",
+				Choices: []compat.OpenAIChatChoice{{
+					Index:        0,
+					Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "buffered fallback"},
+					FinishReason: "stop",
+				}},
+			})
+			return
+		}
+		sawStream = true
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte(": stream opened\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-empty\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-empty\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":0,\"total_tokens\":2}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := newTestProvider(t, server.URL, compat.APIDialectOpenAI, "")
+	var events []compat.Event
+	request := testOpenAIRequest("hello")
+	request.Stream = true
+	response, err := client.InvokeStream(context.Background(), mustRegistration(t, client), request, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream: %v", err)
+	}
+	if !sawStream || !sawBuffered {
+		t.Fatalf("expected stream then buffered fallback, sawStream=%v sawBuffered=%v", sawStream, sawBuffered)
+	}
+	if response.Message.Content[0].Text != "buffered fallback" {
+		t.Fatalf("unexpected fallback response: %#v", response)
+	}
+	if len(events) != 3 || events[0].Type != compat.EventMessageStart || events[1].ContentDelta.Text != "buffered fallback" || events[2].DoneReason != "stop" {
+		t.Fatalf("unexpected fallback events: %#v", events)
+	}
+}
+
+func TestProviderInvokeStreamOpenAIAntigravityEmptySSEDoesNotUseBufferedFallback(t *testing.T) {
+	var sawBuffered bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request compat.OpenAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.Stream {
+			sawBuffered = true
+			_ = json.NewEncoder(w).Encode(compat.OpenAIChatResponse{
+				ID:     "chatcmpl-buffered",
+				Object: "chat.completion",
+				Model:  "gpt-upstream",
+				Choices: []compat.OpenAIChatChoice{{
+					Index:        0,
+					Message:      compat.OpenAIChatMessage{Role: "assistant", Content: "buffered fallback"},
+					FinishReason: "stop",
+				}},
+			})
+			return
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte(": stream opened\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-empty\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-empty\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	var events []compat.Event
+	_, err = client.InvokeStream(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello"), func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("expected empty stream error")
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) || upstream.Code != "empty_stream" {
+		t.Fatalf("expected empty_stream upstream error, got %v", err)
+	}
+	if sawBuffered {
+		t.Fatalf("antigravity empty stream should not call buffered fallback")
+	}
+	if len(events) != 0 {
+		t.Fatalf("empty stream should not emit semantic events: %#v", events)
+	}
+}
+
+func TestProviderInvokeStreamOpenAIAntigravityDefaultDoesNotTimeoutBeforeContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte(": stream opened\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-timer.C:
+		}
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-late\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"late\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-late\",\"model\":\"gpt-upstream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+
+	var events []compat.Event
+	response, err := client.InvokeStream(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello"), func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("invoke stream should wait for late content by default: %v", err)
+	}
+	if response.Message.Content[0].Text != "late" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected streamed events")
+	}
+}
+
+func TestProviderInvokeStreamOpenAIAntigravityNoFirstEventTimeout(t *testing.T) {
+	t.Setenv("PANGAEA_ANTIGRAVITY_STREAM_FIRST_EVENT_TIMEOUT", "10ms")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte(": stream opened\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = client.InvokeStream(ctx, mustRegistration(t, client), testOpenAIRequest("hello"), func(compat.Event) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("expected timeout error")
+	}
+	var upstream *provider.UpstreamError
+	if !errors.As(err, &upstream) || upstream.Code != "empty_stream_timeout" || upstream.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("expected empty_stream_timeout upstream error, got %v", err)
+	}
+}
+
 func TestProviderInvokeStreamAnthropicCompatibleUpstreamSSE(t *testing.T) {
 	var sawStream bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1112,6 +1327,9 @@ func TestProviderInvokeStreamGeminiCompatibleUpstreamSSEError(t *testing.T) {
 	}
 	if upstream.Message != "quota exceeded" {
 		t.Fatalf("unexpected upstream error: %#v", upstream)
+	}
+	if upstream.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected stream upstream error status 429, got %#v", upstream)
 	}
 	if len(events) != 1 || events[0].Type != compat.EventError || events[0].Error.Message != "quota exceeded" {
 		t.Fatalf("unexpected stream error events: %#v", events)
@@ -1357,6 +1575,76 @@ func TestProviderTracksUpstreamRateLimitHealth(t *testing.T) {
 	}
 	if auth.Status != provider.AuthHealthy {
 		t.Fatalf("rate limit should not mark auth unavailable: %#v", auth)
+	}
+}
+
+func TestAntigravityHealthProbeRecoversDegradedHealth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporary upstream failure","code":"internal"}}`))
+		case "/v1/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_antigravity",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	_, err = client.Invoke(context.Background(), mustRegistration(t, client), testOpenAIRequest("hello"))
+	if err == nil {
+		t.Fatalf("expected upstream error")
+	}
+
+	health, err := client.Health()
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if health.Status != provider.HealthReady || health.Reason != "" {
+		t.Fatalf("antigravity health probe should recover degraded health: %#v", health)
+	}
+}
+
+func TestAntigravityHealthProbeMarksHealthDegraded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/health" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"not ready"}`))
+	}))
+	defer server.Close()
+
+	registration := testRegistration()
+	registration.Identity.Service = provider.ServiceAntigravity
+	client, err := New(Options{
+		Registration: registration,
+		BaseURL:      server.URL,
+		Dialect:      compat.APIDialectOpenAI,
+		APIKey:       "sk_antigravity",
+	})
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+
+	health, err := client.Health()
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if health.Status != provider.HealthDegraded || health.Reason != "upstream health probe failed" {
+		t.Fatalf("unexpected antigravity health: %#v", health)
 	}
 }
 

@@ -18,7 +18,11 @@ const (
 	RoutingRuleScopeUser   RoutingRuleScope = "user"
 )
 
-const routeDecisionEventModelPromoted = "model.promoted_from_route_filter"
+const (
+	routeDecisionEventModelPromoted            = "model.promoted_from_route_filter"
+	routeDecisionEventModelFallback            = "model.fallback_after_capacity_error"
+	routeDecisionEventModelEmptyStreamFallback = "model.fallback_after_empty_stream"
+)
 
 type RoutingRule struct {
 	ID          string            `json:"id"`
@@ -314,6 +318,10 @@ func (e *Engine) DryRunRoutingRule(request RoutingRuleDryRunRequest) RoutingRule
 }
 
 func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (RouteDecision, []RoutingRuleStep) {
+	return e.evaluateRoutingRuleWithSkippedModels(rule, request, nil)
+}
+
+func (e *Engine) evaluateRoutingRuleWithSkippedModels(rule RoutingRule, request RouteRequest, skippedModels []string) (RouteDecision, []RoutingRuleStep) {
 	required := append([]provider.Capability(nil), request.RequiredCapabilities()...)
 	if request.Stream {
 		required = appendCapability(required, provider.CapabilityStreamSSE)
@@ -336,7 +344,7 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 		step := RoutingRuleStep{FilterID: filter.ID, FilterType: filter.Type, Label: filter.Label}
 		scored := make([]scoredCandidate, 0)
 		for _, registration := range registrations {
-			reason := routingRuleRegistrationRejection(filter, request, required, registration)
+			reason := routingRuleRegistrationRejectionWithSkippedModels(filter, request, required, registration, skippedModels)
 			if reason != "" {
 				step.Rejected = append(step.Rejected, RouteRejection{
 					ProviderInstanceID: registration.Identity.ProviderInstanceID,
@@ -346,7 +354,7 @@ func (e *Engine) evaluateRoutingRule(rule RoutingRule, request RouteRequest) (Ro
 				continue
 			}
 			step.Matched = append(step.Matched, registration.Identity.ProviderInstanceID)
-			modelAlias, canonicalModel := routingRuleEffectiveModel(filter, request, required, registration.Models)
+			modelAlias, canonicalModel := routingRuleEffectiveModelWithSkippedModels(filter, request, required, registration.Models, skippedModels)
 			scoreModel := firstNonEmpty(canonicalModel, modelAlias, request.Model)
 			score := 100 + routingRuleModelScore(registration.Models, scoreModel)
 			scored = append(scored, scoredCandidate{
@@ -480,6 +488,10 @@ func routingRuleTraceProviderID(trace RequestTrace) string {
 }
 
 func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest, required []provider.Capability, registration provider.Registration) string {
+	return routingRuleRegistrationRejectionWithSkippedModels(filter, request, required, registration, nil)
+}
+
+func routingRuleRegistrationRejectionWithSkippedModels(filter RoutingFilter, request RouteRequest, required []provider.Capability, registration provider.Registration, skippedModels []string) string {
 	identity := registration.Identity
 	criteria := filter.Criteria
 	if !stringInSet(identity.ProviderType, criteria.ProviderTypes) && len(criteria.ProviderTypes) > 0 {
@@ -511,13 +523,16 @@ func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest
 		return "auth mismatch"
 	}
 	criteriaRequired := uniqueCapabilities(append(append([]provider.Capability(nil), required...), criteria.Capabilities...))
-	modelAlias, canonicalModel := routingRuleEffectiveModel(filter, request, required, registration.Models)
+	modelAlias, canonicalModel := routingRuleEffectiveModelWithSkippedModels(filter, request, required, registration.Models, skippedModels)
 	if len(criteria.Models) > 0 {
 		if requested := strings.TrimSpace(request.Model); requested != "" {
 			if !requestedModelAllowedByCriteria(registration.Models, requested, criteria.Models) {
 				return fmt.Sprintf("requested model is not allowed by route filter: requested=%q allowed_models=%s provider_models=%s", requested, formatQuotedStrings(criteria.Models, 8), formatReportedModelNames(registration.Models, 12))
 			}
 		} else if canonicalModel == "" {
+			if reason := unavailableFilterModelReason(registration.Models, criteria.Models, criteriaRequired); reason != "" {
+				return reason
+			}
 			return fmt.Sprintf("no route filter model available on provider: filter_models=%s provider_models=%s", formatQuotedStrings(criteria.Models, 8), formatReportedModelNames(registration.Models, 12))
 		}
 	}
@@ -546,21 +561,28 @@ func routingRuleRegistrationRejection(filter RoutingFilter, request RouteRequest
 }
 
 func routingRuleEffectiveModel(filter RoutingFilter, request RouteRequest, required []provider.Capability, models []provider.Model) (string, string) {
+	return routingRuleEffectiveModelWithSkippedModels(filter, request, required, models, nil)
+}
+
+func routingRuleEffectiveModelWithSkippedModels(filter RoutingFilter, request RouteRequest, required []provider.Capability, models []provider.Model, skippedModels []string) (string, string) {
 	requested := strings.TrimSpace(request.Model)
 	if requested != "" {
 		return requested, requested
 	}
 	criteria := filter.Criteria
-	if len(criteria.Models) == 0 {
-		return "", ""
-	}
 	criteriaRequired := uniqueCapabilities(append(append([]provider.Capability(nil), required...), criteria.Capabilities...))
+	if len(criteria.Models) == 0 {
+		return routingRuleDefaultModelWithSkippedModels(criteriaRequired, models, skippedModels)
+	}
 	for _, name := range criteria.Models {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
 		for _, model := range models {
+			if routingRuleModelSkipped(model, name, skippedModels) {
+				continue
+			}
 			if !modelMatchesAny(model, []string{name}) {
 				continue
 			}
@@ -571,6 +593,65 @@ func routingRuleEffectiveModel(filter RoutingFilter, request RouteRequest, requi
 		}
 	}
 	return "", ""
+}
+
+func routingRuleModelSkipped(model provider.Model, candidateName string, skippedModels []string) bool {
+	if len(skippedModels) == 0 {
+		return false
+	}
+	if stringInSet(candidateName, skippedModels) {
+		return true
+	}
+	return modelMatchesAny(model, skippedModels)
+}
+
+func routingRuleDefaultModel(required []provider.Capability, models []provider.Model) (string, string) {
+	return routingRuleDefaultModelWithSkippedModels(required, models, nil)
+}
+
+func routingRuleDefaultModelWithSkippedModels(required []provider.Capability, models []provider.Model, skippedModels []string) (string, string) {
+	for _, model := range models {
+		if routingRuleModelSkipped(model, firstNonEmpty(firstRoutingRuleModelAlias(model), model.ID), skippedModels) {
+			continue
+		}
+		if !routingRuleModelUsable(model, required) {
+			continue
+		}
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		kind := strings.ToLower(strings.TrimSpace(model.Kind))
+		if kind == "alias" || kind == "group" || strings.Contains(strings.ToLower(id), "default") || strings.EqualFold(id, "auto") {
+			return firstNonEmpty(firstRoutingRuleModelAlias(model), id), id
+		}
+	}
+	for _, model := range models {
+		if routingRuleModelSkipped(model, firstNonEmpty(firstRoutingRuleModelAlias(model), model.ID), skippedModels) {
+			continue
+		}
+		if !routingRuleModelUsable(model, required) {
+			continue
+		}
+		id := strings.TrimSpace(model.ID)
+		if id != "" {
+			return firstNonEmpty(firstRoutingRuleModelAlias(model), id), id
+		}
+	}
+	return "", ""
+}
+
+func routingRuleModelUsable(model provider.Model, required []provider.Capability) bool {
+	return !modelQuotaExhausted(model) && routingRuleModelSupports(model, required)
+}
+
+func firstRoutingRuleModelAlias(model provider.Model) string {
+	for _, alias := range model.Aliases {
+		if alias = strings.TrimSpace(alias); alias != "" {
+			return alias
+		}
+	}
+	return ""
 }
 
 func routingRuleModelSupports(model provider.Model, required []provider.Capability) bool {
@@ -590,6 +671,35 @@ func routingRuleModelSupports(model provider.Model, required []provider.Capabili
 
 func modelQuotaExhausted(model provider.Model) bool {
 	return model.Quota != nil && model.Quota.RemainingPct <= 0
+}
+
+func unavailableFilterModelReason(models []provider.Model, filterModels []string, required []provider.Capability) string {
+	matched := make([]string, 0)
+	exhausted := make([]string, 0)
+	unsupported := make([]string, 0)
+	for _, model := range models {
+		if !modelMatchesAny(model, filterModels) {
+			continue
+		}
+		name := firstNonEmpty(firstRoutingRuleModelAlias(model), model.ID)
+		matched = append(matched, name)
+		switch {
+		case !routingRuleModelSupports(model, required):
+			unsupported = append(unsupported, name)
+		case modelQuotaExhausted(model):
+			exhausted = append(exhausted, name)
+		}
+	}
+	if len(matched) == 0 {
+		return ""
+	}
+	if len(exhausted) > 0 && len(exhausted)+len(unsupported) == len(matched) {
+		return fmt.Sprintf("route filter model quota exhausted: filter_models=%s exhausted_models=%s provider_models=%s", formatQuotedStrings(filterModels, 8), formatQuotedStrings(exhausted, 8), formatReportedModelNames(models, 12))
+	}
+	if len(unsupported) > 0 && len(unsupported) == len(matched) {
+		return fmt.Sprintf("route filter model capability mismatch: filter_models=%s unsupported_models=%s required=%s provider_models=%s", formatQuotedStrings(filterModels, 8), formatQuotedStrings(unsupported, 8), formatCapabilities(required, 8), formatReportedModelNames(models, 12))
+	}
+	return ""
 }
 
 func normalizeRoutingRule(rule RoutingRule) (RoutingRule, error) {

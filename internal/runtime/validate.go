@@ -27,6 +27,7 @@ func (spec ContainerSpec) Validate() error {
 		"network_mode":         spec.NetworkMode,
 		"node_id":              spec.NodeID,
 		"provider_instance_id": spec.ProviderInstanceID,
+		"restart_policy":       spec.RestartPolicy,
 	} {
 		if err := validateOptionalToken(name, value); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalidContainerSpec, err)

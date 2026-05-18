@@ -452,6 +452,68 @@ func TestEngineInvokeStreamUsesStreamInvokerAndCommits(t *testing.T) {
 	}
 }
 
+func TestEngineDryRunRecoversStaleTransientDegradedProvider(t *testing.T) {
+	registry := provider.NewRegistry()
+	stale := registration("minimax-api", "codex-cli", "primary@example.test", 10, 0)
+	stale.Health = provider.Health{
+		Status:    provider.HealthDegraded,
+		Reason:    "provider invoke failed",
+		CheckedAt: time.Now().Add(-2 * staleTransientDegradedAfter),
+	}
+	if err := registry.Upsert(stale); err != nil {
+		t.Fatalf("upsert stale: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(availabilityInvoker{
+		available: map[string]bool{stale.Identity.ProviderInstanceID: true},
+	})
+
+	decision := engine.DryRun(RouteRequest{
+		Model:      "gpt-5-codex",
+		APIDialect: compat.APIDialectOpenAI,
+		Stream:     true,
+	})
+	if !decision.Allowed || decision.Selected != stale.Identity.ProviderInstanceID {
+		t.Fatalf("expected stale transient degradation to recover for routing, got %#v", decision)
+	}
+	providers := engine.Providers()
+	if len(providers) != 1 || providers[0].Health.Status != provider.HealthReady || providers[0].Health.Reason != "" {
+		t.Fatalf("expected provider list to show recovered health, got %#v", providers)
+	}
+}
+
+func TestEngineDryRunDoesNotRecoverFreshTransientDegradedProvider(t *testing.T) {
+	registry := provider.NewRegistry()
+	fresh := registration("minimax-api", "codex-cli", "primary@example.test", 10, 0)
+	fresh.Health = provider.Health{
+		Status:    provider.HealthDegraded,
+		Reason:    "provider invoke failed",
+		CheckedAt: time.Now(),
+	}
+	if err := registry.Upsert(fresh); err != nil {
+		t.Fatalf("upsert fresh: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	engine.SetInvoker(availabilityInvoker{
+		available: map[string]bool{fresh.Identity.ProviderInstanceID: true},
+	})
+
+	decision := engine.DryRun(RouteRequest{
+		Model:      "gpt-5-codex",
+		APIDialect: compat.APIDialectOpenAI,
+		Stream:     true,
+	})
+	if decision.Allowed {
+		t.Fatalf("expected fresh transient degradation to stay excluded, got %#v", decision)
+	}
+}
+
 func TestEngineInvokeFallsBackAfterProviderFailure(t *testing.T) {
 	registry := provider.NewRegistry()
 	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
@@ -729,6 +791,252 @@ func TestIsModelScopedCapacityErrorRecognizesGeminiQuotaMessage(t *testing.T) {
 	}
 }
 
+func TestIsModelScopedCapacityErrorRecognizesStatuslessResourceExhaustedMessage(t *testing.T) {
+	err := &provider.UpstreamError{
+		Code:    "rate_limit_exceeded",
+		Message: "RESOURCE_EXHAUSTED (code 429): You have exhausted your capacity on this model. Your quota will reset after 47h19m38s.",
+	}
+	if !isModelScopedCapacityError(err) {
+		t.Fatalf("expected statusless AG per-model quota message to be model scoped")
+	}
+}
+
+func TestIsEmptyStreamInvokeError(t *testing.T) {
+	err := &provider.UpstreamError{
+		StatusCode: http.StatusGatewayTimeout,
+		Code:       "empty_stream_timeout",
+		Message:    "upstream stream did not produce assistant content within 1m30s",
+	}
+	if !isEmptyStreamInvokeError(err) {
+		t.Fatalf("expected empty stream timeout to be retryable at route-model level")
+	}
+}
+
+func TestEngineInvokeFallsBackToNextRoutingRuleModelOnCapacityError(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a2", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{
+			ID:           "claude-sonnet-4-6",
+			Aliases:      []string{"Claude Sonnet 4.6 (Thinking)"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+			Quota:        &provider.ModelQuota{RemainingPct: 30, ResetAt: time.Now().UTC().Add(2 * time.Hour)},
+		},
+		{
+			ID:           "gemini-3-flash-agent",
+			Aliases:      []string{"Gemini 3 Flash"},
+			Capabilities: []provider.Capability{provider.CapabilityOpenAIChat},
+			Quota:        &provider.ModelQuota{RemainingPct: 90, ResetAt: time.Now().UTC().Add(30 * time.Minute)},
+		},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	invoker := &modelCapacityFallbackInvoker{failModels: map[string]bool{"claude-sonnet-4-6": true}}
+	engine.SetInvoker(invoker)
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "antigravity-sonnet-gemini",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{
+			{
+				Type:  "criteria",
+				Label: "Claude",
+				Criteria: RoutingFilterCriteria{
+					Services:    []provider.Service{provider.ServiceAntigravity},
+					Models:      []string{"Claude Sonnet 4.6 (Thinking)"},
+					APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+				},
+			},
+			{
+				Type:  "criteria",
+				Label: "Gemini",
+				Criteria: RoutingFilterCriteria{
+					Services:    []provider.Service{provider.ServiceAntigravity},
+					Models:      []string{"Gemini 3 Flash"},
+					APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	response, execution, err := engine.Invoke(context.Background(), RouteExecutionRequest{
+		RequestID: "req_ag_model_fallback_1",
+		RouteRequest: RouteRequest{
+			RoutingRuleName: rule.Name,
+			APIDialect:      compat.APIDialectOpenAI,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("invoke should switch to Gemini after Sonnet capacity error: %v", err)
+	}
+	if response.Model != "gemini-3-flash-agent" || execution.Decision.CanonicalModel != "gemini-3-flash-agent" {
+		t.Fatalf("expected Gemini model selected, response=%#v decision=%#v", response, execution.Decision)
+	}
+	if got := strings.Join(invoker.calls, ","); got != "claude-sonnet-4-6,gemini-3-flash-agent" {
+		t.Fatalf("expected Sonnet then Gemini calls, got %q", got)
+	}
+	if !routeDecisionHasEvent(execution.Decision, routeDecisionEventModelFallback) {
+		t.Fatalf("expected model fallback event, got %#v", execution.Decision.Events)
+	}
+	trace, ok := engine.RequestTrace("req_ag_model_fallback_1")
+	if !ok || trace.Decision.CanonicalModel != "gemini-3-flash-agent" || !routeDecisionHasEvent(trace.Decision, routeDecisionEventModelFallback) {
+		t.Fatalf("expected completed trace with Gemini fallback, trace=%#v ok=%v", trace, ok)
+	}
+}
+
+func TestEngineInvokeStreamFallsBackToNextRoutingRuleModelBeforeEmitting(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a2", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{ID: "claude-sonnet-4-6", Aliases: []string{"Claude Sonnet 4.6 (Thinking)"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+		{ID: "gemini-3-flash-agent", Aliases: []string{"Gemini 3 Flash"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	invoker := &modelCapacityFallbackInvoker{failModels: map[string]bool{"claude-sonnet-4-6": true}}
+	engine.SetInvoker(invoker)
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "antigravity-sonnet-gemini",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Claude Sonnet 4.6 (Thinking)", "Gemini 3 Flash"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	var events []compat.Event
+	response, execution, err := engine.InvokeStream(context.Background(), RouteExecutionRequest{
+		RequestID: "req_ag_model_fallback_stream_1",
+		RouteRequest: RouteRequest{
+			RoutingRuleName: rule.Name,
+			APIDialect:      compat.APIDialectOpenAI,
+			Stream:          true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	}, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream invoke should switch to Gemini after Sonnet capacity error: %v", err)
+	}
+	if response.Model != "gemini-3-flash-agent" || execution.Decision.CanonicalModel != "gemini-3-flash-agent" {
+		t.Fatalf("expected Gemini model selected, response=%#v decision=%#v", response, execution.Decision)
+	}
+	if got := strings.Join(invoker.calls, ","); got != "claude-sonnet-4-6,gemini-3-flash-agent" {
+		t.Fatalf("expected Sonnet then Gemini calls, got %q", got)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected Gemini stream events")
+	}
+	if !routeDecisionHasEvent(execution.Decision, routeDecisionEventModelFallback) {
+		t.Fatalf("expected model fallback event, got %#v", execution.Decision.Events)
+	}
+}
+
+func TestEngineInvokeStreamFallsBackToNextRoutingRuleModelOnEmptyStreamTimeout(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a2", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{ID: "gemini-3-flash-agent", Aliases: []string{"Gemini 3 Flash"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+		{ID: "gemini-3.1-pro-low", Aliases: []string{"Gemini 3.1 Pro (Low)"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	invoker := &modelCapacityFallbackInvoker{emptyStreamModels: map[string]bool{"gemini-3-flash-agent": true}}
+	engine.SetInvoker(invoker)
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "antigravity-gemini",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{{
+			Type: "criteria",
+			Criteria: RoutingFilterCriteria{
+				Services:    []provider.Service{provider.ServiceAntigravity},
+				Models:      []string{"Gemini 3 Flash", "Gemini 3.1 Pro (Low)"},
+				APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	var events []compat.Event
+	response, execution, err := engine.InvokeStream(context.Background(), RouteExecutionRequest{
+		RequestID: "req_ag_empty_stream_model_fallback_1",
+		RouteRequest: RouteRequest{
+			RoutingRuleName: rule.Name,
+			APIDialect:      compat.APIDialectOpenAI,
+			Stream:          true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	}, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream invoke should switch to next Gemini model after empty stream timeout: %v", err)
+	}
+	if response.Model != "gemini-3.1-pro-low" || execution.Decision.CanonicalModel != "gemini-3.1-pro-low" {
+		t.Fatalf("expected next Gemini model selected, response=%#v decision=%#v", response, execution.Decision)
+	}
+	if got := strings.Join(invoker.calls, ","); got != "gemini-3-flash-agent,gemini-3.1-pro-low" {
+		t.Fatalf("expected Flash then Pro Low calls, got %q", got)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected fallback stream events")
+	}
+	if !routeDecisionHasEvent(execution.Decision, routeDecisionEventModelEmptyStreamFallback) {
+		t.Fatalf("expected empty-stream model fallback event, got %#v", execution.Decision.Events)
+	}
+}
+
 func TestEngineInvokeDoesNotDegradeProviderForUpstreamClientModelError(t *testing.T) {
 	registry := provider.NewRegistry()
 	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
@@ -932,6 +1240,88 @@ func (f upstreamErrorFallbackInvoker) Invoke(ctx context.Context, registration p
 		return compat.Response{}, f.err
 	}
 	return fallbackInvoker{}.Invoke(ctx, registration, request)
+}
+
+type modelCapacityFallbackInvoker struct {
+	failModels        map[string]bool
+	emptyStreamModels map[string]bool
+	calls             []string
+}
+
+func (f *modelCapacityFallbackInvoker) Invoke(_ context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
+	f.calls = append(f.calls, request.Model)
+	if f.failModels[request.Model] {
+		return compat.Response{}, &provider.UpstreamError{
+			StatusCode: 429,
+			Code:       "RESOURCE_EXHAUSTED",
+			Message:    "You have exhausted your capacity on this model. Your quota will reset after 2h10m1s.",
+		}
+	}
+	return compat.Response{
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role:    compat.MessageRoleAssistant,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "ok from " + registration.Identity.ProviderInstanceID}},
+		},
+		Usage: compat.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+	}, nil
+}
+
+func (f *modelCapacityFallbackInvoker) InvokeStream(_ context.Context, registration provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
+	f.calls = append(f.calls, request.Model)
+	if f.emptyStreamModels[request.Model] {
+		return compat.Response{}, &provider.UpstreamError{
+			StatusCode: http.StatusGatewayTimeout,
+			Code:       "empty_stream_timeout",
+			Message:    "upstream stream did not produce assistant content within 1m30s",
+		}
+	}
+	if f.failModels[request.Model] {
+		_ = emit(compat.Event{
+			Dialect: request.Dialect,
+			Model:   request.Model,
+			Type:    compat.EventError,
+			Error: &compat.EventErrorPayload{
+				Code:    "RESOURCE_EXHAUSTED",
+				Message: "You have exhausted your capacity on this model. Your quota will reset after 2h10m1s.",
+			},
+		})
+		return compat.Response{}, &provider.UpstreamError{
+			StatusCode: 429,
+			Code:       "RESOURCE_EXHAUSTED",
+			Message:    "You have exhausted your capacity on this model. Your quota will reset after 2h10m1s.",
+		}
+	}
+	response := compat.Response{
+		Dialect: request.Dialect,
+		Model:   request.Model,
+		Message: compat.Message{
+			Role:    compat.MessageRoleAssistant,
+			Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "stream ok from " + registration.Identity.ProviderInstanceID}},
+		},
+		StopReason: "stop",
+		Usage:      compat.Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5},
+	}
+	events, err := compat.EventsFromResponse(response)
+	if err != nil {
+		return compat.Response{}, err
+	}
+	for _, event := range events {
+		if err := emit(event); err != nil {
+			return compat.Response{}, err
+		}
+	}
+	return response, nil
+}
+
+func routeDecisionHasEvent(decision RouteDecision, eventType string) bool {
+	for _, event := range decision.Events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 type availabilityInvoker struct {

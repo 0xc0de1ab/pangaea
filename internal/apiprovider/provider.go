@@ -15,8 +15,10 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/0xc0de1ab/pangaea/internal/compat"
@@ -27,6 +29,8 @@ import (
 var ErrAPIProviderConfig = errors.New("invalid direct-http provider config")
 
 const authExpiryRefreshThreshold = 5 * time.Minute
+const defaultAntigravityHealthProbeTimeout = 5 * time.Second
+const defaultAntigravityOpenAIStreamFirstEventTimeout = 0
 
 type Options struct {
 	Registration     provider.Registration
@@ -83,7 +87,11 @@ func New(opts Options) (*Provider, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 2 * time.Minute}
+		// Streaming provider calls can legitimately run for several minutes while
+		// tool calls and model turns are in progress. Bound requests with the
+		// caller context instead of http.Client.Timeout, which also aborts active
+		// response body reads.
+		client = &http.Client{}
 	}
 	return &Provider{
 		registration:     opts.Registration,
@@ -569,6 +577,9 @@ func (p *Provider) Health() (provider.Health, error) {
 	if p == nil {
 		return provider.Health{}, ErrAPIProviderConfig
 	}
+	if p.registration.Identity.Service == provider.ServiceAntigravity {
+		return p.probeAntigravityHealth(), nil
+	}
 	p.healthMu.Lock()
 	defer p.healthMu.Unlock()
 	health := p.health
@@ -579,6 +590,41 @@ func (p *Provider) Health() (provider.Health, error) {
 		health.CheckedAt = time.Now().UTC()
 	}
 	return health, nil
+}
+
+func (p *Provider) probeAntigravityHealth() provider.Health {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultAntigravityHealthProbeTimeout)
+	defer cancel()
+
+	var response struct {
+		Status string `json:"status"`
+	}
+	err := p.doGETJSON(ctx, "/v1/health", &response)
+	now := time.Now().UTC()
+
+	p.healthMu.Lock()
+	defer p.healthMu.Unlock()
+	if err == nil {
+		p.health = provider.Health{Status: provider.HealthReady, CheckedAt: now}
+		return p.health
+	}
+
+	health := p.health
+	if health.Status == "" || health.Status == provider.HealthReady || health.Status == provider.HealthDegraded {
+		health.Status = provider.HealthDegraded
+		health.Reason = "upstream health probe failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			health.Reason = "upstream health probe timed out"
+		}
+		health.CheckedAt = now
+		p.health = health
+		return health
+	}
+	if health.CheckedAt.IsZero() {
+		health.CheckedAt = now
+		p.health = health
+	}
+	return health
 }
 
 func (p *Provider) Auth() (provider.AuthState, error) {
@@ -1333,8 +1379,27 @@ func (p *Provider) invokeOpenAIStream(ctx context.Context, request compat.Reques
 		return compat.Response{}, err
 	}
 	upstreamRequest.Stream = true
-	resp, err := p.doRequest(ctx, http.MethodPost, "/v1/chat/completions", upstreamRequest, "text/event-stream")
+	streamCtx := ctx
+	cancelStream := func() {}
+	firstEventTimeout := p.openAIStreamFirstEventTimeout()
+	var semanticStarted atomic.Bool
+	var firstEventTimeoutFired atomic.Bool
+	if firstEventTimeout > 0 {
+		streamCtx, cancelStream = context.WithCancel(ctx)
+		timer := time.AfterFunc(firstEventTimeout, func() {
+			if !semanticStarted.Load() {
+				firstEventTimeoutFired.Store(true)
+				cancelStream()
+			}
+		})
+		defer timer.Stop()
+		defer cancelStream()
+	}
+	resp, err := p.doRequest(streamCtx, http.MethodPost, "/v1/chat/completions", upstreamRequest, "text/event-stream")
 	if err != nil {
+		if firstEventTimeoutFired.Load() && !semanticStarted.Load() {
+			return compat.Response{}, openAIEmptyStreamError(fmt.Sprintf("upstream stream did not produce assistant content within %s", firstEventTimeout), http.StatusGatewayTimeout, "empty_stream_timeout")
+		}
 		return compat.Response{}, err
 	}
 	defer resp.Body.Close()
@@ -1353,14 +1418,35 @@ func (p *Provider) invokeOpenAIStream(ctx context.Context, request compat.Reques
 	}
 	started := false
 	if err := processSSEPayloads(resp.Body, func(payload string) (bool, error) {
-		return applyOpenAIStreamPayload(&response, &started, payload, emit)
+		done, err := applyOpenAIStreamPayload(&response, &started, payload, emit)
+		if started {
+			semanticStarted.Store(true)
+		}
+		return done, err
 	}); err != nil {
+		if firstEventTimeoutFired.Load() && !semanticStarted.Load() {
+			return compat.Response{}, openAIEmptyStreamError(fmt.Sprintf("upstream stream did not produce assistant content within %s", firstEventTimeout), http.StatusGatewayTimeout, "empty_stream_timeout")
+		}
 		return compat.Response{}, err
 	}
 	if !started {
-		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
-			return compat.Response{}, err
+		if p.registration.Identity.Service == provider.ServiceAntigravity {
+			return compat.Response{}, openAIEmptyStreamError("upstream stream ended without assistant content", http.StatusBadGateway, "empty_stream")
 		}
+		fallback, fallbackErr := p.invokeOpenAI(ctx, request)
+		if fallbackErr == nil {
+			events, err := compat.EventsFromResponse(fallback)
+			if err != nil {
+				return compat.Response{}, err
+			}
+			for _, event := range events {
+				if err := emit(event); err != nil {
+					return compat.Response{}, err
+				}
+			}
+			return fallback, nil
+		}
+		return compat.Response{}, openAIEmptyStreamError("upstream stream ended without assistant content; buffered fallback failed: "+fallbackErr.Error(), http.StatusBadGateway, "empty_stream")
 	}
 	if response.StopReason == "" {
 		response.StopReason = "stop"
@@ -1369,6 +1455,38 @@ func (p *Provider) invokeOpenAIStream(ctx context.Context, request compat.Reques
 		return compat.Response{}, err
 	}
 	return response, nil
+}
+
+func (p *Provider) openAIStreamFirstEventTimeout() time.Duration {
+	if p == nil || p.registration.Identity.Service != provider.ServiceAntigravity {
+		return durationFromEnv("PANGAEA_OPENAI_STREAM_FIRST_EVENT_TIMEOUT", 0)
+	}
+	if timeout := durationFromEnv("PANGAEA_ANTIGRAVITY_STREAM_FIRST_EVENT_TIMEOUT", -1); timeout >= 0 {
+		return timeout
+	}
+	return durationFromEnv("PANGAEA_OPENAI_STREAM_FIRST_EVENT_TIMEOUT", defaultAntigravityOpenAIStreamFirstEventTimeout)
+}
+
+func openAIEmptyStreamError(message string, status int, code string) *provider.UpstreamError {
+	return &provider.UpstreamError{
+		StatusCode: status,
+		Code:       code,
+		Message:    message,
+	}
+}
+
+func durationFromEnv(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	if parsed, err := time.ParseDuration(value); err == nil {
+		return parsed
+	}
+	if millis, err := strconv.Atoi(value); err == nil {
+		return time.Duration(millis) * time.Millisecond
+	}
+	return fallback
 }
 
 func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload string, emit func(compat.Event) error) (bool, error) {
@@ -1394,7 +1512,9 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 		if err := emit(errEvent); err != nil {
 			return false, err
 		}
-		return false, &provider.UpstreamError{Code: stringFromAny(chunk.Error.Code), Message: chunk.Error.Message}
+		code := stringFromAny(chunk.Error.Code)
+		statusCode, code := normalizeUpstreamStatus(0, code, chunk.Error.Message)
+		return false, &provider.UpstreamError{StatusCode: statusCode, Code: code, Message: chunk.Error.Message}
 	}
 	if chunk.ID != "" {
 		response.ID = chunk.ID
@@ -1402,14 +1522,21 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 	if chunk.Model != "" {
 		response.Model = chunk.Model
 	}
-	if !*started {
+	ensureStarted := func() error {
+		if *started {
+			return nil
+		}
 		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventMessageStart, Message: &compat.Message{Role: compat.MessageRoleAssistant}}); err != nil {
-			return false, err
+			return err
 		}
 		*started = true
+		return nil
 	}
 	for _, choice := range chunk.Choices {
 		if choice.Delta.Content != "" {
+			if err := ensureStarted(); err != nil {
+				return false, err
+			}
 			part := compat.ContentPart{Type: compat.ContentPartText, Text: choice.Delta.Content}
 			if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventContentDelta, ContentDelta: &part}); err != nil {
 				return false, err
@@ -1429,6 +1556,9 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 			event := compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventToolCallDelta, ToolCallDelta: &delta}
 			if err := event.Validate(); err != nil {
 				continue
+			}
+			if err := ensureStarted(); err != nil {
+				return false, err
 			}
 			if err := emit(event); err != nil {
 				return false, err
@@ -1450,11 +1580,13 @@ func applyOpenAIStreamPayload(response *compat.Response, started *bool, payload 
 		if err := compat.ApplyEventToResponse(response, compat.Event{Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
 			return false, err
 		}
-		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
-			return false, err
+		if *started {
+			if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventUsageDelta, UsageDelta: &usage}); err != nil {
+				return false, err
+			}
 		}
 	}
-	if response.StopReason != "" {
+	if response.StopReason != "" && *started {
 		if err := emit(compat.Event{ResponseID: response.ID, Dialect: response.Dialect, Model: response.Model, Type: compat.EventDone, DoneReason: response.StopReason}); err != nil {
 			return false, err
 		}
@@ -1780,7 +1912,8 @@ func applyGeminiStreamPayload(response *compat.Response, started *bool, payload 
 		if err := emit(errEvent); err != nil {
 			return false, err
 		}
-		return false, &provider.UpstreamError{Code: code, Message: message}
+		statusCode, code := normalizeUpstreamStatus(0, code, message)
+		return false, &provider.UpstreamError{StatusCode: statusCode, Code: code, Message: message}
 	}
 	var chunk compat.GeminiGenerateContentResponse
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
@@ -1990,6 +2123,13 @@ func upstreamErrorDetails(body []byte) (string, string) {
 func normalizeUpstreamStatus(statusCode int, code string, message string) (int, string) {
 	combined := strings.ToUpper(strings.TrimSpace(code + " " + message))
 	switch {
+	case strings.TrimSpace(code) == "429":
+		return http.StatusTooManyRequests, code
+	case strings.Contains(combined, "RESOURCE_EXHAUSTED") || strings.Contains(combined, "CODE 429"):
+		if strings.TrimSpace(code) == "" || strings.EqualFold(code, "unknown") {
+			code = "rate_limit_exceeded"
+		}
+		return http.StatusTooManyRequests, code
 	case statusCode >= http.StatusInternalServerError && strings.Contains(combined, "RESOURCE_EXHAUSTED"):
 		if strings.TrimSpace(code) == "" || strings.EqualFold(code, "unknown") {
 			code = "rate_limit_exceeded"

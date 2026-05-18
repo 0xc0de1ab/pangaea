@@ -25,15 +25,17 @@ type AuthProvider interface {
 // --- Bridge Interfaces ---
 
 type ModelResponse struct {
-	Content string
-	Usage   *models.UsageReport
+	Content   string
+	ToolCalls []models.ToolCall
+	Usage     *models.UsageReport
 }
 
 type StreamChunk struct {
-	Content string
-	Done    bool
-	Usage   *models.UsageReport
-	Error   error
+	Content   string
+	ToolCalls []models.ToolCall
+	Done      bool
+	Usage     *models.UsageReport
+	Error     error
 }
 
 type ProviderError struct {

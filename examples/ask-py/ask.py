@@ -136,7 +136,7 @@ def post_api(base_url: str, key: str, api: str, payload: dict) -> urllib.respons
             "Accept": "text/event-stream" if payload.get("stream") else "application/json",
         },
     )
-    return urllib.request.urlopen(req, timeout=300)
+    return urllib.request.urlopen(req)
 
 
 def response_text(data: dict) -> str:

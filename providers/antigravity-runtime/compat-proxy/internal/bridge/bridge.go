@@ -130,8 +130,13 @@ func (b *engineBridge) Invoke(ctx context.Context, model string, prompt string, 
 		return nil, classifyInvokeError(resp.StatusCode, body)
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
 	var agResp models.AntigravityResponse
-	if err := json.NewDecoder(resp.Body).Decode(&agResp); err != nil {
+	if err := json.Unmarshal(body, &agResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -145,8 +150,9 @@ func (b *engineBridge) Invoke(ctx context.Context, model string, prompt string, 
 	}
 
 	return &interfaces.ModelResponse{
-		Content: agResp.Response,
-		Usage:   usage,
+		Content:   agResp.Response,
+		ToolCalls: extractToolCallsFromPayload(body),
+		Usage:     usage,
 	}, nil
 }
 
@@ -212,7 +218,13 @@ func (b *engineBridge) InvokeStream(ctx context.Context, model string, prompt st
 				if result.resp != nil && result.resp.Usage != nil {
 					lastUsage = result.resp.Usage
 				}
-				if !hadStreamChunk && result.resp != nil && result.resp.Content != "" {
+				if !hadStreamChunk && result.resp != nil && len(result.resp.ToolCalls) > 0 {
+					select {
+					case out <- &interfaces.StreamChunk{ToolCalls: result.resp.ToolCalls, Usage: result.resp.Usage}:
+					case <-ctx.Done():
+						return
+					}
+				} else if !hadStreamChunk && result.resp != nil && result.resp.Content != "" {
 					select {
 					case out <- &interfaces.StreamChunk{Content: result.resp.Content, Usage: result.resp.Usage}:
 					case <-ctx.Done():

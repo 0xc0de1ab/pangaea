@@ -665,6 +665,10 @@ func emitCloudStreamEvent(payload []byte, sub *cloudStreamSubscription) {
 			TotalTokens:      event.Response.UsageMetadata.TotalTokenCount,
 		}
 	}
+	if toolCalls := extractToolCallsFromPayload(payload); len(toolCalls) > 0 {
+		sub.send(&interfaces.StreamChunk{ToolCalls: toolCalls, Usage: usage})
+		return
+	}
 	for _, candidate := range event.Response.Candidates {
 		for _, part := range candidate.Content.Parts {
 			if part.Thought || part.Text == "" {

@@ -113,10 +113,12 @@ func (l *Ledger) Reserve(request ReservationRequest) (Reservation, error) {
 	defer l.mu.Unlock()
 
 	if existing, ok := l.reservations[request.RequestID]; ok {
-		if existing.Scope != request.Scope {
-			return Reservation{}, fmt.Errorf("%w: request_id scope mismatch", ErrInvalidRequest)
+		if existing.Status != ReservationReleased {
+			if existing.Scope != request.Scope {
+				return Reservation{}, fmt.Errorf("%w: request_id scope mismatch", ErrInvalidRequest)
+			}
+			return existing, nil
 		}
-		return existing, nil
 	}
 
 	if err := l.canReserveLocked(request.Scope, request.Estimate); err != nil {

@@ -98,13 +98,15 @@ type RouteDecision struct {
 }
 
 type RouteDecisionEvent struct {
-	Type           string `json:"type"`
-	Message        string `json:"message,omitempty"`
-	RoutingRuleID  string `json:"routing_rule_id,omitempty"`
-	FilterID       string `json:"filter_id,omitempty"`
-	FilterLabel    string `json:"filter_label,omitempty"`
-	ModelAlias     string `json:"model_alias,omitempty"`
-	CanonicalModel string `json:"canonical_model,omitempty"`
+	Type                   string `json:"type"`
+	Message                string `json:"message,omitempty"`
+	RoutingRuleID          string `json:"routing_rule_id,omitempty"`
+	FilterID               string `json:"filter_id,omitempty"`
+	FilterLabel            string `json:"filter_label,omitempty"`
+	ModelAlias             string `json:"model_alias,omitempty"`
+	CanonicalModel         string `json:"canonical_model,omitempty"`
+	PreviousModelAlias     string `json:"previous_model_alias,omitempty"`
+	PreviousCanonicalModel string `json:"previous_canonical_model,omitempty"`
 }
 
 type RouteCandidateScore struct {

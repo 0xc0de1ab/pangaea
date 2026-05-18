@@ -559,6 +559,7 @@ func ContainerSpecFromProviderSpecWithOptions(spec ProviderSpec, nodeID string, 
 		Env:                env,
 		Labels:             labels,
 		NetworkMode:        normalizedNetworkMode(spec.NetworkMode),
+		RestartPolicy:      "unless-stopped",
 		WorkingDir:         strings.TrimSpace(spec.Shim.WorkingDir),
 		Security:           runtime.DefaultSecurityProfile(),
 		Resources: runtime.ResourceLimits{
