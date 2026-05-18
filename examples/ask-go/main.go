@@ -364,7 +364,14 @@ func startInteractiveCancelWatcher(ctx context.Context, opts options, cancel con
 			if err != nil {
 				return
 			}
-			if n > 0 && isInterruptKey(buf[0]) {
+			if n == 0 {
+				continue
+			}
+			if isInterruptKey(buf[0]) {
+				cancel()
+				return
+			}
+			if buf[0] == 0x1b && isBareEscape(reader) {
 				cancel()
 				return
 			}
@@ -386,7 +393,29 @@ func startInteractiveCancelWatcher(ctx context.Context, opts options, cancel con
 }
 
 func isInterruptKey(key byte) bool {
-	return key == 0x03 || key == 0x1b
+	return key == 0x03
+}
+
+func isBareEscape(reader cancelreader.CancelReader) bool {
+	buf := []byte{0}
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			return false
+		}
+		if n == 0 {
+			return true
+		}
+		// ESC followed by any byte is treated as a terminal escape sequence,
+		// not as an explicit cancel key. Drain the rest of the sequence until
+		// the VTIME read window expires.
+		for {
+			n, err = reader.Read(buf)
+			if err != nil || n == 0 {
+				return false
+			}
+		}
+	}
 }
 
 type httpStatusError struct {

@@ -16,8 +16,8 @@ func makeInputCancelMode(fd uintptr) (*terminalModeState, error) {
 	}
 	next := *oldState
 	next.Termios.Lflag &^= unix.ECHO | unix.ICANON
-	next.Termios.Cc[unix.VMIN] = 1
-	next.Termios.Cc[unix.VTIME] = 0
+	next.Termios.Cc[unix.VMIN] = 0
+	next.Termios.Cc[unix.VTIME] = 1
 	if err := term.SetState(fd, &next); err != nil {
 		return nil, err
 	}

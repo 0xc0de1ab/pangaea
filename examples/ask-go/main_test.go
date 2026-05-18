@@ -407,8 +407,8 @@ func TestInterruptKeys(t *testing.T) {
 	if !isInterruptKey(0x03) {
 		t.Fatal("ctrl+c should be treated as interrupt")
 	}
-	if !isInterruptKey(0x1b) {
-		t.Fatal("esc should be treated as interrupt")
+	if isInterruptKey(0x1b) {
+		t.Fatal("esc must be checked separately so terminal escape sequences are not mistaken for interrupts")
 	}
 	if isInterruptKey('a') {
 		t.Fatal("regular keys should not interrupt")
