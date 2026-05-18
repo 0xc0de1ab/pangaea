@@ -1037,6 +1037,85 @@ func TestEngineInvokeStreamFallsBackToNextRoutingRuleModelOnEmptyStreamTimeout(t
 	}
 }
 
+func TestEngineInvokeStreamFallsBackToNextRoutingRuleModelOnMalformedToolCall(t *testing.T) {
+	registry := provider.NewRegistry()
+	ag := registration("ag-a2", "antigravity-sidecar", "sam@example.test", 1, 0)
+	ag.Identity.Service = provider.ServiceAntigravity
+	ag.Models = []provider.Model{
+		{ID: "claude-sonnet-4-6", Aliases: []string{"Claude Sonnet 4.6 (Thinking)"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+		{ID: "gemini-3-flash-agent", Aliases: []string{"Gemini 3 Flash"}, Capabilities: []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityStreamSSE}},
+	}
+	if err := registry.Upsert(ag); err != nil {
+		t.Fatalf("register antigravity: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	invoker := &modelCapacityFallbackInvoker{malformedToolCallModels: map[string]bool{"claude-sonnet-4-6": true}}
+	engine.SetInvoker(invoker)
+	rule, err := engine.UpsertRoutingRule(RoutingRule{
+		Name:  "antigravity-sonnet-gemini",
+		Scope: RoutingRuleScopePublic,
+		Filters: []RoutingFilter{
+			{
+				Type: "criteria",
+				Criteria: RoutingFilterCriteria{
+					Services:    []provider.Service{provider.ServiceAntigravity},
+					Models:      []string{"Claude Sonnet 4.6 (Thinking)"},
+					APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+				},
+			},
+			{
+				Type: "criteria",
+				Criteria: RoutingFilterCriteria{
+					Services:    []provider.Service{provider.ServiceAntigravity},
+					Models:      []string{"Gemini 3 Flash"},
+					APIDialects: []compat.APIDialect{compat.APIDialectOpenAI},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+
+	var events []compat.Event
+	response, execution, err := engine.InvokeStream(context.Background(), RouteExecutionRequest{
+		RequestID: "req_ag_malformed_tool_call_fallback_1",
+		RouteRequest: RouteRequest{
+			RoutingRuleName: rule.Name,
+			APIDialect:      compat.APIDialectOpenAI,
+			Stream:          true,
+		},
+		QuotaScope:    quota.Scope{TenantID: "team-a", UserID: "usr_1", APIKeyID: "key_1"},
+		QuotaEstimate: quota.Usage{Tokens: 10, Requests: 1},
+	}, compat.Request{
+		Dialect: compat.APIDialectOpenAI,
+		Messages: []compat.Message{
+			{Role: compat.MessageRoleUser, Content: []compat.ContentPart{{Type: compat.ContentPartText, Text: "hello"}}},
+		},
+	}, func(event compat.Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream invoke should switch to Gemini after malformed tool call: %v", err)
+	}
+	if response.Model != "gemini-3-flash-agent" || execution.Decision.CanonicalModel != "gemini-3-flash-agent" {
+		t.Fatalf("expected Gemini model selected, response=%#v decision=%#v", response, execution.Decision)
+	}
+	if got := strings.Join(invoker.calls, ","); got != "claude-sonnet-4-6,gemini-3-flash-agent" {
+		t.Fatalf("expected Sonnet then Gemini calls, got %q", got)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected fallback stream events")
+	}
+	if !routeDecisionHasEvent(execution.Decision, routeDecisionEventModelToolCallFallback) {
+		t.Fatalf("expected tool-call model fallback event, got %#v", execution.Decision.Events)
+	}
+}
+
 func TestEngineInvokeDoesNotDegradeProviderForUpstreamClientModelError(t *testing.T) {
 	registry := provider.NewRegistry()
 	first := registration("codex-secondary-a1", "codex-cli", "secondary@example.test", 50, 0)
@@ -1243,13 +1322,21 @@ func (f upstreamErrorFallbackInvoker) Invoke(ctx context.Context, registration p
 }
 
 type modelCapacityFallbackInvoker struct {
-	failModels        map[string]bool
-	emptyStreamModels map[string]bool
-	calls             []string
+	failModels              map[string]bool
+	emptyStreamModels       map[string]bool
+	malformedToolCallModels map[string]bool
+	calls                   []string
 }
 
 func (f *modelCapacityFallbackInvoker) Invoke(_ context.Context, registration provider.Registration, request compat.Request) (compat.Response, error) {
 	f.calls = append(f.calls, request.Model)
+	if f.malformedToolCallModels[request.Model] {
+		return compat.Response{}, &provider.UpstreamError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "malformed_tool_call",
+			Message:    "upstream emitted an incomplete tool call; tool protocol text was not returned as assistant content",
+		}
+	}
 	if f.failModels[request.Model] {
 		return compat.Response{}, &provider.UpstreamError{
 			StatusCode: 429,
@@ -1270,6 +1357,22 @@ func (f *modelCapacityFallbackInvoker) Invoke(_ context.Context, registration pr
 
 func (f *modelCapacityFallbackInvoker) InvokeStream(_ context.Context, registration provider.Registration, request compat.Request, emit func(compat.Event) error) (compat.Response, error) {
 	f.calls = append(f.calls, request.Model)
+	if f.malformedToolCallModels[request.Model] {
+		_ = emit(compat.Event{
+			Dialect: request.Dialect,
+			Model:   request.Model,
+			Type:    compat.EventError,
+			Error: &compat.EventErrorPayload{
+				Code:    "malformed_tool_call",
+				Message: "upstream emitted an incomplete tool call; tool protocol text was not returned as assistant content",
+			},
+		})
+		return compat.Response{}, &provider.UpstreamError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "malformed_tool_call",
+			Message:    "upstream emitted an incomplete tool call; tool protocol text was not returned as assistant content",
+		}
+	}
 	if f.emptyStreamModels[request.Model] {
 		return compat.Response{}, &provider.UpstreamError{
 			StatusCode: http.StatusGatewayTimeout,

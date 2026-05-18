@@ -22,6 +22,7 @@ const (
 	routeDecisionEventModelPromoted            = "model.promoted_from_route_filter"
 	routeDecisionEventModelFallback            = "model.fallback_after_capacity_error"
 	routeDecisionEventModelEmptyStreamFallback = "model.fallback_after_empty_stream"
+	routeDecisionEventModelToolCallFallback    = "model.fallback_after_tool_call_error"
 )
 
 type RoutingRule struct {

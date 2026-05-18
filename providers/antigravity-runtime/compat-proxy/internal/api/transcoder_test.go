@@ -119,6 +119,24 @@ func TestParseToolCallResultDetectsIncompleteTaggedCall(t *testing.T) {
 	}
 }
 
+func TestParseToolCallResultRecoversCompleteJSONWithoutClosingTag(t *testing.T) {
+	response := `<tool_call>{"intent":"f.html 파일 수정","patch":"*** Begin Patch\n--- f.html\n+++ f.html\n@@ -1 +1 @@\n-old\n+new\n*** End Patch\n"}`
+	result := ParseToolCallResult(response)
+	if result.Malformed {
+		t.Fatalf("expected recovered patch call, got malformed: %#v", result)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("expected one recovered tool call, got %#v", result.Calls)
+	}
+	if result.Calls[0].Function.Name != "apply_patch" {
+		t.Fatalf("unexpected recovered tool call: %#v", result.Calls[0])
+	}
+	if !strings.Contains(result.Calls[0].Function.Arguments, "f.html 파일 수정") ||
+		!strings.Contains(result.Calls[0].Function.Arguments, "--- f.html") {
+		t.Fatalf("recovered arguments were not preserved: %#v", result.Calls[0])
+	}
+}
+
 func TestParseToolCallResultInfersPatchTaggedCall(t *testing.T) {
 	response := `<tool_call>{"intent":"f.html 파일에 텍스처 폴백 로직을 추가합니다.","patch":"*** Begin Patch\n--- f.html\n+++ f.html\n@@ -1 +1 @@\n-old\n+new\n*** End Patch\n"}</tool_call>`
 	result := ParseToolCallResult(response)

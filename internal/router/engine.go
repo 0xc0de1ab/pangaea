@@ -1069,6 +1069,9 @@ func (e *Engine) markProviderUnavailableFromInvokeError(providerInstanceID strin
 	if isEmptyStreamUpstreamError(upstream) {
 		return
 	}
+	if isMalformedToolCallUpstreamError(upstream) {
+		return
+	}
 	now := time.Now().UTC()
 	switch upstream.StatusCode {
 	case 401, 403:
@@ -1123,6 +1126,19 @@ func isEmptyStreamUpstreamError(upstream *provider.UpstreamError) bool {
 	return code == "empty_stream_timeout" || code == "empty_stream"
 }
 
+func isMalformedToolCallInvokeError(err error) bool {
+	var upstream *provider.UpstreamError
+	return errors.As(err, &upstream) && isMalformedToolCallUpstreamError(upstream)
+}
+
+func isMalformedToolCallUpstreamError(upstream *provider.UpstreamError) bool {
+	if upstream == nil {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(upstream.Code))
+	return code == "malformed_tool_call"
+}
+
 func routingRuleModelFallbackCauseForError(err error) (routingRuleModelFallbackCause, bool) {
 	switch {
 	case isModelScopedCapacityInvokeError(err):
@@ -1136,6 +1152,12 @@ func routingRuleModelFallbackCauseForError(err error) (routingRuleModelFallbackC
 			EventType:       routeDecisionEventModelEmptyStreamFallback,
 			Message:         "upstream stream did not produce assistant content; routing rule selected the next effective model",
 			RejectionPrefix: "model produced no assistant content",
+		}, true
+	case isMalformedToolCallInvokeError(err):
+		return routingRuleModelFallbackCause{
+			EventType:       routeDecisionEventModelToolCallFallback,
+			Message:         "upstream emitted a malformed tool call; routing rule selected the next effective model",
+			RejectionPrefix: "model produced malformed tool call",
 		}, true
 	default:
 		return routingRuleModelFallbackCause{}, false

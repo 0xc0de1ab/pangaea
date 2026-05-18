@@ -225,6 +225,10 @@ func ParseToolCallResult(responseText string) ToolCallParseResult {
 	openTagCount := strings.Count(lower, "<tool_call")
 	closeTagCount := strings.Count(lower, "</tool_call>")
 	hasIncompleteTaggedCall := openTagCount != closeTagCount
+	if hasIncompleteTaggedCall {
+		toolCalls = append(toolCalls, parseIncompleteTaggedToolCalls(parseText)...)
+		hasIncompleteTaggedCall = len(toolCalls) == 0
+	}
 	if hasInvalidTaggedCall || hasIncompleteTaggedCall || (len(toolCalls) == 0 && (openTagCount > 0 || closeTagCount > 0)) {
 		reason := "upstream emitted a malformed tool call"
 		if hasIncompleteTaggedCall {
@@ -244,6 +248,31 @@ func ParseToolCallResult(responseText string) ToolCallParseResult {
 		}
 	}
 	return ToolCallParseResult{}
+}
+
+func parseIncompleteTaggedToolCalls(text string) []models.ToolCall {
+	tagRe := regexp.MustCompile(`(?is)<tool_call\b[^>]*>\s*`)
+	matches := tagRe.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	lower := strings.ToLower(text)
+	var out []models.ToolCall
+	for _, match := range matches {
+		if match[1] >= len(text) {
+			continue
+		}
+		if closeIdx := strings.Index(lower[match[1]:], "</tool_call>"); closeIdx >= 0 {
+			continue
+		}
+		payload := strings.TrimSpace(text[match[1]:])
+		if payload == "" {
+			continue
+		}
+		out = append(out, parseToolCallPayloadPrefix(payload)...)
+	}
+	reindexToolCalls(out)
+	return out
 }
 
 func candidateToolJSONPayloads(text string) []string {
@@ -294,6 +323,15 @@ func parseToolCallValue(value any) []models.ToolCall {
 		}
 	}
 	return nil
+}
+
+func parseToolCallPayloadPrefix(payload string) []models.ToolCall {
+	var raw any
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(payload)))
+	if err := decoder.Decode(&raw); err != nil {
+		return nil
+	}
+	return parseToolCallValue(raw)
 }
 
 func parseToolCallObject(payload string, index int) (models.ToolCall, bool) {

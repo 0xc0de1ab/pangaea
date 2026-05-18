@@ -64,6 +64,10 @@ var (
 	toolOKStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	toolErrorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	toolCommandStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	patchAddStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	patchDeleteStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	patchFileStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	patchHunkStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 )
 
 type options struct {
@@ -2519,28 +2523,36 @@ func printToolCallBatchStatus(execs []toolExecution) {
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s%s\n", faintStyle.Render(branch), toolIntentStyle.Render(intent), dim(count))
 		argText := formatToolArgs(group.Args)
+		patchText := formatToolPatchPreview(group.Name, group.Args)
 		resultText := toolResultSummary(group.Result)
 		fmt.Fprintf(os.Stderr, "  %s %s %s\n", faintStyle.Render(detailPrefix+"├"), toolDetail(group.Name, group.Args, group.Result), outcome)
 		if resultText != "" {
 			resultBranch := "└ result:"
-			if argText != "{}" || toolOutputPreview(group.Result, "stderr") != "" || toolOutputPreview(group.Result, "stdout") != "" {
+			if patchText != "" || argText != "{}" || toolOutputPreview(group.Result, "stderr") != "" || toolOutputPreview(group.Result, "stdout") != "" {
 				resultBranch = "├ result:"
 			}
 			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+resultBranch), resultText)
 		}
 		if stderrText := toolOutputPreview(group.Result, "stderr"); stderrText != "" {
 			branchText := "└ stderr:"
-			if argText != "{}" || toolOutputPreview(group.Result, "stdout") != "" {
+			if patchText != "" || argText != "{}" || toolOutputPreview(group.Result, "stdout") != "" {
 				branchText = "├ stderr:"
 			}
 			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+branchText), dim(stderrText))
 		}
 		if stdoutText := toolOutputPreview(group.Result, "stdout"); stdoutText != "" {
 			branchText := "└ stdout:"
-			if argText != "{}" {
+			if patchText != "" || argText != "{}" {
 				branchText = "├ stdout:"
 			}
 			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+branchText), dim(stdoutText))
+		}
+		if patchText != "" {
+			branchText := "└ patch:"
+			if argText != "{}" {
+				branchText = "├ patch:"
+			}
+			printToolTreeBlock(detailPrefix, branchText, patchText)
 		}
 		if argText != "{}" {
 			fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(detailPrefix+"└ args:"), argText)
@@ -2591,29 +2603,52 @@ func printToolCallStatus(name string, args map[string]any, result map[string]any
 	fmt.Fprintf(os.Stderr, "%s %s\n", faintStyle.Render("•"), toolIntentStyle.Render(intent))
 	fmt.Fprintf(os.Stderr, "  %s %s %s\n", faintStyle.Render("├"), toolDetail(name, args, result), status)
 	argText := formatToolArgs(args)
+	patchText := formatToolPatchPreview(name, args)
 	if resultText := toolResultSummary(result); resultText != "" {
 		resultBranch := "└ result:"
-		if argText != "{}" || toolOutputPreview(result, "stderr") != "" || toolOutputPreview(result, "stdout") != "" {
+		if patchText != "" || argText != "{}" || toolOutputPreview(result, "stderr") != "" || toolOutputPreview(result, "stdout") != "" {
 			resultBranch = "├ result:"
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(resultBranch), resultText)
 	}
 	if stderrText := toolOutputPreview(result, "stderr"); stderrText != "" {
 		branchText := "└ stderr:"
-		if argText != "{}" || toolOutputPreview(result, "stdout") != "" {
+		if patchText != "" || argText != "{}" || toolOutputPreview(result, "stdout") != "" {
 			branchText = "├ stderr:"
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(branchText), dim(stderrText))
 	}
 	if stdoutText := toolOutputPreview(result, "stdout"); stdoutText != "" {
 		branchText := "└ stdout:"
-		if argText != "{}" {
+		if patchText != "" || argText != "{}" {
 			branchText = "├ stdout:"
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(branchText), dim(stdoutText))
 	}
+	if patchText != "" {
+		branchText := "└ patch:"
+		if argText != "{}" {
+			branchText = "├ patch:"
+		}
+		printToolTreeBlock("", branchText, patchText)
+	}
 	if argText != "{}" {
 		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render("└ args:"), argText)
+	}
+}
+
+func printToolTreeBlock(prefix string, branchText string, text string) {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(ansi.Strip(lines[0])) == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(prefix+branchText), lines[0])
+	continuation := "  "
+	if strings.HasPrefix(branchText, "├") {
+		continuation = "│ "
+	}
+	for _, line := range lines[1:] {
+		fmt.Fprintf(os.Stderr, "  %s %s\n", faintStyle.Render(prefix+continuation), line)
 	}
 }
 
@@ -2836,6 +2871,85 @@ func formatToolArgs(args map[string]any) string {
 		display[key] = value
 	}
 	return mustJSON(display)
+}
+
+func formatToolPatchPreview(name string, args map[string]any) string {
+	if name != "apply_patch" {
+		return ""
+	}
+	patch := firstStringArg(args, "patch", "input")
+	if patch == "" {
+		return ""
+	}
+	return renderPatchPreview(patch, 24)
+}
+
+func renderPatchPreview(patch string, maxLines int) string {
+	lines := splitPatchLines(patch)
+	added, removed := patchChangeStats(lines)
+	out := []string{fmt.Sprintf("%s %s", patchAddStyle.Render(fmt.Sprintf("+%d", added)), patchDeleteStyle.Render(fmt.Sprintf("-%d", removed)))}
+	shown := 0
+	skipped := 0
+	for _, line := range lines {
+		if shouldSkipPatchPreviewLine(line) {
+			continue
+		}
+		styled := stylePatchPreviewLine(line)
+		if maxLines > 0 && shown >= maxLines {
+			skipped++
+			continue
+		}
+		out = append(out, styled)
+		shown++
+	}
+	if skipped > 0 {
+		out = append(out, dim(fmt.Sprintf("... %d more patch lines", skipped)))
+	}
+	return strings.Join(out, "\n")
+}
+
+func shouldSkipPatchPreviewLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed == "" || trimmed == "*** Begin Patch" || trimmed == "*** End Patch"
+}
+
+func patchChangeStats(lines []string) (int, int) {
+	added, removed := 0, 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "+"):
+			added++
+		case strings.HasPrefix(line, "-"):
+			removed++
+		}
+	}
+	return added, removed
+}
+
+func stylePatchPreviewLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "*** Add File: "):
+		return patchAddStyle.Render(line)
+	case strings.HasPrefix(line, "*** Delete File: "):
+		return patchDeleteStyle.Render(line)
+	case strings.HasPrefix(line, "*** Update File: "), strings.HasPrefix(line, "*** Move to: "):
+		return patchFileStyle.Render(line)
+	case strings.HasPrefix(line, "@@"):
+		return patchHunkStyle.Render(line)
+	case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+		return patchFileStyle.Render(line)
+	case strings.HasPrefix(line, "+"):
+		return patchAddStyle.Render(line)
+	case strings.HasPrefix(line, "-"):
+		return patchDeleteStyle.Render(line)
+	case strings.HasPrefix(line, " "):
+		return dim(line)
+	default:
+		return dim(line)
+	}
 }
 
 func compactPreview(value string, limit int) string {

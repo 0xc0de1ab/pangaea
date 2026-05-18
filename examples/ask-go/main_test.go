@@ -894,6 +894,10 @@ func TestExecuteToolCallApplyPatchAcceptsWrappedUnifiedDiff(t *testing.T) {
 }
 
 func TestPrintToolCallStatusLeadsWithIntentAndDetails(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(previousProfile)
+
 	patch := strings.Join([]string{
 		"*** Begin Patch",
 		"*** Update File: f.html",
@@ -917,6 +921,14 @@ func TestPrintToolCallStatusLeadsWithIntentAndDetails(t *testing.T) {
 	}
 	if !strings.Contains(stripped, "\n  ├ Patch f.html failed") {
 		t.Fatalf("tool detail line missing:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "\n  ├ patch: +1 -1") ||
+		!strings.Contains(stripped, "\n  │  -old") ||
+		!strings.Contains(stripped, "\n  │  +new") {
+		t.Fatalf("styled patch preview missing:\n%s", stripped)
+	}
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("patch preview should include ANSI styling:\n%s", out)
 	}
 	if !strings.Contains(stripped, "\n  └ args:") {
 		t.Fatalf("tool args line missing:\n%s", stripped)
