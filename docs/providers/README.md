@@ -18,6 +18,7 @@
 - [Claude CLI Provider](./claude-cli-provider.md)
 - [Gemini CLI Provider](./gemini-cli-provider.md)
 - [Gemini ACP JSON-RPC Notes](./gemini-acp-rpc.md)
+- [Grok Build Provider](./grok-build-provider.md)
 
 ## API Providers
 

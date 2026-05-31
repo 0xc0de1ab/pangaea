@@ -4,6 +4,7 @@ import codexIcon from "../assets/icons/codex-color.svg";
 import cursorAiIcon from "../assets/icons/cursor-ai-code-icon.svg";
 import geminiIcon from "../assets/icons/gemini.svg";
 import githubCopilotIcon from "../assets/icons/githubcopilot.svg";
+import grokIcon from "../assets/icons/grok-icon.svg";
 import minimaxIcon from "../assets/icons/minimax-color.svg";
 import openaiIcon from "../assets/icons/openai.svg";
 import { normalizeService, serviceLabel, type ServiceEndpoint } from "../lib/service-endpoints";
@@ -95,6 +96,12 @@ function brandIcon(value: string): { src: string; label: string } | undefined {
     case "cursor":
     case "cursor-cli":
       return { src: cursorAiIcon, label: serviceLabel("cursor") };
+    case "grok":
+    case "grok-build":
+    case "grok-build-cli":
+    case "xai":
+    case "x-ai":
+      return { src: grokIcon, label: serviceLabel("grok-build") };
     case "github-copilot":
     case "github-copilot-sidecar":
     case "github-copilot-acp":

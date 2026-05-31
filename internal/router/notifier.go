@@ -2,10 +2,13 @@ package router
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -17,13 +20,17 @@ import (
 )
 
 const (
-	maxNotifierHistory        = 256
+	maxNotifierHistory        = 1000
 	defaultRouterNotifyPeriod = time.Hour
 	minRouterNotifyPeriod     = time.Minute
 	defaultRouterStartupGrace = 45 * time.Second
+	routerNotifierSendTimeout = 30 * time.Second
+	telegramMessageSoftLimit  = 3800
 	telegramCommandPollTO     = 25
 	telegramCommandRetryDelay = 5 * time.Second
 )
+
+var telegramBotTokenPattern = regexp.MustCompile(`bot[0-9]{6,}:[A-Za-z0-9_-]{20,}|[0-9]{6,}:[A-Za-z0-9_-]{20,}`)
 
 type RouterNotifierOptions struct {
 	Telegram     RouterTelegramNotifierOptions
@@ -40,18 +47,19 @@ type RouterTelegramNotifierOptions struct {
 }
 
 type NotifierStatus struct {
-	ID            string    `json:"id"`
-	Type          string    `json:"type"`
-	Destination   string    `json:"destination,omitempty"`
-	Enabled       bool      `json:"enabled"`
-	State         string    `json:"state"`
-	Reason        string    `json:"reason,omitempty"`
-	LastAttemptAt time.Time `json:"last_attempt_at,omitempty"`
-	LastSuccessAt time.Time `json:"last_success_at,omitempty"`
-	LastError     string    `json:"last_error,omitempty"`
-	SentCount     int       `json:"sent_count,omitempty"`
-	FailedCount   int       `json:"failed_count,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Type           string    `json:"type"`
+	Destination    string    `json:"destination,omitempty"`
+	Enabled        bool      `json:"enabled"`
+	State          string    `json:"state"`
+	Reason         string    `json:"reason,omitempty"`
+	LastAttemptAt  time.Time `json:"last_attempt_at,omitempty"`
+	LastSuccessAt  time.Time `json:"last_success_at,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	SentCount      int       `json:"sent_count,omitempty"`
+	FailedCount    int       `json:"failed_count,omitempty"`
+	LastAutoDigest string    `json:"last_auto_digest,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type NotifierDelivery struct {
@@ -160,7 +168,7 @@ func waitRouterNotifierStartupReady(ctx context.Context, engine *Engine, timeout
 }
 
 func routerNotifierHasState(engine *Engine) bool {
-	return len(engine.Providers()) > 0 || len(engine.AuthRecords()) > 0 || len(engine.ProviderUsages()) > 0
+	return len(engine.Providers()) > 0 || len(engine.AuthRecords()) > 0
 }
 
 type routerNotifier interface {
@@ -175,6 +183,9 @@ type routerCommandNotifier interface {
 type routerTelegramNotifier struct {
 	cfg    RouterTelegramNotifierOptions
 	client *telegram.Client
+
+	periodicMu   sync.Mutex
+	periodicLast map[string]string
 }
 
 func newRouterTelegramNotifier(cfg RouterTelegramNotifierOptions) *routerTelegramNotifier {
@@ -225,37 +236,8 @@ func (n *routerTelegramNotifier) send(ctx context.Context, engine *Engine, deliv
 		delivery.CompletedAt = time.Now().UTC()
 		return engine.RecordNotifierDelivery(delivery)
 	}
-	if routerTelegramDeliveryShouldSplitByProvider(deliveryType) {
-		messages := renderRouterTelegramProviderAccountMessages(engine, deliveryType, now)
-		if len(messages) == 0 {
-			messages = []string{renderRouterTelegramSummary(engine, deliveryType, now)}
-		}
-		var last NotifierDelivery
-		for _, text := range messages {
-			item := NotifierDelivery{
-				NotifierID:  "telegram",
-				Type:        deliveryType,
-				Destination: redactNotifierDestination(n.cfg.ChatID),
-				Status:      "failed",
-				CreatedAt:   time.Now().UTC(),
-			}
-			err := n.client.SendMessage(ctx, telegram.SendMessageRequest{
-				ChatID:              n.cfg.ChatID,
-				Text:                text,
-				ParseMode:           "HTML",
-				DisableNotification: n.cfg.DisableNotification,
-			})
-			item.CompletedAt = time.Now().UTC()
-			item.Message = routerNotificationMessageSummary(text)
-			if err != nil {
-				item.Error = err.Error()
-				last = engine.RecordNotifierDelivery(item)
-				return last
-			}
-			item.Status = "sent"
-			last = engine.RecordNotifierDelivery(item)
-		}
-		return last
+	if routerTelegramDeliveryShouldRenderProviderAccounts(deliveryType) {
+		return n.sendProviderAccountBatch(ctx, engine, deliveryType, now)
 	}
 	text := renderRouterTelegramSummary(engine, deliveryType, now)
 	err := n.client.SendMessage(ctx, telegram.SendMessageRequest{
@@ -267,20 +249,119 @@ func (n *routerTelegramNotifier) send(ctx context.Context, engine *Engine, deliv
 	delivery.CompletedAt = time.Now().UTC()
 	delivery.Message = routerNotificationMessageSummary(text)
 	if err != nil {
-		delivery.Error = err.Error()
+		delivery.Error = scrubRouterNotifierSecret(err.Error(), n.cfg.BotToken)
 		return engine.RecordNotifierDelivery(delivery)
 	}
 	delivery.Status = "sent"
 	return engine.RecordNotifierDelivery(delivery)
 }
 
-func routerTelegramDeliveryShouldSplitByProvider(deliveryType string) bool {
+func (n *routerTelegramNotifier) sendProviderAccountBatch(ctx context.Context, engine *Engine, deliveryType string, now time.Time) NotifierDelivery {
+	groups := routerProviderAccountGroups(engine.Providers(), routerUsageByProvider(engine.ProviderUsages()))
+	var accountDigest string
+	var storedDigest string
+	if routerTelegramDeliveryShouldTrackDigest(deliveryType) {
+		accountDigest = routerProviderAccountDigest(groups)
+		storedDigest = routerNotifierAutoDigest(n.cfg.ChatID, accountDigest)
+		if routerTelegramDeliveryShouldDeduplicate(deliveryType) && (n.periodicDigestUnchanged(n.cfg.ChatID, accountDigest) || engine.NotifierAutoDigestUnchanged("telegram", storedDigest)) {
+			return NotifierDelivery{}
+		}
+	}
+	if len(groups) == 0 && len(engine.AuthRecords()) == 0 && routerTelegramDeliveryShouldTrackDigest(deliveryType) {
+		n.rememberPeriodicDigest(n.cfg.ChatID, accountDigest)
+		engine.RememberNotifierAutoDigest("telegram", storedDigest)
+		return NotifierDelivery{}
+	}
+	if strings.EqualFold(strings.TrimSpace(deliveryType), "startup") {
+		n.rememberPeriodicDigest(n.cfg.ChatID, accountDigest)
+		engine.RememberNotifierAutoDigest("telegram", storedDigest)
+		return NotifierDelivery{}
+	}
+	var messages []string
+	messages = renderRouterTelegramProviderAccountBatchMessages(groups, deliveryType, now)
+	if len(messages) == 0 {
+		messages = []string{renderRouterTelegramSummary(engine, deliveryType, now)}
+	}
+	var last NotifierDelivery
+	for _, text := range messages {
+		item := NotifierDelivery{
+			NotifierID:  "telegram",
+			Type:        deliveryType,
+			Destination: redactNotifierDestination(n.cfg.ChatID),
+			Status:      "failed",
+			CreatedAt:   time.Now().UTC(),
+			Message:     routerNotificationMessageSummary(text),
+		}
+		err := n.client.SendMessage(ctx, telegram.SendMessageRequest{
+			ChatID:              n.cfg.ChatID,
+			Text:                text,
+			ParseMode:           "HTML",
+			DisableNotification: n.cfg.DisableNotification,
+		})
+		item.CompletedAt = time.Now().UTC()
+		if err != nil {
+			item.Error = scrubRouterNotifierSecret(err.Error(), n.cfg.BotToken)
+			last = engine.RecordNotifierDelivery(item)
+			return last
+		}
+		item.Status = "sent"
+		last = engine.RecordNotifierDelivery(item)
+	}
+	if accountDigest != "" {
+		n.rememberPeriodicDigest(n.cfg.ChatID, accountDigest)
+		engine.RememberNotifierAutoDigest("telegram", storedDigest)
+	}
+	return last
+}
+
+func routerTelegramDeliveryShouldRenderProviderAccounts(deliveryType string) bool {
 	switch strings.ToLower(strings.TrimSpace(deliveryType)) {
 	case "startup", "periodic":
 		return true
 	default:
 		return false
 	}
+}
+
+func routerTelegramDeliveryShouldDeduplicate(deliveryType string) bool {
+	switch strings.ToLower(strings.TrimSpace(deliveryType)) {
+	case "startup", "periodic":
+		return true
+	default:
+		return false
+	}
+}
+
+func routerTelegramDeliveryShouldTrackDigest(deliveryType string) bool {
+	switch strings.ToLower(strings.TrimSpace(deliveryType)) {
+	case "startup", "periodic":
+		return true
+	default:
+		return false
+	}
+}
+
+func (n *routerTelegramNotifier) periodicDigestUnchanged(destination string, digest string) bool {
+	n.periodicMu.Lock()
+	defer n.periodicMu.Unlock()
+	if n.periodicLast == nil {
+		n.periodicLast = map[string]string{}
+	}
+	return n.periodicLast[destination] == digest
+}
+
+func (n *routerTelegramNotifier) rememberPeriodicDigest(destination string, digest string) {
+	n.periodicMu.Lock()
+	defer n.periodicMu.Unlock()
+	if n.periodicLast == nil {
+		n.periodicLast = map[string]string{}
+	}
+	n.periodicLast[destination] = digest
+}
+
+func routerNotifierAutoDigest(destination string, digest string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(destination) + "\x00" + digest))
+	return hex.EncodeToString(sum[:])
 }
 
 func (n *routerTelegramNotifier) runCommands(ctx context.Context, engine *Engine) {
@@ -357,7 +438,7 @@ func (n *routerTelegramNotifier) handleCommandUpdate(ctx context.Context, engine
 	})
 	delivery.CompletedAt = time.Now().UTC()
 	if err != nil {
-		delivery.Error = err.Error()
+		delivery.Error = scrubRouterNotifierSecret(err.Error(), n.cfg.BotToken)
 		engine.RecordNotifierDelivery(delivery)
 		return
 	}
@@ -371,7 +452,7 @@ func (n *routerTelegramNotifier) commandChatAllowed(chatID string) bool {
 
 func runRouterNotifierTick(ctx context.Context, engine *Engine, notifiers []routerNotifier, deliveryType string) {
 	for _, notifier := range notifiers {
-		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		sendCtx, cancel := context.WithTimeout(ctx, routerNotifierSendTimeout)
 		_ = notifier.send(sendCtx, engine, deliveryType)
 		cancel()
 	}
@@ -391,6 +472,7 @@ func (e *Engine) UpsertNotifierStatus(status NotifierStatus) {
 	if e == nil || strings.TrimSpace(status.ID) == "" {
 		return
 	}
+	status = sanitizeNotifierStatus(status)
 	now := time.Now().UTC()
 	if status.UpdatedAt.IsZero() {
 		status.UpdatedAt = now
@@ -416,7 +498,43 @@ func (e *Engine) UpsertNotifierStatus(status NotifierStatus) {
 	if status.LastError == "" {
 		status.LastError = prev.LastError
 	}
+	if status.LastAutoDigest == "" {
+		status.LastAutoDigest = prev.LastAutoDigest
+	}
+	status = sanitizeNotifierStatus(status)
 	e.notifierStatuses[status.ID] = status
+}
+
+func (e *Engine) NotifierAutoDigestUnchanged(notifierID string, digest string) bool {
+	if e == nil || strings.TrimSpace(notifierID) == "" || strings.TrimSpace(digest) == "" {
+		return false
+	}
+	e.notifierMu.RLock()
+	defer e.notifierMu.RUnlock()
+	status := e.notifierStatuses[notifierID]
+	return status.LastAutoDigest == digest
+}
+
+func (e *Engine) RememberNotifierAutoDigest(notifierID string, digest string) {
+	if e == nil || strings.TrimSpace(notifierID) == "" || strings.TrimSpace(digest) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	e.notifierMu.Lock()
+	defer e.notifierMu.Unlock()
+	if e.notifierStatuses == nil {
+		e.notifierStatuses = make(map[string]NotifierStatus)
+	}
+	status := e.notifierStatuses[notifierID]
+	if status.ID == "" {
+		status.ID = notifierID
+		status.Type = notifierID
+	}
+	status.LastAutoDigest = digest
+	if status.UpdatedAt.IsZero() {
+		status.UpdatedAt = now
+	}
+	e.notifierStatuses[notifierID] = sanitizeNotifierStatus(status)
 }
 
 func (e *Engine) RecordNotifierDelivery(delivery NotifierDelivery) NotifierDelivery {
@@ -439,6 +557,7 @@ func (e *Engine) RecordNotifierDelivery(delivery NotifierDelivery) NotifierDeliv
 		e.notifierSeq++
 		delivery.ID = fmt.Sprintf("notif_%s_%06d", delivery.CreatedAt.UTC().Format("20060102150405.000000000"), e.notifierSeq)
 	}
+	delivery = sanitizeNotifierDelivery(delivery)
 	if delivery.Status == "" {
 		delivery.Status = "sent"
 	}
@@ -568,6 +687,16 @@ type routerProviderAccountGroup struct {
 	Windows     []routerQuotaWindow
 }
 
+type routerProviderAccountDigestRecord struct {
+	ServiceKey  string   `json:"service_key"`
+	Account     string   `json:"account"`
+	Nodes       []string `json:"nodes,omitempty"`
+	ProviderIDs []string `json:"provider_ids,omitempty"`
+	Health      []string `json:"health,omitempty"`
+	Auth        []string `json:"auth,omitempty"`
+	Versions    []string `json:"versions,omitempty"`
+}
+
 func renderRouterTelegramProviderAccountMessages(engine *Engine, deliveryType string, now time.Time) []string {
 	if engine == nil {
 		return nil
@@ -585,6 +714,75 @@ func renderRouterTelegramProviderAccountMessages(engine *Engine, deliveryType st
 		messages = append(messages, renderRouterTelegramProviderAccountMessage(group, seqByService[group.ServiceKey], deliveryType, now))
 	}
 	return messages
+}
+
+func renderRouterTelegramProviderAccountBatchMessages(groups []routerProviderAccountGroup, deliveryType string, now time.Time) []string {
+	if len(groups) == 0 {
+		return nil
+	}
+	seqByService := map[string]int{}
+	blocks := make([][]string, 0, len(groups))
+	for _, group := range groups {
+		seqByService[group.ServiceKey]++
+		blocks = append(blocks, routerProviderAccountBlockLines(group, seqByService[group.ServiceKey], deliveryType, now, false))
+	}
+	base := []string{
+		"event: " + deliveryType,
+		fmt.Sprintf("accounts: %d", len(groups)),
+		"at: " + now.Local().Format("01-02 15:04:05"),
+		"",
+	}
+	heading := "Pangaea Router · Usage"
+	messages := []string{}
+	current := append([]string(nil), base...)
+	currentHasBlock := false
+	for _, block := range blocks {
+		candidate := append(append([]string(nil), current...), block...)
+		candidate = append(candidate, "")
+		if currentHasBlock && len(routerTelegramBatchMessage(heading, candidate)) > telegramMessageSoftLimit {
+			messages = append(messages, routerTelegramBatchMessage(heading, trimTrailingEmptyRouterLines(current)))
+			current = append(append([]string(nil), base...), block...)
+			current = append(current, "")
+			continue
+		}
+		current = candidate
+		currentHasBlock = true
+	}
+	if currentHasBlock {
+		messages = append(messages, routerTelegramBatchMessage(heading, trimTrailingEmptyRouterLines(current)))
+	}
+	return messages
+}
+
+func routerTelegramBatchMessage(heading string, lines []string) string {
+	return "<b>" + html.EscapeString(heading) + "</b>\n<pre>" + html.EscapeString(strings.Join(lines, "\n")) + "</pre>"
+}
+
+func trimTrailingEmptyRouterLines(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func routerProviderAccountDigest(groups []routerProviderAccountGroup) string {
+	records := make([]routerProviderAccountDigestRecord, 0, len(groups))
+	for _, group := range groups {
+		records = append(records, routerProviderAccountDigestRecord{
+			ServiceKey:  group.ServiceKey,
+			Account:     group.Account,
+			Nodes:       append([]string(nil), group.Nodes...),
+			ProviderIDs: append([]string(nil), group.ProviderIDs...),
+			Health:      append([]string(nil), group.Health...),
+			Auth:        append([]string(nil), group.Auth...),
+			Versions:    append([]string(nil), group.Versions...),
+		})
+	}
+	raw, err := json.Marshal(records)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func routerProviderAccountGroups(providers []provider.Registration, usages map[string]ProviderUsageSnapshot) []routerProviderAccountGroup {
@@ -642,11 +840,19 @@ func routerProviderAccountGroups(providers []provider.Registration, usages map[s
 }
 
 func renderRouterTelegramProviderAccountMessage(group routerProviderAccountGroup, seq int, deliveryType string, now time.Time) string {
+	lines := routerProviderAccountBlockLines(group, seq, deliveryType, now, true)
+	heading := "Pangaea Router · " + group.Service
+	return "<b>" + html.EscapeString(heading) + "</b>\n<pre>" + html.EscapeString(strings.Join(lines, "\n")) + "</pre>"
+}
+
+func routerProviderAccountBlockLines(group routerProviderAccountGroup, seq int, deliveryType string, now time.Time, includeEventAt bool) []string {
 	title := fmt.Sprintf("%s #%d", strings.ToLower(group.ServiceKey), seq)
 	lines := []string{
 		fmt.Sprintf("%s - %s", title, group.Account),
-		"event: " + deliveryType,
 		"nodes: " + strings.Join(group.Nodes, ","),
+	}
+	if includeEventAt {
+		lines = append([]string{lines[0], "event: " + deliveryType}, lines[1:]...)
 	}
 	if len(group.ProviderIDs) > 0 {
 		lines = append(lines, "providers: "+strings.Join(group.ProviderIDs, ","))
@@ -657,8 +863,10 @@ func renderRouterTelegramProviderAccountMessage(group routerProviderAccountGroup
 	lines = append(lines,
 		"health: "+strings.Join(group.Health, ","),
 		"auth: "+strings.Join(group.Auth, ","),
-		"at: "+now.Local().Format("01-02 15:04:05"),
 	)
+	if includeEventAt {
+		lines = append(lines, "at: "+now.Local().Format("01-02 15:04:05"))
+	}
 	if len(group.Windows) == 0 {
 		lines = append(lines, "", "quota not reported")
 	} else {
@@ -667,8 +875,7 @@ func renderRouterTelegramProviderAccountMessage(group routerProviderAccountGroup
 			lines = append(lines, routerQuotaWindowRows(window, now)...)
 		}
 	}
-	heading := "Pangaea Router · " + group.Service
-	return "<b>" + html.EscapeString(heading) + "</b>\n<pre>" + html.EscapeString(strings.Join(lines, "\n")) + "</pre>"
+	return lines
 }
 
 func routerProviderServiceKey(registration provider.Registration) string {
@@ -1401,6 +1608,33 @@ func routerNotificationMessageSummary(text string) string {
 		return text
 	}
 	return text[:157] + "..."
+}
+
+func sanitizeNotifierStatus(status NotifierStatus) NotifierStatus {
+	status.Reason = scrubRouterNotifierSecret(status.Reason)
+	status.LastError = scrubRouterNotifierSecret(status.LastError)
+	return status
+}
+
+func sanitizeNotifierDelivery(delivery NotifierDelivery) NotifierDelivery {
+	delivery.Message = scrubRouterNotifierSecret(delivery.Message)
+	delivery.Error = scrubRouterNotifierSecret(delivery.Error)
+	return delivery
+}
+
+func scrubRouterNotifierSecret(s string, secrets ...string) string {
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "<redacted>")
+		}
+	}
+	return telegramBotTokenPattern.ReplaceAllStringFunc(s, func(match string) string {
+		if strings.HasPrefix(match, "bot") {
+			return "bot<redacted>"
+		}
+		return "<redacted>"
+	})
 }
 
 func redactNotifierDestination(destination string) string {

@@ -314,7 +314,7 @@ func TestRouterTelegramCommandUpdateSendsProviderResponse(t *testing.T) {
 	}
 }
 
-func TestRouterTelegramPeriodicSendsOneMessagePerServiceAccount(t *testing.T) {
+func TestRouterTelegramPeriodicBatchesAndDeduplicatesProviderAccounts(t *testing.T) {
 	now := time.Date(2026, 5, 11, 1, 0, 0, 0, time.Local)
 	reset := time.Date(2026, 5, 11, 6, 0, 0, 0, time.Local)
 	var sent []telegram.SendMessageRequest
@@ -366,13 +366,13 @@ func TestRouterTelegramPeriodicSendsOneMessagePerServiceAccount(t *testing.T) {
 
 	notifier.send(context.Background(), engine, "periodic")
 
-	if len(sent) != 2 {
-		t.Fatalf("sent %d messages, want one per service/account; %#v", len(sent), sent)
+	if len(sent) != 1 {
+		t.Fatalf("sent %d messages, want one batched periodic message; %#v", len(sent), sent)
 	}
-	joined := sent[0].Text + "\n---\n" + sent[1].Text
+	joined := sent[0].Text
 	for _, want := range []string{
-		"Pangaea Router · Codex",
-		"Pangaea Router · Gemini",
+		"Pangaea Router · Usage",
+		"accounts: 2",
 		"codex #1 - codex@example.test",
 		"gemini #1 - gemini@example.test",
 		"nodes: node-a1,rpi5",
@@ -384,12 +384,98 @@ func TestRouterTelegramPeriodicSendsOneMessagePerServiceAccount(t *testing.T) {
 		}
 	}
 	for _, req := range sent {
-		if strings.Contains(req.Text, "Providers: 3") || (strings.Contains(req.Text, "codex@example.test") && strings.Contains(req.Text, "gemini@example.test")) {
-			t.Fatalf("periodic message should not be a combined summary:\n%s", req.Text)
+		if strings.Contains(req.Text, "Providers: 3") {
+			t.Fatalf("provider account message should not be a combined summary:\n%s", req.Text)
 		}
 	}
 	history := engine.NotifierHistory(10)
-	if len(history) != 2 {
-		t.Fatalf("history len = %d, want 2: %#v", len(history), history)
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1: %#v", len(history), history)
+	}
+
+	notifier.send(context.Background(), engine, "periodic")
+	if len(sent) != 1 {
+		t.Fatalf("unchanged periodic state sent again: %d sends", len(sent))
+	}
+
+	if err := engine.UpdateProviderUsage("codex-primary-a1", provider.UsageReport{
+		ObservedAt: now.Add(time.Hour),
+		NativeSummary: map[string]any{
+			"windows": []any{map[string]any{
+				"label":         "5h limit",
+				"remaining_pct": 50,
+				"reset_at":      reset.Format(time.RFC3339),
+			}},
+		},
+	}, now.Add(time.Hour)); err != nil {
+		t.Fatalf("update usage: %v", err)
+	}
+	notifier.send(context.Background(), engine, "periodic")
+	if len(sent) != 1 {
+		t.Fatalf("quota-only periodic state change sent again: %d sends", len(sent))
+	}
+
+	codexA.Health.Status = provider.HealthDegraded
+	if err := registry.Upsert(codexA); err != nil {
+		t.Fatalf("upsert degraded provider: %v", err)
+	}
+	notifier.send(context.Background(), engine, "periodic")
+	if len(sent) != 2 {
+		t.Fatalf("health state change was not sent: %d sends", len(sent))
+	}
+}
+
+func TestRouterTelegramStartupSeedsPeriodicDigest(t *testing.T) {
+	var sent []telegram.SendMessageRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req telegram.SendMessageRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		sent = append(sent, req)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	registry := provider.NewRegistry()
+	if err := registry.Upsert(registration("codex-primary-a1", "codex-cli", "codex@example.test", 10, 0)); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	engine, err := NewEngine(validPolicy(), registry, quota.NewLedger())
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	notifier := &routerTelegramNotifier{
+		cfg:    RouterTelegramNotifierOptions{Enabled: true, BotToken: "T", ChatID: "100"},
+		client: &telegram.Client{BotToken: "T", Endpoint: srv.URL, HTTP: srv.Client()},
+	}
+
+	notifier.send(context.Background(), engine, "startup")
+	if len(sent) != 0 {
+		t.Fatalf("startup sent %d messages, want digest seed only", len(sent))
+	}
+
+	notifier.send(context.Background(), engine, "periodic")
+	if len(sent) != 0 {
+		t.Fatalf("startup did not seed unchanged periodic digest: %d sends", len(sent))
+	}
+
+	restartedNotifier := &routerTelegramNotifier{
+		cfg:    RouterTelegramNotifierOptions{Enabled: true, BotToken: "T", ChatID: "100"},
+		client: &telegram.Client{BotToken: "T", Endpoint: srv.URL, HTTP: srv.Client()},
+	}
+	restartedNotifier.send(context.Background(), engine, "startup")
+	if len(sent) != 0 {
+		t.Fatalf("persisted digest did not suppress duplicate startup after notifier restart: %d sends", len(sent))
+	}
+}
+
+func TestRouterNotifierScrubsTelegramBotToken(t *testing.T) {
+	token := "8508483165:AAEzTy9Qv_OTvPGrGGgwP-TGcVg1bOQtJJw"
+	errText := `telegram: send: Post "https://api.telegram.org/bot` + token + `/sendMessage": context deadline exceeded`
+	got := scrubRouterNotifierSecret(errText, token)
+	if strings.Contains(got, token) || strings.Contains(got, "8508483165:AAEz") {
+		t.Fatalf("token was not scrubbed: %s", got)
+	}
+	if !strings.Contains(got, "bot<redacted>") {
+		t.Fatalf("scrubbed error lost useful context: %s", got)
 	}
 }

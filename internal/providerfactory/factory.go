@@ -23,6 +23,7 @@ import (
 	"github.com/0xc0de1ab/pangaea/internal/cursoracp"
 	"github.com/0xc0de1ab/pangaea/internal/cursordirect"
 	"github.com/0xc0de1ab/pangaea/internal/geminidirect"
+	"github.com/0xc0de1ab/pangaea/internal/grokacp"
 	"github.com/0xc0de1ab/pangaea/internal/provider"
 	"github.com/0xc0de1ab/pangaea/internal/providershim"
 	"github.com/0xc0de1ab/pangaea/pkg/formats"
@@ -142,6 +143,12 @@ func DefaultRegistry() *Registry {
 			DefaultAuthFormat:        "cursor-auth-json-format",
 			NormalizeCLIAdapter:      normalizeCursorCLIAdapter,
 			BuildCLIContainerAdapter: buildCursorCLIContainerAdapter,
+		},
+		Definition{
+			Service:                  provider.ServiceGrokBuild,
+			DefaultAuthFormat:        "grok-auth-json-format",
+			NormalizeCLIAdapter:      normalizeGrokBuildCLIAdapter,
+			BuildCLIContainerAdapter: buildGrokBuildCLIContainerAdapter,
 		},
 		Definition{
 			Service:           provider.ServiceAntigravity,
@@ -448,10 +455,12 @@ func adapterFromProviderMode(cfg Config) (string, bool, error) {
 		switch provider.Service(cfg.Service) {
 		case provider.ServiceCursor:
 			return "cursor-acp", true, nil
+		case provider.ServiceGrokBuild:
+			return "grok-build-acp", true, nil
 		case provider.ServiceGitHubCopilot:
 			return "copilot-acp", true, nil
 		default:
-			return "", true, fmt.Errorf("--provider-mode acp is only supported for service=cursor or service=github-copilot")
+			return "", true, fmt.Errorf("--provider-mode acp is only supported for service=cursor, service=grok-build, or service=github-copilot")
 		}
 	case "ls-core-sidecar":
 		return "", true, fmt.Errorf("--provider-mode ls-core-sidecar is not implemented by provider-shim yet")
@@ -579,6 +588,29 @@ func buildCursorCLIContainerAdapter(_ context.Context, buildCtx BuildContext, ad
 	default:
 		return nil, false, nil
 	}
+}
+
+func normalizeGrokBuildCLIAdapter(cfg Config) (string, error) {
+	if adapter, ok, err := adapterFromProviderMode(cfg); ok || err != nil {
+		return adapter, err
+	}
+	return "grok-build-acp", nil
+}
+
+func buildGrokBuildCLIContainerAdapter(_ context.Context, buildCtx BuildContext, adapter string) (providershim.APICompatibleProvider, bool, error) {
+	if adapter != "grok-build-acp" {
+		return nil, false, nil
+	}
+	cfg := buildCtx.Config
+	registration, err := buildProviderRegistrationWithoutUpstream(cfg, provider.KindCLIContainer, buildCtx.Auth, buildCtx.ExtraCapabilities)
+	if err != nil {
+		return nil, true, err
+	}
+	p, err := grokacp.New(grokacp.Options{
+		Registration:   registration,
+		MCPServersJSON: cfg.MCPServersJSON,
+	})
+	return p, true, err
 }
 
 func geminiMCPServersJSONFromSettings() string {
@@ -773,6 +805,8 @@ func resolveTargetVersion(cfg Config, service provider.Service) string {
 		return detectCommandTargetVersion("agent")
 	case provider.ServiceGitHubCopilot:
 		return detectCommandTargetVersion("copilot")
+	case provider.ServiceGrokBuild:
+		return detectCommandTargetVersion("grok")
 	case provider.ServiceAntigravity:
 		if version := detectHTTPHealthTargetVersion(cfg.UpstreamBaseURL); version != "" {
 			return version
@@ -906,6 +940,10 @@ func defaultContextTokens(service provider.Service, model string) int {
 	case provider.ServiceMiniMAX:
 		if strings.HasPrefix(model, "minimax-m2") {
 			return 204_800
+		}
+	case provider.ServiceGrokBuild:
+		if model == "grok-build" || model == "grok-build-0.1" {
+			return 512_000
 		}
 	}
 	return 0
@@ -1325,6 +1363,8 @@ func authFilenameForFormat(format string) string {
 		return "cli-config.json"
 	case "cursor-api-token-plain-format":
 		return "api_token"
+	case "grok-auth-json-format":
+		return "auth.json"
 	default:
 		return "auth.json"
 	}

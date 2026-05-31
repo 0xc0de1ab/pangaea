@@ -128,7 +128,7 @@ func newSetupProviderCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.Type, "type", "", "provider runtime type (native-systemd|docker|podman|kind|k8s|kubernetes)")
 	cmd.Flags().StringVar(&opts.Mode, "mode", "", "provider adapter mode (app-server|http-direct|cli-adapter|sdk|acp|ls-core-sidecar)")
-	cmd.Flags().StringVar(&opts.Service, "service", "gemini", "provider service (codex|claude|gemini|antigravity|github-copilot|cursor)")
+	cmd.Flags().StringVar(&opts.Service, "service", "gemini", "provider service (codex|claude|gemini|antigravity|github-copilot|cursor|grok-build)")
 	cmd.Flags().StringVar(&opts.ProviderType, "provider-type", "", "logical provider type; defaults to <service>-cli")
 	cmd.Flags().StringVar(&opts.InstanceID, "instance-id", "", "provider instance id; defaults from derived auth account or provider type")
 	cmd.Flags().StringVar(&opts.AuthPath, "auth-path", "", "host auth file path to copy/bootstrap")
@@ -554,8 +554,8 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 			return "", fmt.Errorf("--mode cli-adapter is not implemented for service %s", defaults.Service)
 		}
 	case "acp":
-		if defaults.Service != provider.ServiceGitHubCopilot && defaults.Service != provider.ServiceCursor {
-			return "", fmt.Errorf("--mode acp is currently supported only for service github-copilot or cursor")
+		if defaults.Service != provider.ServiceGitHubCopilot && defaults.Service != provider.ServiceCursor && defaults.Service != provider.ServiceGrokBuild {
+			return "", fmt.Errorf("--mode acp is currently supported only for service github-copilot, cursor, or grok-build")
 		}
 		defaults.ProviderKind = provider.KindCLIContainer
 		defaults.ProviderMode = "acp"
@@ -570,6 +570,8 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 		}
 		if defaults.Service == provider.ServiceGitHubCopilot {
 			defaults.ShimCapabilities = append(defaults.ShimCapabilities, provider.CapabilityCodeCompletion)
+		} else {
+			defaults.ShimCapabilities = append(defaults.ShimCapabilities, provider.CapabilityStreamSSE)
 		}
 		for i := range defaults.Models {
 			defaults.Models[i].Capabilities = []provider.Capability{
@@ -579,6 +581,8 @@ func applySetupProviderMode(defaults *setupProviderDefaults, raw string) (string
 			}
 			if defaults.Service == provider.ServiceGitHubCopilot {
 				defaults.Models[i].Capabilities = append(defaults.Models[i].Capabilities, provider.CapabilityCodeCompletion)
+			} else {
+				defaults.Models[i].Capabilities = append(defaults.Models[i].Capabilities, provider.CapabilityStreamSSE)
 			}
 		}
 	case "ls-core-sidecar":
@@ -611,6 +615,8 @@ func setupProviderService(raw string) provider.Service {
 	switch service {
 	case "copilot":
 		return provider.ServiceGitHubCopilot
+	case "grok", "grokbuild":
+		return provider.ServiceGrokBuild
 	default:
 		return provider.Service(service)
 	}
@@ -760,6 +766,46 @@ func setupDefaultsForService(service provider.Service) (setupProviderDefaults, e
 				"HOME":                     "/var/lib/pangaea/home/cursor",
 				"TMPDIR":                   "/var/lib/pangaea/tmp",
 				"PANGAEA_CURSOR_AGENT_EXE": "/home/pangaea/.local/bin/agent",
+			},
+		}, nil
+	case provider.ServiceGrokBuild:
+		caps := []provider.Capability{
+			provider.CapabilityOpenAIChat,
+			provider.CapabilityAnthropicMessages,
+			provider.CapabilityGeminiGenerateContent,
+			provider.CapabilityStreamSSE,
+			provider.CapabilityUsageRead,
+			provider.CapabilityModelsRead,
+		}
+		return setupProviderDefaults{
+			Service:             service,
+			ImageName:           "pangaea/provider-grok-build",
+			DefaultProviderType: "grok-build-cli",
+			DefaultMode:         "acp",
+			ProviderKind:        provider.KindCLIContainer,
+			AuthFormat:          "grok-auth-json-format",
+			AuthContainerPath:   "/var/lib/pangaea/home/grok/.grok/auth.json",
+			AuthSecretKey:       "auth.json",
+			AuthCandidates: []string{
+				"assets/.grok/auth.json",
+				"assets/grok/auth.json",
+				"~/.grok/auth.json",
+			},
+			ProviderMode:     "acp",
+			UpstreamDialect:  "openai",
+			ShimProtocols:    []string{"openai", "anthropic", "gemini"},
+			ShimCapabilities: caps,
+			Models: []provider.Model{{
+				ID:               "grok-build",
+				Aliases:          []string{"grok-build-default", "grok-build-0.1", "grok-default"},
+				Capabilities:     modelCaps,
+				ContextTokens:    512_000,
+				MaxContextTokens: 512_000,
+			}},
+			ExtraEnv: map[string]string{
+				"HOME":                 "/var/lib/pangaea/home/grok",
+				"TMPDIR":               "/var/lib/pangaea/tmp",
+				"PANGAEA_GROK_CLI_EXE": "/usr/local/bin/grok",
 			},
 		}, nil
 	case provider.ServiceAntigravity:
@@ -1128,6 +1174,9 @@ func nativeSetupProviderEnv(service provider.Service, authPath string, base map[
 	case provider.ServiceGemini:
 		configDir := filepath.Dir(authPath)
 		out["HOME"] = nativeHomeFromConfigDir(configDir, ".gemini")
+	case provider.ServiceGrokBuild:
+		configDir := filepath.Dir(authPath)
+		out["HOME"] = nativeHomeFromConfigDir(configDir, ".grok")
 	}
 	for key, value := range out {
 		if strings.TrimSpace(value) == "" {
@@ -1186,6 +1235,7 @@ func renderSetupProviderKubernetesManifest(setupType string, opts setupProviderO
 	}
 	initVolumeMounts := []any{
 		map[string]any{"name": "provider-state", "mountPath": "/var/lib/pangaea"},
+		map[string]any{"name": "provider-work", "mountPath": "/work"},
 	}
 	volumes := []any{
 		stateVolume,
@@ -1556,6 +1606,38 @@ if [ -s /auth-src/auth.json ]; then
 fi
 chown -R 1000:1000 /var/lib/pangaea /work 2>/dev/null || true
 chmod 0700 /var/lib/pangaea/home/cursor "${config_dir}" /var/lib/pangaea/tmp
+`)
+	case provider.ServiceGrokBuild:
+		return strings.TrimSpace(`
+set -eu
+config_dir=/var/lib/pangaea/home/grok/.grok
+mkdir -p "${config_dir}" /var/lib/pangaea/tmp /var/lib/pangaea/runtime /work
+write_runtime_settings() {
+  runtime_settings="${PANGAEA_RUNTIME_SETTINGS_PATH:-/var/lib/pangaea/runtime/provider.env}"
+  runtime_dir="$(dirname "$runtime_settings")"
+  mkdir -p "$runtime_dir"
+  if [ ! -s "$runtime_settings" ]; then
+    {
+      printf 'PANGAEA_NODE_ID=%s\n' "${PANGAEA_NODE_ID:-}"
+      printf 'PANGAEA_HOST_NAME=%s\n' "${PANGAEA_HOST_NAME:-}"
+      printf 'PANGAEA_PROVIDER_TYPE=%s\n' "${PANGAEA_PROVIDER_TYPE:-}"
+      printf 'PANGAEA_PROVIDER_INSTANCE_ID=%s\n' "${PANGAEA_PROVIDER_INSTANCE_ID:-}"
+      printf 'PANGAEA_PROVIDER_MODE=%s\n' "${PANGAEA_PROVIDER_MODE:-}"
+      printf 'PANGAEA_SERVICE=%s\n' "${PANGAEA_SERVICE:-}"
+      printf 'PANGAEA_CONTAINER_KIND=%s\n' "${PANGAEA_CONTAINER_KIND:-}"
+      printf 'PANGAEA_CONTAINER_NAME=%s\n' "${PANGAEA_CONTAINER_NAME:-}"
+      printf 'PANGAEA_CONTAINER_ID=%s\n' "${PANGAEA_CONTAINER_ID:-}"
+    } > "$runtime_settings"
+    chmod 0600 "$runtime_settings" 2>/dev/null || true
+  fi
+}
+write_runtime_settings
+if [ -s /auth-src/auth.json ]; then
+  cp /auth-src/auth.json "${config_dir}/auth.json"
+  chmod 0600 "${config_dir}/auth.json"
+fi
+chown -R 1000:1000 /var/lib/pangaea /work 2>/dev/null || true
+chmod 0700 /var/lib/pangaea/home/grok "${config_dir}" /var/lib/pangaea/tmp
 `)
 	case provider.ServiceAntigravity:
 		return strings.TrimSpace(`

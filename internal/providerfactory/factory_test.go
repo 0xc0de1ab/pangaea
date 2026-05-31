@@ -15,6 +15,7 @@ import (
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/cursorapitoken"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/cursorcliconfig"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/githubcopilotapps"
+	_ "github.com/0xc0de1ab/pangaea/pkg/formats/grokauth"
 )
 
 func TestRegistryRejectsDuplicateDefinitions(t *testing.T) {
@@ -35,6 +36,8 @@ func TestDefaultRegistryHasProviderDefinitions(t *testing.T) {
 		provider.ServiceGemini,
 		provider.ServiceAntigravity,
 		provider.ServiceGitHubCopilot,
+		provider.ServiceCursor,
+		provider.ServiceGrokBuild,
 	} {
 		if _, ok := registry.Definition(service); !ok {
 			t.Fatalf("default registry missing %s definition", service)
@@ -490,6 +493,42 @@ func TestBuildGitHubCopilotACPProvider(t *testing.T) {
 	}
 }
 
+func TestBuildGrokBuildACPProvider(t *testing.T) {
+	result, err := BuildCLIContainerProvider(context.Background(), Config{
+		ProviderType:       "grok-build-cli",
+		ProviderInstanceID: "grok-build-cli",
+		NodeID:             "node-1",
+		HostName:           "host-1",
+		Service:            "grok-build",
+		ProviderMode:       "acp",
+		UpstreamDialect:    "openai",
+		ShimCapabilities:   "api.openai.chat,api.anthropic.messages,api.gemini.generateContent,stream.sse,usage.read,models.read",
+		Model:              "grok-build",
+		ModelAlias:         "grok-build-default",
+	})
+	if err != nil {
+		t.Fatalf("BuildCLIContainerProvider: %v", err)
+	}
+	registration, err := result.Provider.Registration()
+	if err != nil {
+		t.Fatalf("Registration: %v", err)
+	}
+	if registration.Identity.Kind != provider.KindCLIContainer || registration.Identity.Service != provider.ServiceGrokBuild {
+		t.Fatalf("identity = %#v", registration.Identity)
+	}
+	for _, capability := range []provider.Capability{provider.CapabilityOpenAIChat, provider.CapabilityAnthropicMessages, provider.CapabilityGeminiGenerateContent, provider.CapabilityStreamSSE} {
+		if !hasFactoryCapability(registration.Capabilities, capability) {
+			t.Fatalf("grok capabilities %v missing %s", registration.Capabilities, capability)
+		}
+	}
+	if len(registration.Models) != 1 || registration.Models[0].ID != "grok-build" {
+		t.Fatalf("models = %#v", registration.Models)
+	}
+	if !hasString(registration.Models[0].Aliases, "grok-build-default") {
+		t.Fatalf("model aliases = %#v", registration.Models[0].Aliases)
+	}
+}
+
 func TestGeminiMCPServersJSONFromSettings(t *testing.T) {
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
 	if err := os.WriteFile(settingsPath, []byte(`{"selectedAuthType":"oauth-personal","mcpServers":{"pangaea-fixture":{"command":"node","args":["server.mjs"]}}}`), 0o600); err != nil {
@@ -580,6 +619,15 @@ func hasFactoryCapability(capabilities []provider.Capability, want provider.Capa
 	return false
 }
 
+func hasString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRegistrationModelsPreservesConfiguredGeminiModelsWithoutRuntimeMetadata(t *testing.T) {
 	models, err := registrationModels(Config{
 		Service: "gemini",
@@ -626,6 +674,17 @@ func TestRegistrationModelsLeavesProviderSpecificMetadataToShim(t *testing.T) {
 	}
 	if cursor[0].Kind != "" || len(cursor[0].GroupMembers) != 0 {
 		t.Fatalf("cursor auto should not be classified by setup/factory: %#v", cursor[0])
+	}
+
+	grok, err := registrationModels(Config{
+		Service: "grok-build",
+		Models:  "grok-build=grok-build-default|grok-build-0.1",
+	}, []provider.Capability{provider.CapabilityOpenAIChat}, nil)
+	if err != nil {
+		t.Fatalf("grok registration models: %v", err)
+	}
+	if grok[0].Kind != "" || len(grok[0].GroupMembers) != 0 {
+		t.Fatalf("grok build metadata should not be classified by setup/factory: %#v", grok[0])
 	}
 
 	antigravity, err := registrationModels(Config{

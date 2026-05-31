@@ -22,6 +22,7 @@ import (
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/cursorcliconfig"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/geminioauth"
 	_ "github.com/0xc0de1ab/pangaea/pkg/formats/githubcopilotapps"
+	_ "github.com/0xc0de1ab/pangaea/pkg/formats/grokauth"
 )
 
 var errorPrefix = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Render("ERROR:")

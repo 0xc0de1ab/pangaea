@@ -12,6 +12,7 @@ PROVIDER_CODEX_IMAGE ?= pangaea/provider-codex:dev
 PROVIDER_GEMINI_IMAGE ?= pangaea/provider-gemini:dev
 PROVIDER_CLAUDE_IMAGE ?= pangaea/provider-claude:dev
 PROVIDER_GITHUB_COPILOT_IMAGE ?= pangaea/provider-github-copilot-sidecar:dev
+PROVIDER_GROK_BUILD_IMAGE ?= pangaea/provider-grok-build:dev
 PROVIDER_API_COMPATIBLE_IMAGE ?= pangaea/provider-api-compatible:dev
 PROVIDER_ANTIGRAVITY_IMAGE ?= pangaea/provider-antigravity-sidecar:dev
 PROVIDER_ANTIGRAVITY_RUNTIME_IMAGE ?= pangaea/antigravity-runtime:dev
@@ -20,6 +21,7 @@ ANTIGRAVITY_RUNTIME_KIND_IMAGE ?= pangaea/antigravity-runtime:kind
 ROUTER_KIND_IMAGE ?= pangaea/router:kind
 PROVIDER_CODEX_KIND_IMAGE ?= pangaea/provider-codex:kind
 PROVIDER_GEMINI_KIND_IMAGE ?= pangaea/provider-gemini:kind
+PROVIDER_GROK_BUILD_KIND_IMAGE ?= pangaea/provider-grok-build:kind
 REGISTRY ?= registry.example.com/example
 PROVIDER_GEMINI_REPO ?= pangaea/provider-gemini
 PROVIDER_GEMINI_RELEASE_IMAGE ?= $(REGISTRY)/$(PROVIDER_GEMINI_REPO):$(VERSION)
@@ -81,7 +83,7 @@ token3 = $(word 3,$(subst -, ,$(1)))
 .PHONY: all clean help \
 	$(OS_LIST) $(ARCH_LIST) $(BUILD_VARIANTS) \
 	$(OS_ARCH_PAIRS) $(OS_VARIANT_PAIRS) $(ARCH_VARIANT_PAIRS) $(FULL_KEYS) \
-	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-release-provider-gemini docker-push-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-provider-api-compatible docker-provider-antigravity-sidecar docker-provider-antigravity-runtime docker-providers \
+	test race integration lint fmt vet tidy router-ui demo docker-provider-codex docker-provider-gemini docker-release-provider-gemini docker-push-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-provider-grok-build docker-provider-api-compatible docker-provider-antigravity-sidecar docker-provider-antigravity-runtime docker-providers \
 	docker-router-kind kind-codex-e2e kind-gemini-e2e kind-antigravity-e2e
 
 all: $(FULL_TARGETS)
@@ -176,6 +178,9 @@ docker-provider-claude:
 docker-provider-github-copilot-sidecar:
 	docker build -f providers/github-copilot-sidecar/Dockerfile -t $(PROVIDER_GITHUB_COPILOT_IMAGE) --build-arg VERSION=$(VERSION) .
 
+docker-provider-grok-build:
+	docker build -f providers/grok-build/Dockerfile -t $(PROVIDER_GROK_BUILD_IMAGE) --build-arg VERSION=$(VERSION) .
+
 docker-provider-api-compatible:
 	docker build -f providers/api-compatible/Dockerfile -t $(PROVIDER_API_COMPATIBLE_IMAGE) --build-arg VERSION=$(VERSION) .
 
@@ -185,7 +190,7 @@ docker-provider-antigravity-sidecar:
 docker-provider-antigravity-runtime:
 	docker build -f providers/antigravity-runtime/Dockerfile -t $(PROVIDER_ANTIGRAVITY_RUNTIME_IMAGE) --build-arg VERSION=$(VERSION) .
 
-docker-providers: docker-provider-codex docker-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-provider-api-compatible docker-provider-antigravity-sidecar docker-provider-antigravity-runtime
+docker-providers: docker-provider-codex docker-provider-gemini docker-provider-claude docker-provider-github-copilot-sidecar docker-provider-grok-build docker-provider-api-compatible docker-provider-antigravity-sidecar docker-provider-antigravity-runtime
 
 docker-router-kind:
 	docker build -f deploy/kind/router.Dockerfile -t $(ROUTER_KIND_IMAGE) --build-arg VERSION=$(VERSION) .
@@ -216,7 +221,7 @@ help:
 	@echo "Version: $(VERSION)"
 	@echo
 	@echo "Housekeeping: test  race  integration  lint  fmt  vet  tidy  router-ui  demo"
-	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-release-provider-gemini  docker-provider-claude  docker-provider-github-copilot-sidecar  docker-provider-api-compatible  docker-provider-antigravity-sidecar  docker-provider-antigravity-runtime  docker-providers"
+	@echo "Provider images: docker-provider-codex  docker-provider-gemini  docker-release-provider-gemini  docker-provider-claude  docker-provider-github-copilot-sidecar  docker-provider-grok-build  docker-provider-api-compatible  docker-provider-antigravity-sidecar  docker-provider-antigravity-runtime  docker-providers"
 	@echo "Kind e2e: docker-router-kind  kind-codex-e2e  kind-gemini-e2e  kind-antigravity-e2e"
 
 %:

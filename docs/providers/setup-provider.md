@@ -27,7 +27,8 @@ host-native, Docker, Podman, kind, and Kubernetes targets.
   Claude and is also available for Gemini.
 - `sdk`: use the GitHub Copilot SDK through a local OpenAI-compatible relay.
   This is the default for GitHub Copilot.
-- `acp`: use GitHub Copilot CLI's ACP JSON-RPC transport.
+- `acp`: use a provider CLI's ACP JSON-RPC transport. Currently supported for
+  GitHub Copilot, Cursor, and Grok Build.
 - `ls-core-sidecar`: reserved for Antigravity ls-core sidecar transport.
 
 ## Identity Rules
@@ -115,3 +116,13 @@ pangaeactl setup-provider \
 ```
 
 Use `--storage ephemeral` for CI-style non-persistent runtime state.
+
+Generate a Grok Build ACP provider from cached SuperGrok login state:
+
+```bash
+pangaeactl setup-provider \
+  --type k8s \
+  --service grok-build \
+  --mode acp \
+  --auth-path ~/.grok/auth.json
+```

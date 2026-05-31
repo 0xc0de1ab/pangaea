@@ -66,6 +66,18 @@ model_aliases:
   github-copilot-default:
     canonical_model: auto
     required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  grok-build-default:
+    canonical_model: grok-build
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  grok-default:
+    canonical_model: grok-build
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  grok-build:
+    canonical_model: grok-build
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
+  grok-build-0.1:
+    canonical_model: grok-build
+    required_capabilities: [api.openai.chat, api.anthropic.messages, api.gemini.generateContent, stream.sse]
 
 routes:
   - id: minimax-kind-openai
@@ -256,6 +268,45 @@ routes:
       api_dialects: [gemini]
     candidates:
       - provider_type: cursor-cli
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      required_capabilities:
+        - api.gemini.generateContent
+      max_queue_depth: 4
+  - id: grok-build-kind-openai
+    match:
+      models: [grok-build-default, grok-default, grok-build, grok-build-0.1]
+      api_dialects: [openai]
+    candidates:
+      - provider_type: grok-build-cli
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      required_capabilities:
+        - api.openai.chat
+      max_queue_depth: 4
+  - id: grok-build-kind-anthropic
+    match:
+      models: [grok-build-default, grok-default, grok-build, grok-build-0.1]
+      api_dialects: [anthropic]
+    candidates:
+      - provider_type: grok-build-cli
+        weight: 100
+    constraints:
+      auth_status: [healthy, refresh_soon]
+      health_state: [ready]
+      required_capabilities:
+        - api.anthropic.messages
+      max_queue_depth: 4
+  - id: grok-build-kind-gemini
+    match:
+      models: [grok-build-default, grok-default, grok-build, grok-build-0.1]
+      api_dialects: [gemini]
+    candidates:
+      - provider_type: grok-build-cli
         weight: 100
     constraints:
       auth_status: [healthy, refresh_soon]

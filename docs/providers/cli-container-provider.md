@@ -112,7 +112,8 @@ Local server must be private to container/shim network.
   today for Claude and Gemini and does not require `upstream.base_url`.
 - `sdk`: GitHub Copilot-only mode that runs a local SDK-backed
   OpenAI-compatible relay behind a sidecar shim.
-- `acp`: GitHub Copilot-only mode that invokes the Copilot CLI ACP server.
+- `acp`: Agent Client Protocol over stdio. This is implemented for GitHub
+  Copilot, Cursor, and Grok Build.
 
 No backward-compatible adapter aliases are accepted. Use `http-direct`,
 `app-server`, `cli-adapter`, `sdk`, or `acp` explicitly.

@@ -33,6 +33,7 @@ const (
 	ServiceCline         Service = "cline"
 	ServiceGitHubCopilot Service = "github-copilot"
 	ServiceCursor        Service = "cursor"
+	ServiceGrokBuild     Service = "grok-build"
 )
 
 type Capability string

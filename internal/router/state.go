@@ -115,6 +115,7 @@ func (e *Engine) RestoreState(snapshot StateSnapshot) {
 			if status.ID == "" {
 				continue
 			}
+			status = sanitizeNotifierStatus(status)
 			e.notifierStatuses[status.ID] = status
 		}
 		e.notifierHistory = e.notifierHistory[:0]
@@ -125,6 +126,7 @@ func (e *Engine) RestoreState(snapshot StateSnapshot) {
 			if delivery.NotifierID == "" {
 				continue
 			}
+			delivery = sanitizeNotifierDelivery(delivery)
 			e.notifierHistory = append(e.notifierHistory, delivery)
 		}
 		e.notifierMu.Unlock()

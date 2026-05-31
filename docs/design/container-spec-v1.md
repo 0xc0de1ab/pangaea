@@ -128,9 +128,9 @@ its own `id`, account hint, auth source path, container state, and routing
 identity.
 
 `service` names the underlying service family such as `codex`, `claude`,
-`gemini`, `glm`, `minimax`, `deepseek`, `antigravity`, `cline`, or
-`github-copilot`. Public API dialects are expressed by `shim.protocols` and
-capabilities, not by `service`.
+`gemini`, `glm`, `minimax`, `deepseek`, `antigravity`, `cline`,
+`github-copilot`, or `grok-build`. Public API dialects are expressed by
+`shim.protocols` and capabilities, not by `service`.
 
 ```yaml
 providers:

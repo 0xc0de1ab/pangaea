@@ -211,6 +211,25 @@ func TestSetupProviderModeSelectsProviderMode(t *testing.T) {
 			t.Fatalf("copilot acp capabilities %v missing %s", copilotACP.Spec.Shim.Capabilities, capability)
 		}
 	}
+
+	grokBuild, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:    "docker",
+		Mode:    "acp",
+		Service: "grok-build",
+		OutDir:  filepath.Join(dir, "grok-build"),
+	})
+	if err != nil {
+		t.Fatalf("build grok build acp setup provider plan: %v", err)
+	}
+	if grokBuild.Spec.Kind != provider.KindCLIContainer || grokBuild.Spec.ProviderMode != "acp" || grokBuild.Spec.ProviderType != "grok-build-cli" {
+		t.Fatalf("unexpected grok build acp spec: kind=%q provider_mode=%q provider_type=%q", grokBuild.Spec.Kind, grokBuild.Spec.ProviderMode, grokBuild.Spec.ProviderType)
+	}
+	if !hasSetupCapability(grokBuild.Spec.Shim.Capabilities, provider.CapabilityStreamSSE) {
+		t.Fatalf("grok build acp should advertise streaming: %v", grokBuild.Spec.Shim.Capabilities)
+	}
+	if len(grokBuild.Spec.Models) != 1 || grokBuild.Spec.Models[0].ID != "grok-build" {
+		t.Fatalf("grok build default models = %#v", grokBuild.Spec.Models)
+	}
 }
 
 func TestBuildSetupProviderAntigravityKindManifestUsesRuntimeAndShimContainers(t *testing.T) {
@@ -578,6 +597,62 @@ func TestBuildSetupProviderCursorDerivesAccountAndBootstrapsAuthJSON(t *testing.
 	}
 }
 
+func TestBuildSetupProviderGrokBuildDerivesAccountAndBootstrapsAuthJSON(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, ".grok", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte(grokSetupAuthJSON("dev@example.test")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := buildSetupProviderPlan(setupProviderOptions{
+		Type:     "kind",
+		Service:  "grok",
+		Mode:     "acp",
+		AuthPath: authPath,
+		OutDir:   filepath.Join(dir, "out"),
+	})
+	if err != nil {
+		t.Fatalf("build grok build setup provider plan: %v", err)
+	}
+	if plan.Service != provider.ServiceGrokBuild || plan.Spec.Service != provider.ServiceGrokBuild {
+		t.Fatalf("service = plan:%q spec:%q", plan.Service, plan.Spec.Service)
+	}
+	if plan.Spec.AccountHint != "dev@example.test" {
+		t.Fatalf("account hint = %q, want dev@example.test", plan.Spec.AccountHint)
+	}
+	if plan.Spec.InstanceID != "grok-build-dev-example.test" {
+		t.Fatalf("instance id = %q, want grok-build-dev-example.test", plan.Spec.InstanceID)
+	}
+	if plan.Spec.Auth.Format != "grok-auth-json-format" || !strings.HasSuffix(plan.Spec.Auth.ContainerPath, "/.grok/auth.json") {
+		t.Fatalf("unexpected grok auth spec: %#v", plan.Spec.Auth)
+	}
+	manifest := string(plan.Artifacts[0].Content)
+	initStart := strings.Index(manifest, "initContainers:")
+	if initStart < 0 {
+		t.Fatalf("could not locate grok build init container in manifest:\n%s", manifest)
+	}
+	initSection := manifest[initStart:]
+	if !strings.Contains(initSection, "mountPath: /work") || !strings.Contains(initSection, "name: provider-work") {
+		t.Fatalf("grok build init container does not mount provider workdir:\n%s", initSection)
+	}
+	for _, want := range []string{
+		"bootstrap-grok-build",
+		"auth.json",
+		"grok-auth-json-format",
+		"/var/lib/pangaea/home/grok/.grok/auth.json",
+		"PANGAEA_GROK_CLI_EXE",
+		"value: /usr/local/bin/grok",
+		"value: grok-build",
+		"grok-build-default|grok-build-0.1|grok-default",
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("grok build manifest missing %q:\n%s", want, manifest)
+		}
+	}
+}
+
 func TestRootCommandIncludesSetupProvider(t *testing.T) {
 	root := newRootCmd()
 	for _, cmd := range root.Commands() {
@@ -639,6 +714,10 @@ if [ "$1" = "about" ]; then
 fi
 exit 2
 `
+}
+
+func grokSetupAuthJSON(email string) string {
+	return `{"https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828":{"key":"grok_cached_token","email":"` + email + `"}}`
 }
 
 func hasSetupCapability(capabilities []provider.Capability, want provider.Capability) bool {

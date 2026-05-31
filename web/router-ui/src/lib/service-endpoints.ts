@@ -58,6 +58,12 @@ export function serviceLabel(service: string) {
     case "cursor":
     case "cursor-cli":
       return "Cursor";
+    case "grok":
+    case "grok-build":
+    case "grok-build-cli":
+    case "xai":
+    case "x-ai":
+      return "Grok Build";
     case "github-copilot":
     case "github-copilot-sidecar":
     case "github-copilot-acp":
