@@ -1931,9 +1931,7 @@ func (w *openAIChatEventStreamWriter) ensure(c *gin.Context) {
 	if w.wrote {
 		return
 	}
-	c.Header("content-type", "text/event-stream")
-	c.Header("cache-control", "no-cache")
-	c.Header("connection", "keep-alive")
+	setSSEHeaders(c)
 	c.Status(http.StatusOK)
 	w.wrote = true
 }
@@ -2099,9 +2097,7 @@ func writeOpenAIChatStream(c *gin.Context, response compat.Response) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.Header("content-type", "text/event-stream")
-	c.Header("cache-control", "no-cache")
-	c.Header("connection", "keep-alive")
+	setSSEHeaders(c)
 	c.Status(http.StatusOK)
 	created := time.Now().Unix()
 	content := ""
@@ -2195,9 +2191,7 @@ func (w *openAIResponsesEventStreamWriter) ensure(c *gin.Context) {
 	if w.wrote {
 		return
 	}
-	c.Header("content-type", "text/event-stream")
-	c.Header("cache-control", "no-cache")
-	c.Header("connection", "keep-alive")
+	setSSEHeaders(c)
 	c.Status(http.StatusOK)
 	w.wrote = true
 	writeSSEEvent(c, "response.created", gin.H{
@@ -2537,9 +2531,7 @@ func writeAnthropicMessagesStream(c *gin.Context, response compat.Response) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.Header("content-type", "text/event-stream")
-	c.Header("cache-control", "no-cache")
-	c.Header("connection", "keep-alive")
+	setSSEHeaders(c)
 	c.Status(http.StatusOK)
 
 	startMessage := anthropicResponse
@@ -2623,9 +2615,7 @@ func (w *anthropicMessagesEventStreamWriter) ensure(c *gin.Context) {
 	if w.wrote {
 		return
 	}
-	c.Header("content-type", "text/event-stream")
-	c.Header("cache-control", "no-cache")
-	c.Header("connection", "keep-alive")
+	setSSEHeaders(c)
 	c.Status(http.StatusOK)
 	w.wrote = true
 }
@@ -2743,9 +2733,7 @@ func writeGeminiGenerateContentStream(c *gin.Context, response compat.Response) 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.Header("content-type", "text/event-stream")
-	c.Header("cache-control", "no-cache")
-	c.Header("connection", "keep-alive")
+	setSSEHeaders(c)
 	c.Status(http.StatusOK)
 	writeSSEData(c, geminiResponse)
 }
@@ -2781,9 +2769,7 @@ func (w *geminiGenerateContentEventStreamWriter) ensure(c *gin.Context) {
 	if w.wrote {
 		return
 	}
-	c.Header("content-type", "text/event-stream")
-	c.Header("cache-control", "no-cache")
-	c.Header("connection", "keep-alive")
+	setSSEHeaders(c)
 	c.Status(http.StatusOK)
 	w.wrote = true
 }
@@ -2996,6 +2982,13 @@ func writeSSEEvent(c *gin.Context, event string, payload any) {
 	_, _ = c.Writer.Write([]byte(event))
 	_, _ = c.Writer.Write([]byte("\n"))
 	writeSSEData(c, payload)
+}
+
+func setSSEHeaders(c *gin.Context) {
+	c.Header("content-type", "text/event-stream")
+	c.Header("cache-control", "no-cache, no-transform")
+	c.Header("connection", "keep-alive")
+	c.Header("x-accel-buffering", "no")
 }
 
 func writeSSEData(c *gin.Context, payload any) {

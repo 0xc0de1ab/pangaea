@@ -734,9 +734,20 @@ func TestHTTPOpenAIChatCompletionsStreamsSSEWithSimulator(t *testing.T) {
 	if got := rec.Header().Get("content-type"); got != "text/event-stream" {
 		t.Fatalf("expected text/event-stream, got %q", got)
 	}
+	assertSSEProxyBufferingDisabled(t, rec)
 	body := rec.Body.String()
 	if !bytes.Contains([]byte(body), []byte("data:")) || !bytes.Contains([]byte(body), []byte("providersim: hello stream")) || !bytes.Contains([]byte(body), []byte("data: [DONE]")) {
 		t.Fatalf("unexpected SSE body: %s", body)
+	}
+}
+
+func assertSSEProxyBufferingDisabled(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if got := rec.Header().Get("x-accel-buffering"); got != "no" {
+		t.Fatalf("expected x-accel-buffering=no, got %q", got)
+	}
+	if got := rec.Header().Get("cache-control"); !strings.Contains(strings.ToLower(got), "no-transform") {
+		t.Fatalf("expected cache-control to include no-transform, got %q", got)
 	}
 }
 
